@@ -25,6 +25,7 @@
 
   <!-- Live game video — WebRTC stream from server via WHEP -->
   <!-- src is set dynamically once the server signals session_ready -->
+  <!-- onclick fires in the MML client (not SES) — this is what unlocks audio -->
   <m-video
     id="screen-video"
     src=""
@@ -32,7 +33,9 @@
     y="2.69" z="0.627" rx="-18"
     visible="false"
     loop="false"
-    volume="1">
+    volume="1"
+    emissive="1"
+    onclick="this.setAttribute('volume','1')">
   </m-video>
 
   <!-- Cabinet labels -->
@@ -284,6 +287,7 @@
             set("status-label", "content", "");
             set("play-btn",     "prompt",  "Press E to Close");
             gameActive = true;
+            setTimeout(unlockAudio, 500); // toggle volume to trigger MML audio resume
             return;
           }
 
@@ -336,20 +340,18 @@
     }
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    // AUDIO UNLOCK
-    // Browsers block audio until a user gesture. The interact event
-    // IS a user gesture — we use it to unlock AudioContext so the
-    // <m-video> element can play audio when the WebRTC stream arrives.
+    // AUDIO UNLOCK via MML attribute toggle
+    // MML's SES sandbox blocks window.AudioContext.
+    // Instead we toggle volume off→on via setAttribute which
+    // triggers MML's own client-side audio resume.
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     function unlockAudio() {
       try {
-        var AC = window.AudioContext || window.webkitAudioContext;
-        if (AC) { var c = new AC(); c.resume(); }
-      } catch(e) {}
-      // Also try to play the video element directly to unblock audio
-      try {
         var vid = root.querySelector("#screen-video");
-        if (vid && vid.play) vid.play().catch(function(){});
+        if (vid) {
+          vid.setAttribute("volume", "0");
+          setTimeout(function() { vid.setAttribute("volume", "1"); }, 100);
+        }
       } catch(e) {}
     }
 
