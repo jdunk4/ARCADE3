@@ -1,180 +1,84 @@
-# 🕹️ ARCADE3 — Enhanced-Streaming MML Arcade Cabinet
+# ARCADE3 — WHEP Streaming Cabinet
 
-A fully interactive arcade cabinet living inside a Metaverse world — **zero server-side emulation, zero streaming latency**.  
-The emulator runs directly in the player's browser using EmulatorJS. No Railway emulator server required.
+WebRTC/WHEP replaces the JPEG-over-WebSocket frame streaming from ARCADE2.
 
----
+## What changed
 
-## 🎮 What's Different from ARCADE2?
-
-| Feature | ARCADE2 | ARCADE3 |
+| | ARCADE2 | ARCADE3-WHEP |
 |---|---|---|
-| Emulator runs on | Railway Node.js server | Player's browser |
-| Frames sent via | WebSocket (JPEG stream) | None — native render |
-| Audio | Opus stream | Native browser audio |
-| Latency | ~100–300ms | 0ms (local) |
-| Railway cost | Emulator server (heavy) | Not needed |
-| ROM served from | Railway `/rom/` endpoint | GitHub Pages (free) |
-| Multiplayer screen | Shared (everyone sees same) | Per-player (independent) |
-| Controller input | WebSocket → server emulator | postMessage → EmulatorJS |
+| Video path | `page.screenshot()` JPEG → base64 → WS → `<m-image>` swap | ffmpeg rawvideo → wrtc RTCVideoSource → WebRTC → `<m-video>` |
+| Audio path | ffmpeg Opus chunks → base64 → WS → MediaSource JS buffer | ffmpeg PCM → RTCAudioSource → WebRTC (same peer connection) |
+| Transport | TCP WebSocket | UDP WebRTC |
+| Latency | ~200–500ms | ~30–80ms |
+| Screen flicker | Yes (image element swap per frame) | No (native video texture) |
+| Input path | WS → server → Puppeteer (unchanged) | Same |
 
----
-
-## 🏗️ Architecture
+## How it works
 
 ```
-MML World (Unreal / browser)
-  └── arcade-wario.html  (MML document, served from Railway — lightweight WS doc server only)
-        ├── <m-frame src="game.html">   ← EmulatorJS boots HERE in player's browser
-        ├── Gamepad API polling         ← reads controller buttons
-        ├── postMessage → game.html     ← sends key events to EmulatorJS
-        └── /completions fetch          ← tracks completion count (optional, reuses ARCADE2 backend)
-
-GitHub Pages (jdunk4.github.io/ARCADE3)
-  ├── game.html           ← EmulatorJS page (no server needed)
-  └── rom/
-      └── Wario_Land_SNES_2_0.sfc   ← ROM served statically
+Player presses E
+  → cabinet opens WebSocket to /input?rom=...&session=SESSION_ID
+  → server spawns Puppeteer + ffmpeg video + ffmpeg audio
+  → server replies { type: "session_ready", whepUrl: "whep://server/stream/SESSION_ID" }
+  → cabinet sets <m-video src="whep://...">
+  → MML client POSTs SDP offer to https://server/stream/SESSION_ID
+  → server feeds offer into RTCPeerConnection, returns SDP answer (201)
+  → WebRTC handshake completes over UDP
+  → video+audio stream appears on cabinet screen in ~1-2s
+  → gamepad inputs flow: Gamepad API → WS → Puppeteer keyboard (unchanged)
 ```
 
----
+## Files
 
-## 📦 Stack
-
-| Layer | Technology |
+| File | Purpose |
 |---|---|
-| Metaverse World | MML / Unreal Engine |
-| MML Document Server | Node.js + Networked DOM (Railway — **document only, not emulator**) |
-| Static File Hosting | GitHub Pages |
-| SNES Emulator | EmulatorJS (CDN) — runs in player's browser |
-| ROM Storage | GitHub Pages `/rom/` folder |
-| Completions Backend | Shared with ARCADE2 (`gamer-production.up.railway.app`) |
+| `server-whep.js` | Main server — Puppeteer + ffmpeg + wrtc + WHEP endpoint + MML doc server |
+| `arcade-wario-whep.html` | MML cabinet — `<m-video>` instead of `<m-image>` swap |
+| `Dockerfile` | Chromium + ffmpeg + PulseAudio + wrtc deps |
+| `start.sh` | Boots Xvfb + PulseAudio + Node |
+| `default.pa` | PulseAudio virtual sink config |
+| `package.json` | Adds `@roamhq/wrtc` to deps |
 
----
+## Deploy to Railway
 
-## 🗂️ Project Structure
+1. Push these files to your Arcade3 repo
+2. Railway detects `Dockerfile` → builds automatically
+3. After deploy, copy your Railway domain (e.g. `arcade3-production.up.railway.app`)
+4. In `arcade-wario-whep.html` update:
+   ```js
+   var SNES_SERVER_WS = "wss://arcade3-production.up.railway.app";
+   ```
+5. Commit and push — Railway redeploys
+
+## WHEP URL format
+
+MML uses `whep://` protocol which it converts to `https://` for the SDP POST:
 
 ```
-ARCADE3/
-├── arcade-wario.html     ← MML cabinet (load into Railway WS doc server)
-├── game.html             ← EmulatorJS page (deploy to GitHub Pages)
-├── rom/
-│   └── Wario_Land_SNES_2_0.sfc   ← Upload ROM here (GitHub Pages)
-├── SCREEN/
-│   └── wario-land-preview.png    ← Cabinet preview image
-├── INFOCARDs/
-│   └── info-card-wario.png       ← Info card shown on approach
-├── package.json
-└── README.md
+<m-video src="whep://arcade3-production.up.railway.app/stream/SESSION_ID">
 ```
 
----
+becomes:
 
-## 🚀 Getting Started
-
-### 1. Create the GitHub repo
-```bash
-git clone https://github.com/jdunk4/ARCADE3.git
-cd ARCADE3
+```
+POST https://arcade3-production.up.railway.app/stream/SESSION_ID
+Content-Type: application/sdp
+Body: [SDP offer]
 ```
 
-### 2. Enable GitHub Pages
-- Go to Settings → Pages → Source: `main` branch, `/ (root)`
-- Your static site: `https://jdunk4.github.io/ARCADE3/`
+Response: `201 Created` + SDP answer → WebRTC connected.
 
-### 3. Add the ROM
-```
-rom/Wario_Land_SNES_2_0.sfc   ← place your ROM here
-```
-Commit and push. GitHub Pages auto-deploys within ~2 minutes.
+## wrtc on Railway
 
-### 4. Deploy the MML document server
+`@roamhq/wrtc` ships prebuilt binaries for Linux x64 — Railway's default environment.
+No compilation needed. It just works with `npm install`.
 
-You only need a **lightweight** WS doc server — no emulator running on it.  
-You can reuse ARCADE2's `server-b.js` pattern, or use a minimal server:
+## One session per player
 
-```bash
-# package.json dependencies:
-# @mml-io/networked-dom-server, express, ws
+Each player who presses E gets their own:
+- Puppeteer browser instance
+- ffmpeg video + audio capture process  
+- RTCPeerConnection
 
-npm install
-npm start
-```
-
-Railway auto-detects Node.js and runs `npm start`.  
-Go to Settings → Networking → Generate Domain.
-
-### 5. Place in your MML world
-```html
-<m-frame src="wss://your-arcade3-server.railway.app" width="4" height="4"></m-frame>
-```
-
----
-
-## 🎯 How the No-Streaming Approach Works
-
-1. Player walks up to cabinet in the MML world
-2. Player presses **E** to interact
-3. MML script points `<m-frame>` at `game.html` on GitHub Pages
-4. EmulatorJS loads the ROM directly from GitHub Pages **in the player's browser**
-5. Gamepad API polls the connected controller
-6. Button presses are sent via **postMessage** into the `<m-frame>`
-7. `game.html` receives messages and fires synthetic keyboard events into EmulatorJS
-8. Game runs at native speed with no network round-trips for frames
-
----
-
-## 🕹️ Testing in MML.io Editor
-
-You can test this immediately without any server:
-
-1. Open [https://mml.io](https://mml.io) → New document
-2. Paste the contents of `arcade-wario.html`
-3. Press E near the cabinet
-4. The game loads directly — no Railway connection needed for the emulator
-
-> **Note:** The `<m-frame>` panel will show the EmulatorJS game floating in 3D space.  
-> Controller postMessage works as long as the frame receives focus.
-
----
-
-## 🔧 Adding More Games
-
-Copy `arcade-wario.html`, change the top config block:
-
-```javascript
-var ROM_FILE    = "YourGame.sfc";
-var ROM_CORE    = "snes";           // or "nes", "gba", etc.
-var ROM_ID      = "your-game-id";
-var ROM_TITLE   = "Your Game Title";
-var ROM_PREVIEW = "https://jdunk4.github.io/ARCADE3/SCREEN/your-preview.png";
-```
-
-Upload the ROM to `rom/YourGame.sfc` on GitHub Pages and you're done.
-
----
-
-## 🌐 Live URLs
-
-| Resource | URL |
-|---|---|
-| GitHub Pages (game + ROM) | `https://jdunk4.github.io/ARCADE3/` |
-| Direct game link | `https://jdunk4.github.io/ARCADE3/game.html?rom=Wario_Land_SNES_2_0.sfc&core=snes` |
-| MML Document Server | `wss://your-arcade3-server.railway.app` |
-
----
-
-## 📚 Resources
-
-- [MML Documentation](https://mml.io/docs)
-- [EmulatorJS](https://emulatorjs.org)
-- [Networked DOM Server](https://github.com/mml-io/networked-dom)
-- [Railway](https://railway.app)
-- [GitHub Pages](https://pages.github.com)
-
----
-
-## 📄 License
-
-MIT — build cool stuff. 🕹️
-
-Built with ❤️ — removing latency one frame at a time.
+This is the same model as ARCADE2. Railway's free tier handles ~2-3 concurrent sessions.
+Upgrade to a paid Railway plan for more concurrent players.
