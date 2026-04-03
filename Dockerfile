@@ -29,7 +29,8 @@ COPY default.pa /etc/pulse/default.pa
 # ── App ────────────────────────────────────────────────────────────────────────
 WORKDIR /app
 COPY package*.json ./
-RUN npm install --omit=dev
+# Install all deps (including patch-package which @roamhq/wrtc needs in its postinstall hook)
+RUN npm install
 
 COPY . .
 
