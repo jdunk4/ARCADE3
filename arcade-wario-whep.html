@@ -73,6 +73,18 @@
 
   <m-position-probe range="6.0" id="probe"></m-position-probe>
 
+  <!-- Silent audio trigger — playing any m-audio resumes Three.js AudioContext,
+       which causes m-video to unmute itself (see ThreeJSVideo.syncVideoTime).
+       We play this 1-frame silent audio on E press to unlock the audio graph. -->
+  <m-audio
+    id="audio-unlock"
+    src="https://public.mml.io/piano.mp3"
+    loop="false"
+    volume="0"
+    enabled="false"
+    visible="false">
+  </m-audio>
+
   <m-interaction
     id="play-btn"
     prompt="Press E to Play Wario Land SNES 2.0"
@@ -134,6 +146,81 @@
     var gameActive    = false;
     var pollingActive = false;
     var sessionId     = null;
+
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // AUDIO — ARCADE2's proven pattern: new Audio() + MediaSource
+    // Completely bypasses Three.js AudioContext restrictions.
+    // Server sends Opus/WebM chunks over WebSocket → we buffer
+    // them into a MediaSource → Audio element plays them.
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    var audioEl = null, mediaSource = null, sourceBuffer = null, audioObjectURL = null;
+    var audioChunkQueue = [], sbReady = false, audioInitialized = false, audioEnabled = false;
+
+    function initAudio() {
+      if (audioInitialized) return;
+      audioInitialized = true;
+      try {
+        if (!window.MediaSource) return;
+        audioEl = new Audio();
+        audioEl.autoplay = true;
+        mediaSource = new MediaSource();
+        audioObjectURL = URL.createObjectURL(mediaSource);
+        audioEl.src = audioObjectURL;
+        mediaSource.addEventListener("sourceopen", function() {
+          try {
+            sourceBuffer = mediaSource.addSourceBuffer('audio/webm; codecs="opus"');
+            sourceBuffer.mode = "sequence";
+            sbReady = true;
+            flushAudioQueue();
+          } catch(e) {}
+        });
+      } catch(e) {}
+    }
+
+    var MAX_AUDIO_QUEUE = 3;
+    function flushAudioQueue() {
+      if (!audioEnabled) { audioChunkQueue = []; return; }
+      if (!sbReady || !sourceBuffer || sourceBuffer.updating || audioChunkQueue.length === 0) return;
+      while (audioChunkQueue.length > MAX_AUDIO_QUEUE) audioChunkQueue.shift();
+      var chunk = audioChunkQueue.shift();
+      try { sourceBuffer.appendBuffer(chunk); } catch(e) { audioChunkQueue = []; return; }
+      sourceBuffer.addEventListener("updateend", function onUpdate() {
+        sourceBuffer.removeEventListener("updateend", onUpdate);
+        flushAudioQueue();
+      });
+    }
+
+    function playAudioChunk(base64Data) {
+      if (!audioEnabled || !audioEl || !mediaSource) return;
+      try {
+        var binary = atob(base64Data);
+        var buf = new Uint8Array(binary.length);
+        for (var i = 0; i < binary.length; i++) buf[i] = binary.charCodeAt(i);
+        audioChunkQueue.push(buf.buffer);
+        flushAudioQueue();
+      } catch(e) {}
+    }
+
+    function unlockAudio() {
+      try {
+        var AC = window.AudioContext || window.webkitAudioContext;
+        if (AC) { var c = new AC(); c.resume(); }
+      } catch(e) {}
+      resumeAudio();
+    }
+
+    function resumeAudio() {
+      if (!audioEnabled) return;
+      if (!audioInitialized) initAudio();
+      if (audioEl && audioEl.paused) audioEl.play().catch(function() {});
+    }
+
+    function resetAudio() {
+      audioEnabled = false; audioChunkQueue = []; sbReady = false; audioInitialized = false;
+      if (audioEl) { try { audioEl.pause(); audioEl.src = ""; } catch(e) {} }
+      if (audioObjectURL) { try { URL.revokeObjectURL(audioObjectURL); } catch(e) {} audioObjectURL = null; }
+      audioEl = null; mediaSource = null; sourceBuffer = null;
+    }
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     // CONTROLLER — identical button maps to ARCADE2
@@ -253,6 +340,9 @@
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     function launchGame() {
       sessionId = Math.random().toString(36).slice(2);
+      resetAudio();
+      audioEnabled = true;
+      initAudio();
       // NOTE: Connect to ROOT path (/) not /input — Railway's proxy only
       // upgrades WebSockets on the root path. We distinguish input vs MML
       // doc connections using the ?session= query param server-side.
@@ -287,10 +377,11 @@
             set("status-label", "content", "");
             set("play-btn",     "prompt",  "Press E to Close");
             gameActive = true;
-            setTimeout(unlockAudio, 500); // toggle volume to trigger MML audio resume
+            resumeAudio();
             return;
           }
 
+          if (frame.type === "audio" && frame.data) { playAudioChunk(frame.data); return; }
           if (frame.type === "status")  { set("status-label","content", frame.message); return; }
           if (frame.type === "error")   { set("status-label","content", "Error: " + frame.message); return; }
           if (frame.type === "completion") { logCompletion(); return; }
@@ -311,6 +402,7 @@
     function closeGame() {
       gameActive = false;
       if (socket) { try { socket.close(); } catch(e) {} socket = null; }
+      resetAudio();
       set("screen-video",   "src",     "");
       set("screen-video",   "visible", "false");
       set("screen-preview", "visible", "true");
@@ -337,22 +429,6 @@
           set("completion-label","content",
             count + " player" + (count !== 1 ? "s" : "") + " completed");
         }).catch(function(){});
-    }
-
-    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    // AUDIO UNLOCK via MML attribute toggle
-    // MML's SES sandbox blocks window.AudioContext.
-    // Instead we toggle volume off→on via setAttribute which
-    // triggers MML's own client-side audio resume.
-    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    function unlockAudio() {
-      try {
-        var vid = root.querySelector("#screen-video");
-        if (vid) {
-          vid.setAttribute("volume", "0");
-          setTimeout(function() { vid.setAttribute("volume", "1"); }, 100);
-        }
-      } catch(e) {}
     }
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
