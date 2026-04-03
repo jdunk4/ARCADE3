@@ -1,4 +1,4 @@
-# 🕹️ ARCADE3 — No-Streaming MML Arcade Cabinet
+# 🕹️ ARCADE3 — Enhanced-Streaming MML Arcade Cabinet
 
 A fully interactive arcade cabinet living inside a Metaverse world — **zero server-side emulation, zero streaming latency**.  
 The emulator runs directly in the player's browser using EmulatorJS. No Railway emulator server required.
