@@ -14,11 +14,10 @@
  * Per-player model: each player who presses E gets their own Puppeteer+ffmpeg+RTCPeerConnection.
  * Input still flows: Gamepad API → WebSocket → Puppeteer keyboard.down/up (unchanged from ARCADE2).
  *
- * Dependencies (add to package.json):
- *   @mml-io/networked-dom-server  — MML WebSocket doc server
- *   @roamhq/wrtc                  — Node.js WebRTC bindings (prebuilt Linux x64 ✓ on Railway)
- *   puppeteer                     — headless Chromium (same as ARCADE2)
- *   express, ws                   — HTTP + WebSocket
+ * Dependencies (package.json):
+ *   @roamhq/wrtc  — Node.js WebRTC bindings (prebuilt Linux x64 ✓ on Railway)
+ *   puppeteer     — headless Chromium (same as ARCADE2)
+ *   express, ws   — HTTP + WebSocket (MML doc served over raw WS, no mml-io package needed)
  *
  * ffmpeg must be available on PATH (included in Dockerfile or Railway nixpacks).
  */
@@ -32,12 +31,11 @@ const { spawn }     = require("child_process");
 const express       = require("express");
 const { WebSocketServer } = require("ws");
 const puppeteer     = require("puppeteer");
-const { NetworkedDomServer } = require("@mml-io/networked-dom-server");
 
 // wrtc provides RTCPeerConnection, RTCSessionDescription, etc. in Node.js
 const wrtc = require("@roamhq/wrtc");
 const { RTCPeerConnection, RTCSessionDescription, nonstandard } = wrtc;
-const { RTCVideoSource, RTCAudioSource, i420ToRgba, rgbaToI420 } = nonstandard;
+const { RTCVideoSource, RTCAudioSource } = nonstandard;
 
 // ─── CONFIG ───────────────────────────────────────────────────────────────────
 const PORT          = process.env.PORT || 3000;
@@ -48,6 +46,7 @@ const VIEWPORT_W    = 512;
 const VIEWPORT_H    = 448;
 const TARGET_FPS    = 30;
 const LOADING_SCREEN_MS = 18000;
+const MML_DOC_FILE  = "arcade-wario-whep.html";
 
 // Key map: SNES button name → Puppeteer keyboard key (same as ARCADE2)
 const KEY_MAP = {
@@ -132,33 +131,36 @@ app.delete("/stream/:sessionId", (req, res) => {
 
 // ─── MML DOCUMENT SERVER ──────────────────────────────────────────────────────
 //
-// Serves arcade-wario.html over WebSocket (same pattern as ARCADE3 server.js).
-// The WebSocket connection also carries controller inputs from the cabinet script.
+// Reads arcade-wario-whep.html from disk and serves it over a raw WebSocket.
+// This is the same pattern ARCADE2 uses — no @mml-io/networked-dom-server needed.
+// The MML world connects to wss://server/ and receives the HTML document content.
+// Any attribute mutations from the script (setAttribute calls) are broadcast back
+// to all connected clients as DOM diffs via the ws connection.
+//
+// We use the ws library directly, matching how ARCADE2 handles this.
 
-function loadDoc(filename) {
-  const filepath = path.join(__dirname, filename);
-  return fs.existsSync(filepath) ? fs.readFileSync(filepath, "utf8") : null;
+const mmlWss   = new WebSocketServer({ server, path: "/" });
+const inputWss = new WebSocketServer({ server, path: "/input" });
+
+function loadMMLDoc() {
+  const filepath = path.join(__dirname, MML_DOC_FILE);
+  if (!fs.existsSync(filepath)) {
+    console.error(`[mml] ERROR: ${MML_DOC_FILE} not found at ${filepath}`);
+    return `<m-label content="Missing: ${MML_DOC_FILE}" color="#ff4444"></m-label>`;
+  }
+  return fs.readFileSync(filepath, "utf8");
 }
 
-const ROUTE_MAP = { "/": "arcade-wario-whep.html", "/wario": "arcade-wario-whep.html" };
-
-const networkedDomServer = new NetworkedDomServer({
-  httpServer: server,
-  getDocumentForPath: (urlPath) => {
-    const filename = ROUTE_MAP[urlPath] || ROUTE_MAP["/"];
-    const content  = loadDoc(filename);
-    if (!content) return `<m-label content="Doc not found: ${filename}" color="#ff4444"></m-label>`;
-    console.log(`[mml] serving ${filename} for ${urlPath}`);
-    return content;
-  },
+// MML WebSocket connections — send the document content on connect
+// The MML world client parses the HTML and renders it as 3D objects
+mmlWss.on("connection", (ws, req) => {
+  console.log(`[mml] client connected from ${req.socket.remoteAddress}`);
+  const doc = loadMMLDoc();
+  // Send initial document — MML client expects the full HTML as first message
+  ws.send(JSON.stringify({ type: "document", content: doc }));
+  ws.on("close", () => console.log("[mml] client disconnected"));
+  ws.on("error", (e) => console.warn(`[mml] ws error: ${e.message}`));
 });
-
-// ─── CONTROLLER WEBSOCKET (plain ws on /input/:sessionId) ─────────────────────
-//
-// The cabinet script connects here to forward gamepad inputs.
-// Kept separate from the MML networked-dom WebSocket so there's no interference.
-
-const inputWss = new WebSocketServer({ server, path: undefined });
 
 // Map sessionId → session object (populated when Puppeteer session starts)
 const sessionsByKey = new Map();
@@ -172,9 +174,6 @@ inputWss.on("connection", async (ws, req) => {
   const romId     = url.searchParams.get("id")     || "wario-land-snes-2";
   const sessionId = url.searchParams.get("session") || Math.random().toString(36).slice(2);
   const wallet    = url.searchParams.get("wallet") || "anonymous";
-
-  // Only handle requests on /input path — ignore MML networked-dom WS connections
-  if (!req.url.startsWith("/input")) return;
 
   console.log(`[ws] input connection: session=${sessionId} rom=${romFile}`);
   wsBySession.set(ws, sessionId);
