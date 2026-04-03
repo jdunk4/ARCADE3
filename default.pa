@@ -1,0 +1,8 @@
+# PulseAudio config for ARCADE3-WHEP
+# Creates a virtual speaker sink so ffmpeg can capture game audio
+# via: -f pulse -i virtual_speaker.monitor
+
+.include /etc/pulse/system.pa
+
+load-module module-null-sink sink_name=virtual_speaker sink_properties=device.description=VirtualSpeaker
+set-default-sink virtual_speaker
