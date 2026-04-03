@@ -34,6 +34,9 @@ pactl --server=unix:/var/run/pulse/native \
 
 echo "[start] Xvfb and PulseAudio ready"
 
+# Export PULSE_SERVER so Node.js and all child processes (ffmpeg) find PulseAudio
+export PULSE_SERVER="unix:/var/run/pulse/native"
+
 # ── Node server ────────────────────────────────────────────────────────────────
 echo "[start] starting ARCADE3-WHEP server"
 exec node server-whep.js
