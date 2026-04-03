@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Arcade</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: #000;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      height: 100vh;
+      overflow: hidden;
+    }
+    #game-container { width: 100%; height: 100%; }
+    #status {
+      position: fixed;
+      top: 8px; right: 10px;
+      font-family: monospace;
+      font-size: 11px;
+      color: #ffcc00;
+      background: rgba(0,0,0,0.75);
+      padding: 3px 8px;
+      border-radius: 4px;
+      z-index: 999;
+      display: none;
+    }
+    /* Minimal loading screen shown while EmulatorJS boots */
+    #loader {
+      position: fixed;
+      inset: 0;
+      background: #000;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      z-index: 998;
+      font-family: monospace;
+      color: #ffcc00;
+      gap: 16px;
+      pointer-events: none;
+      transition: opacity 0.5s;
+    }
+    #loader .title { font-size: 22px; letter-spacing: 2px; }
+    #loader .sub   { font-size: 12px; color: #aaa; }
+    #loader .dot   { animation: blink 1s infinite; }
+    @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.2} }
+  </style>
+</head>
+<body>
+  <div id="loader">
+    <div class="title">WARIO LAND SNES 2.0</div>
+    <div class="sub">Loading emulator<span class="dot">...</span></div>
+  </div>
+  <div id="status"></div>
+  <div id="game-container">
+    <div id="game"></div>
+  </div>
+
+  <script>
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // CONFIG — driven by URL params (same pattern as ARCADE2)
+    // Defaults to Wario Land SNES 2.0 when opened directly
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    var params   = new URLSearchParams(window.location.search);
+    var ROM_FILE = params.get("rom")    || "Wario_Land_SNES_2_0.sfc";
+    var ROM_CORE = params.get("core")   || "snes";
+    var ROM_ID   = params.get("id")     || "wario-land-snes-2";
+    var WALLET   = params.get("wallet") || "anonymous";
+    var SERVER   = "https://gamer-production.up.railway.app";
+
+    // ROM is served from GitHub Pages — zero Railway streaming required
+    // Repo structure: /rom/Wario_Land_SNES_2_0.sfc
+    var ROM_BASE_URL = "https://jdunk4.github.io/ARCADE3/rom/";
+
+    document.title = ROM_ID;
+
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // EMULATORJS — configure before loader.js runs
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    EJS_player      = "#game";
+    EJS_core        = ROM_CORE;
+    EJS_gameUrl     = ROM_BASE_URL + encodeURIComponent(ROM_FILE);
+    EJS_pathtodata  = "https://cdn.emulatorjs.org/stable/data/";
+    EJS_startOnLoaded = true;
+    EJS_color       = "#ffcc00";     // Wario yellow theme
+    EJS_backgroundColor = "#000000";
+
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // STATUS HELPER
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    function showStatus(msg, duration) {
+      duration = duration || 2500;
+      var el = document.getElementById("status");
+      el.textContent = msg;
+      el.style.display = "block";
+      clearTimeout(el._timer);
+      el._timer = setTimeout(function() { el.style.display = "none"; }, duration);
+    }
+
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // WAIT FOR EMULATOR TO BOOT
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    function waitForEmulator(callback, attempts) {
+      attempts = attempts || 0;
+      if (typeof EJS_emulator !== "undefined" && EJS_emulator.gameManager) {
+        callback(EJS_emulator);
+      } else if (attempts < 120) {
+        setTimeout(function() { waitForEmulator(callback, attempts + 1); }, 500);
+      }
+    }
+
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // POSTMESSAGE CONTROLLER INPUT
+    //
+    // The MML cabinet (arcade-wario.html) polls the Gamepad API and
+    // sends messages like:
+    //   { type: "keyDown", key: "b", source: "arcade3" }
+    //   { type: "keyUp",   key: "b", source: "arcade3" }
+    //
+    // We translate these to EmulatorJS key presses so the player
+    // controls the game from inside the MML world — no streaming needed.
+    //
+    // SNES key → keyboard key mapping (EmulatorJS default SNES bindings)
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    var SNES_KEY_MAP = {
+      "up":     "ArrowUp",
+      "down":   "ArrowDown",
+      "left":   "ArrowLeft",
+      "right":  "ArrowRight",
+      "a":      "x",          // EmulatorJS SNES defaults
+      "b":      "z",
+      "x":      "s",
+      "y":      "a",
+      "l":      "q",
+      "r":      "w",
+      "start":  "Enter",
+      "select": "Shift"
+    };
+
+    var heldKeys = {};   // track which keys are currently held
+
+    function fireKey(keyCode, isDown) {
+      // We dispatch synthetic keyboard events into the document.
+      // EmulatorJS uses document-level keydown/keyup listeners.
+      var evt = new KeyboardEvent(isDown ? "keydown" : "keyup", {
+        key: keyCode,
+        code: keyCode,
+        keyCode: keyCode.charCodeAt ? keyCode.charCodeAt(0) : 0,
+        which: keyCode.charCodeAt ? keyCode.charCodeAt(0) : 0,
+        bubbles: true,
+        cancelable: true
+      });
+      document.dispatchEvent(evt);
+      // Also try sending to any canvas EmulatorJS created
+      var canvas = document.querySelector("canvas");
+      if (canvas) canvas.dispatchEvent(evt);
+    }
+
+    window.addEventListener("message", function(evt) {
+      try {
+        var data = typeof evt.data === "string" ? JSON.parse(evt.data) : evt.data;
+        if (!data || data.source !== "arcade3") return;
+
+        var jsKey = SNES_KEY_MAP[data.key];
+        if (!jsKey) return;
+
+        if (data.type === "keyDown" && !heldKeys[jsKey]) {
+          heldKeys[jsKey] = true;
+          fireKey(jsKey, true);
+        } else if (data.type === "keyUp" && heldKeys[jsKey]) {
+          heldKeys[jsKey] = false;
+          fireKey(jsKey, false);
+        }
+      } catch(e) {}
+    });
+
+    // Release all held keys if focus is lost (prevents stuck keys)
+    window.addEventListener("blur", function() {
+      Object.keys(heldKeys).forEach(function(k) {
+        if (heldKeys[k]) { fireKey(k, false); heldKeys[k] = false; }
+      });
+    });
+
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // KEYBOARD PASSTHROUGH — also works as a standalone browser game.
+    // If the player opens this page directly, their keyboard works
+    // natively (EmulatorJS handles that automatically).
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // SAVE STATES (same as ARCADE2 — wallet-based cloud saves)
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    function loadSaveState(emulator) {
+      if (WALLET === "anonymous") return;
+      fetch(SERVER + "/save?wallet=" + WALLET + "&rom=" + ROM_ID)
+        .then(function(res) { return res.json(); })
+        .then(function(data) {
+          if (data.state) {
+            var binary = atob(data.state);
+            var bytes  = new Uint8Array(binary.length);
+            for (var i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+            emulator.gameManager.loadState(bytes);
+            showStatus("💾 Save loaded");
+          }
+        }).catch(function(e) { console.warn("Could not load save state:", e); });
+    }
+
+    function writeSaveState(emulator) {
+      if (WALLET === "anonymous") return;
+      try {
+        var stateBytes = emulator.gameManager.saveState();
+        var base64     = btoa(String.fromCharCode.apply(null, stateBytes));
+        fetch(SERVER + "/save", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ wallet: WALLET, rom: ROM_ID, state: base64 })
+        }).then(function() { showStatus("💾 Saved"); })
+          .catch(function(e) { console.warn("Could not write save state:", e); });
+      } catch(e) { console.warn("Save state error:", e); }
+    }
+
+    function startAutoSave(emulator) {
+      setInterval(function() { writeSaveState(emulator); }, 60000);
+    }
+
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // BOOT
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    window.addEventListener("load", function() {
+      waitForEmulator(function(emulator) {
+        // Hide loader once emulator is ready
+        var loader = document.getElementById("loader");
+        if (loader) { loader.style.opacity = "0"; setTimeout(function() { loader.style.display = "none"; }, 500); }
+
+        loadSaveState(emulator);
+        startAutoSave(emulator);
+
+        // Notify parent MML world that we're ready
+        try { window.parent.postMessage(JSON.stringify({ type: "ready", source: "arcade3-game" }), "*"); } catch(e) {}
+      });
+    });
+
+    window.addEventListener("beforeunload", function() {
+      if (typeof EJS_emulator !== "undefined" && EJS_emulator.gameManager) {
+        writeSaveState(EJS_emulator);
+      }
+    });
+  </script>
+
+  <!-- EmulatorJS loader — this kicks off the whole emulator -->
+  <script src="https://cdn.emulatorjs.org/stable/data/loader.js"></script>
+</body>
+</html>
