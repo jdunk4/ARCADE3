@@ -32,10 +32,19 @@ const express       = require("express");
 const { WebSocketServer } = require("ws");
 const puppeteer     = require("puppeteer");
 
-// wrtc provides RTCPeerConnection, RTCSessionDescription, etc. in Node.js
-const wrtc = require("@roamhq/wrtc");
-const { RTCPeerConnection, RTCSessionDescription, nonstandard } = wrtc;
-const { RTCVideoSource, RTCAudioSource } = nonstandard;
+// wrtc is lazy-loaded inside createSession() so the HTTP server always
+// binds port 3000 and passes the Railway healthcheck even if the wrtc
+// native binary takes a moment or logs warnings on startup.
+let RTCPeerConnection, RTCSessionDescription, RTCVideoSource, RTCAudioSource;
+function loadWrtc() {
+  if (RTCPeerConnection) return; // already loaded
+  const wrtc = require("@roamhq/wrtc");
+  RTCPeerConnection     = wrtc.RTCPeerConnection;
+  RTCSessionDescription = wrtc.RTCSessionDescription;
+  RTCVideoSource        = wrtc.nonstandard.RTCVideoSource;
+  RTCAudioSource        = wrtc.nonstandard.RTCAudioSource;
+  console.log("[wrtc] native bindings loaded OK");
+}
 
 // ─── CONFIG ───────────────────────────────────────────────────────────────────
 const PORT          = process.env.PORT || 3000;
@@ -224,6 +233,7 @@ inputWss.on("connection", async (ws, req) => {
 
 async function createSession(sessionId, ws, romFile, romCore, romId, wallet) {
   console.log(`[session:${sessionId}] starting puppeteer`);
+  loadWrtc(); // ensure wrtc native bindings are loaded before we use them
 
   // ── 1. Launch headless Chromium (same flags as ARCADE2) ───────────────────
   const browser = await puppeteer.launch({
