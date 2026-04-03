@@ -1,5 +1,9 @@
 [deploy]
-startCommand = "npm start"
+startCommand = "/start.sh"
 healthcheckPath = "/health"
-healthcheckTimeout = 30
+healthcheckTimeout = 60
 restartPolicyType = "on_failure"
+
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
