@@ -138,18 +138,15 @@ app.delete("/stream/:sessionId", (req, res) => {
   res.status(200).send("OK");
 });
 
-// ─── MML DOCUMENT SERVER ──────────────────────────────────────────────────────
+// ─── SINGLE WEBSOCKET SERVER ──────────────────────────────────────────────────
 //
-// Reads arcade-wario-whep.html from disk and serves it over a raw WebSocket.
-// This is the same pattern ARCADE2 uses — no @mml-io/networked-dom-server needed.
-// The MML world connects to wss://server/ and receives the HTML document content.
-// Any attribute mutations from the script (setAttribute calls) are broadcast back
-// to all connected clients as DOM diffs via the ws connection.
-//
-// We use the ws library directly, matching how ARCADE2 handles this.
+// Railway's proxy only correctly upgrades WebSockets on the ROOT path.
+// Path-based routing (e.g. /input) is stripped by Railway's proxy layer.
+// Fix: use ONE WebSocketServer on root and route by query param:
+//   ?session=xxx  → input connection (gamepad → Puppeteer)
+//   (no session)  → MML doc connection (world reads arcade-wario-whep.html)
 
-const mmlWss   = new WebSocketServer({ server, path: "/" });
-const inputWss = new WebSocketServer({ server, path: "/input" });
+const wss = new WebSocketServer({ server });
 
 function loadMMLDoc() {
   const filepath = path.join(__dirname, MML_DOC_FILE);
@@ -160,73 +157,70 @@ function loadMMLDoc() {
   return fs.readFileSync(filepath, "utf8");
 }
 
-// MML WebSocket connections — send the document content on connect
-// The MML world client parses the HTML and renders it as 3D objects
-mmlWss.on("connection", (ws, req) => {
-  console.log(`[mml] client connected from ${req.socket.remoteAddress}`);
-  const doc = loadMMLDoc();
-  // Send initial document — MML client expects the full HTML as first message
-  ws.send(JSON.stringify({ type: "document", content: doc }));
-  ws.on("close", () => console.log("[mml] client disconnected"));
-  ws.on("error", (e) => console.warn(`[mml] ws error: ${e.message}`));
-});
-
-// Map sessionId → session object (populated when Puppeteer session starts)
+// Map sessionId → session object
 const sessionsByKey = new Map();
-// Map WebSocket → sessionId (for input routing)
+// Map WebSocket → sessionId
 const wsBySession   = new Map();
 
-inputWss.on("connection", async (ws, req) => {
-  const url       = new URL(req.url, `http://localhost`);
-  const romFile   = url.searchParams.get("rom")    || "Wario Land SNES 2.0.sfc";
-  const romCore   = url.searchParams.get("core")   || "snes";
-  const romId     = url.searchParams.get("id")     || "wario-land-snes-2";
-  const sessionId = url.searchParams.get("session") || Math.random().toString(36).slice(2);
-  const wallet    = url.searchParams.get("wallet") || "anonymous";
+wss.on("connection", async (ws, req) => {
+  const url       = new URL(req.url, "http://localhost");
+  const sessionId = url.searchParams.get("session");
 
-  console.log(`[ws] input connection: session=${sessionId} rom=${romFile}`);
-  wsBySession.set(ws, sessionId);
+  // ── INPUT CONNECTION — has ?session= param ────────────────────────────────
+  if (sessionId) {
+    const romFile = url.searchParams.get("rom")    || "Wario Land SNES 2.0.sfc";
+    const romCore = url.searchParams.get("core")   || "snes";
+    const romId   = url.searchParams.get("id")     || "wario-land-snes-2";
+    const wallet  = url.searchParams.get("wallet") || "anonymous";
 
-  ws.send(JSON.stringify({ type: "status", message: "Launching..." }));
+    console.log(`[ws/input] session=${sessionId} rom=${romFile}`);
+    wsBySession.set(ws, sessionId);
+    ws.send(JSON.stringify({ type: "status", message: "Launching..." }));
 
-  try {
-    const session = await createSession(sessionId, ws, romFile, romCore, romId, wallet);
-    sessionsByKey.set(sessionId, session);
-    // Tell the cabinet the session ID + WHEP URL so it can set <m-video src>
-    ws.send(JSON.stringify({
-      type:      "session_ready",
-      sessionId: sessionId,
-      whepUrl:   `whep://ARCADE3_SERVER_HOST/stream/${sessionId}`
-    }));
-  } catch (e) {
-    console.error(`[ws] session failed: ${e.message}`);
-    ws.send(JSON.stringify({ type: "error", message: "Failed to start: " + e.message }));
-    ws.close();
+    try {
+      const session = await createSession(sessionId, ws, romFile, romCore, romId, wallet);
+      sessionsByKey.set(sessionId, session);
+      ws.send(JSON.stringify({
+        type:      "session_ready",
+        sessionId: sessionId,
+        whepUrl:   `whep://ARCADE3_SERVER_HOST/stream/${sessionId}`
+      }));
+    } catch (e) {
+      console.error(`[ws/input] session failed: ${e.message}`);
+      ws.send(JSON.stringify({ type: "error", message: "Failed to start: " + e.message }));
+      ws.close();
+      return;
+    }
+
+    ws.on("message", async (data) => {
+      const session = sessionsByKey.get(sessionId);
+      if (!session) return;
+      try {
+        const msg = JSON.parse(data);
+        const key = KEY_MAP[msg.key];
+        if (!key) return;
+        if (msg.type === "keyDown") await session.page.keyboard.down(key);
+        else if (msg.type === "keyUp") await session.page.keyboard.up(key);
+      } catch (e) { /* ignore */ }
+    });
+
+    ws.on("close", () => {
+      console.log(`[ws/input] disconnected: ${sessionId}`);
+      const session = sessionsByKey.get(sessionId);
+      if (session) { session.destroy(); sessionsByKey.delete(sessionId); }
+      wsBySession.delete(ws);
+    });
+
+    ws.on("error", (e) => console.error(`[ws/input] error: ${e.message}`));
     return;
   }
 
-  ws.on("message", async (data) => {
-    const session = sessionsByKey.get(sessionId);
-    if (!session) return;
-    try {
-      const msg = JSON.parse(data);
-      const key = KEY_MAP[msg.key];
-      if (!key) return;
-      if (msg.type === "keyDown") await session.page.keyboard.down(key);
-      else if (msg.type === "keyUp")  await session.page.keyboard.up(key);
-    } catch (e) { /* ignore */ }
-  });
-
-  ws.on("close", () => {
-    console.log(`[ws] disconnected: ${sessionId}`);
-    const session = sessionsByKey.get(sessionId);
-    if (session) { session.destroy(); sessionsByKey.delete(sessionId); }
-    wsBySession.delete(ws);
-  });
-
-  ws.on("error", (e) => {
-    console.error(`[ws] error: ${e.message}`);
-  });
+  // ── MML DOC CONNECTION — no ?session= param ───────────────────────────────
+  console.log(`[ws/mml] client connected from ${req.socket.remoteAddress}`);
+  const doc = loadMMLDoc();
+  ws.send(JSON.stringify({ type: "document", content: doc }));
+  ws.on("close", () => console.log("[ws/mml] client disconnected"));
+  ws.on("error", (e) => console.warn(`[ws/mml] error: ${e.message}`));
 });
 
 // ─── CREATE PUPPETEER + FFMPEG + WEBRTC SESSION ───────────────────────────────
