@@ -17,10 +17,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     # PulseAudio for virtual audio sink
     pulseaudio \
     pulseaudio-utils \
+    # dbus needed by PulseAudio system mode
+    dbus \
     # wrtc native build deps
     libatomic1 \
     # cleanup
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    # Create PulseAudio system socket dir
+    && mkdir -p /var/run/pulse
 
 # ── PulseAudio config ──────────────────────────────────────────────────────────
 # Create a virtual audio sink so ffmpeg can capture game audio
