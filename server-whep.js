@@ -241,6 +241,9 @@ async function createSession(sessionId, ws, romFile, romCore, romId, wallet) {
       "--autoplay-policy=no-user-gesture-required",
       "--enable-features=SharedArrayBuffer",
       `--display=${DISPLAY}`,
+      "--kiosk",                                    // no toolbar — full game canvas only
+      `--window-size=${VIEWPORT_W},${VIEWPORT_H}`, // exact size
+      "--window-position=0,0",                      // top-left of virtual display
     ]
   });
 
@@ -308,14 +311,13 @@ async function createSession(sessionId, ws, romFile, romCore, romId, wallet) {
   // using its bundled libvpx/openh264 with congestion control baked in.
 
   const ffmpegVideo = spawn("ffmpeg", [
-    "-f",    "x11grab",
-    "-r",    String(TARGET_FPS),
-    "-s",    `${VIEWPORT_W}x${VIEWPORT_H}`,
-    "-i",    `${DISPLAY}.0+0,0`,        // capture top-left corner where Chromium sits
-    "-vf",   `crop=${VIEWPORT_W}:${VIEWPORT_H}:0:0`,
+    "-f",       "x11grab",
+    "-r",       String(TARGET_FPS),
+    "-s",       `${VIEWPORT_W}x${VIEWPORT_H}`,
+    "-i",       `${DISPLAY}.0+0,0`,
     "-pix_fmt", "yuv420p",
-    "-c:v",  "rawvideo",                 // raw frames — wrtc encodes for us
-    "-f",    "rawvideo",
+    "-c:v",     "rawvideo",
+    "-f",       "rawvideo",
     "pipe:1"
   ], { stdio: ["ignore", "pipe", "pipe"] });
 
@@ -352,22 +354,28 @@ async function createSession(sessionId, ws, romFile, romCore, romId, wallet) {
 
   // ── 6. Start ffmpeg audio capture ─────────────────────────────────────────
   //
-  // Captures PulseAudio virtual_speaker.monitor at 48kHz stereo.
-  // Outputs raw PCM s16le which RTCAudioSource expects.
+  // Captures PulseAudio virtual_speaker.monitor at 48kHz mono.
+  // In system mode (root), PulseAudio uses a different socket path.
+  // We pass PULSE_SERVER explicitly so ffmpeg finds it.
 
   const AUDIO_SAMPLE_RATE   = 48000;
-  const AUDIO_CHANNELS      = 1;       // mono is fine for SNES
-  const AUDIO_SAMPLES_FRAME = 480;     // 10ms @ 48kHz = one WebRTC audio frame
-  const AUDIO_FRAME_BYTES   = AUDIO_SAMPLES_FRAME * AUDIO_CHANNELS * 2; // s16 = 2 bytes
+  const AUDIO_CHANNELS      = 1;
+  const AUDIO_SAMPLES_FRAME = 480;
+  const AUDIO_FRAME_BYTES   = AUDIO_SAMPLES_FRAME * AUDIO_CHANNELS * 2;
 
   const ffmpegAudio = spawn("ffmpeg", [
-    "-f",         "pulse",
-    "-i",         "virtual_speaker.monitor",
-    "-ar",        String(AUDIO_SAMPLE_RATE),
-    "-ac",        String(AUDIO_CHANNELS),
-    "-f",         "s16le",
+    "-f",    "pulse",
+    "-i",    "virtual_speaker.monitor",
+    "-ar",   String(AUDIO_SAMPLE_RATE),
+    "-ac",   String(AUDIO_CHANNELS),
+    "-f",    "s16le",
     "pipe:1"
-  ], { stdio: ["ignore", "pipe", "pipe"] });
+  ], {
+    stdio: ["ignore", "pipe", "pipe"],
+    env: Object.assign({}, process.env, {
+      PULSE_SERVER: "unix:/var/run/pulse/native"
+    })
+  });
 
   let audioBuf = Buffer.alloc(0);
 
@@ -388,6 +396,10 @@ async function createSession(sessionId, ws, romFile, romCore, romId, wallet) {
     }
   });
 
+  ffmpegAudio.stderr.on("data", (d) => {
+    const line = d.toString().trim();
+    if (line.length > 0) console.log(`[ffmpeg-audio:${sessionId}] ${line.slice(0,120)}`);
+  });
   ffmpegAudio.on("error",  (e) => console.warn(`[ffmpeg-audio:${sessionId}] ${e.message}`));
   ffmpegAudio.on("close",  (c) => console.log(`[ffmpeg-audio:${sessionId}] exited ${c}`));
 
