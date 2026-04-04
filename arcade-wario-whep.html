@@ -23,6 +23,18 @@
     y="2.69" z="0.626" rx="-18">
   </m-image>
 
+  <!-- Loading screen video — plays Mario animation while game boots -->
+  <!-- Using m-video so the animation actually plays (m-image only shows first frame) -->
+  <m-video
+    id="screen-loading"
+    src="https://raw.githubusercontent.com/jdunk4/ARCADE1/main/SCREEN/loading-screen.mp4"
+    width="1.75" height="1.25"
+    y="2.69" z="0.63" rx="-18"
+    loop="false"
+    volume="0"
+    visible="false">
+  </m-video>
+
   <!-- Live game video — WebRTC stream from server via WHEP -->
   <!-- src is set dynamically once the server signals session_ready -->
   <!-- onclick fires in the MML client (not SES) — this is what unlocks audio -->
@@ -339,6 +351,9 @@
     function launchGame() {
       sessionId = Math.random().toString(36).slice(2);
       resetAudio(); audioEnabled = true; initAudio();
+      // Show loading screen, auto-hide after 20s
+      set("screen-loading", "visible", "true");
+      setTimeout(function() { set("screen-loading", "visible", "false"); }, 20000);
       // NOTE: Connect to ROOT path (/) not /input — Railway's proxy only
       // upgrades WebSockets on the root path. We distinguish input vs MML
       // doc connections using the ?session= query param server-side.
@@ -365,6 +380,7 @@
               "ARCADE3_SERVER_HOST",
               SNES_SERVER_WS.replace("wss://","").replace("ws://","")
             );
+            set("screen-loading", "visible", "false");
             set("screen-video",   "src",     whepSrc);
             set("screen-video",   "visible", "true");
             set("screen-preview", "visible", "false");
@@ -393,6 +409,7 @@
       gameActive = false;
       if (socket) { try { socket.close(); } catch(e) {} socket = null; }
       resetAudio();
+      set("screen-loading", "visible", "false");
       set("screen-video",   "src",     "");
       set("screen-video",   "visible", "false");
       set("screen-preview", "visible", "true");
