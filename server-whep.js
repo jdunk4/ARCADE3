@@ -178,13 +178,23 @@ wss.on("connection", async (ws, req) => {
     ws.send(JSON.stringify({ type: "status", message: "Launching..." }));
 
     // ── Kill any existing sessions before starting a new one ─────────────────
-    // Prevents ghost sessions (old Puppeteer/ffmpeg) bleeding into new player
     if (sessionsByKey.size > 0) {
       console.log(`[ws/input] cleaning up ${sessionsByKey.size} existing session(s)`);
       for (const [key, oldSession] of sessionsByKey) {
         try { await oldSession.destroy(); } catch (e) {}
       }
       sessionsByKey.clear();
+    }
+    // Terminate all stale WebSocket connections immediately
+    for (const [oldWs, oldSid] of wsBySession) {
+      if (oldWs !== ws) {
+        try {
+          // Tell client to reset audio before we cut the connection
+          oldWs.send(JSON.stringify({ type: "reset" }));
+          oldWs.terminate();
+        } catch (e) {}
+        wsBySession.delete(oldWs);
+      }
     }
 
     try {
