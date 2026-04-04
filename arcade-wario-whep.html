@@ -23,16 +23,6 @@
     y="2.69" z="0.626" rx="-18">
   </m-image>
 
-  <!-- Loading screen — shown while Puppeteer+emulator boots (~20s) -->
-  <!-- Points at the server's debug.jpg which captures the virtual display live -->
-  <m-image
-    id="screen-loading"
-    src=""
-    width="1.75" height="1.25"
-    y="2.69" z="0.6265" rx="-18"
-    visible="false">
-  </m-image>
-
   <!-- Live game video — WebRTC stream from server via WHEP -->
   <!-- src is set dynamically once the server signals session_ready -->
   <!-- onclick fires in the MML client (not SES) — this is what unlocks audio -->
@@ -362,32 +352,21 @@
         + "&wallet="  + encodeURIComponent(WALLET);
 
       socket = new WebSocket(wsUrl);
-      // Poll the server's live screenshot while game boots — shows Mario loading animation
-      var loadingPoll = setInterval(function() {
-        set("screen-loading", "src", SNES_SERVER_WS.replace("wss://","https://").replace("ws://","http://") + "/debug.jpg?t=" + Date.now());
-      }, 1000);
 
       socket.onopen = function() {
-        set("screen-preview", "visible", "false");
-        set("screen-loading", "src",     SNES_SERVER_WS.replace("wss://","https://").replace("ws://","http://") + "/debug.jpg?t=" + Date.now());
-        set("screen-loading", "visible", "true");
-        set("status-label",   "content", "Loading...");
-        set("play-btn",       "prompt",  "Loading...");
+        set("status-label", "content", "Loading...");
+        set("play-btn",     "prompt",  "Loading...");
       };
 
       socket.onmessage = function(msg) {
         try {
           var frame = JSON.parse(msg.data);
 
-          // ── Session ready → point <m-video> at WHEP stream ──
           if (frame.type === "session_ready" && frame.whepUrl) {
-            clearInterval(loadingPoll);
             var whepSrc = frame.whepUrl.replace(
               "ARCADE3_SERVER_HOST",
               SNES_SERVER_WS.replace("wss://","").replace("ws://","")
             );
-            set("screen-loading", "visible", "false");
-            set("screen-loading", "src",     "");
             set("screen-video",   "src",     whepSrc);
             set("screen-video",   "visible", "true");
             set("screen-preview", "visible", "false");
@@ -399,19 +378,14 @@
 
           if (frame.type === "audio" && frame.data) { playAudioChunk(frame.data); return; }
           if (frame.type === "status")  { set("status-label","content", frame.message); return; }
-          if (frame.type === "error")   { clearInterval(loadingPoll); set("status-label","content", "Error: " + frame.message); return; }
+          if (frame.type === "error")   { set("status-label","content", "Error: " + frame.message); return; }
           if (frame.type === "completion") { logCompletion(); return; }
 
         } catch(e) {}
       };
 
-      socket.onclose = function() {
-        clearInterval(loadingPoll);
-        closeGame();
-      };
-
+      socket.onclose = function() { closeGame(); };
       socket.onerror = function() {
-        clearInterval(loadingPoll);
         set("status-label","content","Connection failed");
         socket.close();
       };
@@ -423,8 +397,6 @@
       resetAudio();
       set("screen-video",   "src",     "");
       set("screen-video",   "visible", "false");
-      set("screen-loading", "src",     "");
-      set("screen-loading", "visible", "false");
       set("screen-preview", "visible", "true");
       set("status-label",   "content", "");
       set("play-btn",       "prompt",  "Press E to Play " + ROM_TITLE);
