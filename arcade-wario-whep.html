@@ -353,7 +353,7 @@
       resetAudio(); audioEnabled = true; initAudio();
       // Show loading screen, auto-hide after 20s
       set("screen-loading", "visible", "true");
-      setTimeout(function() { set("screen-loading", "visible", "false"); }, 20000);
+      setTimeout(function() { set("screen-loading", "visible", "false"); }, 15000);
       // NOTE: Connect to ROOT path (/) not /input — Railway's proxy only
       // upgrades WebSockets on the root path. We distinguish input vs MML
       // doc connections using the ?session= query param server-side.
