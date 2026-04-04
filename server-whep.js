@@ -197,15 +197,10 @@ wss.on("connection", async (ws, req) => {
       if (!session) return;
       try {
         const msg = JSON.parse(data);
-        // Any keyDown from the player = they're actively playing → restart audio fresh
-        if (msg.type === "keyDown") {
-          session.restartAudioIfNeeded();
-          const key = KEY_MAP[msg.key];
-          if (key) await session.page.keyboard.down(key);
-        } else if (msg.type === "keyUp") {
-          const key = KEY_MAP[msg.key];
-          if (key) await session.page.keyboard.up(key);
-        }
+        const key = KEY_MAP[msg.key];
+        if (!key) return;
+        if (msg.type === "keyDown") await session.page.keyboard.down(key);
+        else if (msg.type === "keyUp") await session.page.keyboard.up(key);
       } catch (e) { /* ignore */ }
     });
 
@@ -364,47 +359,33 @@ async function createSession(sessionId, ws, romFile, romCore, romId, wallet) {
   ffmpegVideo.on("error",  (e) => console.error(`[ffmpeg-video:${sessionId}] ${e.message}`));
   ffmpegVideo.on("close",  (c) => console.log(`[ffmpeg-video:${sessionId}] exited ${c}`));
 
-  // ── 6. Start ffmpeg audio — Opus over WebSocket (ARCADE2 proven pattern) ──
-  // Encodes PulseAudio to Opus in a WebM container and sends chunks over
-  // the input WebSocket. The cabinet uses new Audio() + MediaSource to play
-  // it — completely bypassing Three.js AudioContext restrictions.
-  let audioLive = false;
-  let audioRestarted = false; // only restart once per session
+  // ── 6. Start ffmpeg audio — spawned AFTER game loads (ARCADE2 exact pattern) ──
+  // ffmpeg starts here, AFTER canvas found + Play clicked + game running.
+  // This means zero stale audio — whatever plays from this moment is live.
+  // Sending starts immediately with no gating flags needed.
+  console.log(`[session:${sessionId}] starting ffmpeg audio`);
+  const ffmpegAudio = spawn("ffmpeg", [
+    "-f",                  "pulse",
+    "-i",                  "virtual_speaker.monitor",
+    "-c:a",                "libopus",
+    "-b:a",                "64k",
+    "-vn",
+    "-f",                  "webm",
+    "-cluster_size_limit", "2M",
+    "-cluster_time_limit", "100",
+    "pipe:1"
+  ], { stdio: ["ignore", "pipe", "pipe"] });
 
-  const spawnAudio = () => {
-    const proc = spawn("ffmpeg", [
-      "-f",                  "pulse",
-      "-i",                  "virtual_speaker.monitor",
-      "-c:a",                "libopus",
-      "-b:a",                "64k",
-      "-vn",
-      "-f",                  "webm",
-      "-cluster_size_limit", "2M",
-      "-cluster_time_limit", "100",
-      "pipe:1"
-    ], { stdio: ["ignore", "pipe", "pipe"] });
-
-    proc.stdout.on("data", (chunk) => {
-      if (!audioLive) return;
-      if (ws.readyState !== 1) return;
-      try {
-        ws.send(JSON.stringify({ type: "audio", data: chunk.toString("base64") }));
-      } catch (e) {}
-    });
-    proc.stderr.on("data", (d) => {
-      const line = d.toString().trim();
-      if (line.length > 0) console.log(`[ffmpeg-audio:${sessionId}] ${line.slice(0,120)}`);
-    });
-    proc.on("error",  (e) => console.warn(`[ffmpeg-audio:${sessionId}] ${e.message}`));
-    proc.on("close",  (c) => console.log(`[ffmpeg-audio:${sessionId}] exited ${c}`));
-    return proc;
-  };
-
-  let ffmpegAudio = spawnAudio();
-
+  ffmpegAudio.stdout.on("data", (chunk) => {
+    if (ws.readyState !== 1) return;
+    try {
+      ws.send(JSON.stringify({ type: "audio", data: chunk.toString("base64") }));
+    } catch (e) {}
+  });
   ffmpegAudio.stderr.on("data", (d) => {
     const line = d.toString().trim();
-    if (line.length > 0) console.log(`[ffmpeg-audio:${sessionId}] ${line.slice(0,120)}`);
+    if (line.includes("Stream") || line.includes("Error") || line.includes("error"))
+      console.log(`[ffmpeg-audio:${sessionId}] ${line.slice(0,120)}`);
   });
   ffmpegAudio.on("error",  (e) => console.warn(`[ffmpeg-audio:${sessionId}] ${e.message}`));
   ffmpegAudio.on("close",  (c) => console.log(`[ffmpeg-audio:${sessionId}] exited ${c}`));
@@ -445,23 +426,7 @@ async function createSession(sessionId, ws, romFile, romCore, romId, wallet) {
   ws.send(JSON.stringify({ type: "status", message: "" }));
   console.log(`[session:${sessionId}] live — waiting for WHEP offer`);
 
-  return {
-    page,
-    browser,
-    handleWhepOffer,
-    closePeerConnection,
-    startAudio: () => { audioLive = true; },
-    // First keyDown from player: kill stale ffmpeg, spawn fresh → audio in sync
-    restartAudioIfNeeded: () => {
-      if (audioRestarted) return;
-      audioRestarted = true;
-      console.log(`[session:${sessionId}] restarting audio for sync`);
-      try { ffmpegAudio.kill("SIGKILL"); } catch (e) {}
-      ffmpegAudio = spawnAudio();
-      setTimeout(() => { audioLive = true; }, 300);
-    },
-    destroy
-  };
+  return { page, browser, handleWhepOffer, closePeerConnection, destroy };
 }
 
 // ─── START ────────────────────────────────────────────────────────────────────
