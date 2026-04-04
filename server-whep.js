@@ -180,6 +180,7 @@ wss.on("connection", async (ws, req) => {
     try {
       const session = await createSession(sessionId, ws, romFile, romCore, romId, wallet);
       sessionsByKey.set(sessionId, session);
+      session.startAudio(); // begin sending audio chunks NOW — game is live
       ws.send(JSON.stringify({
         type:      "session_ready",
         sessionId: sessionId,
@@ -364,6 +365,10 @@ async function createSession(sessionId, ws, romFile, romCore, romId, wallet) {
   // Encodes PulseAudio to Opus in a WebM container and sends chunks over
   // the input WebSocket. The cabinet uses new Audio() + MediaSource to play
   // it — completely bypassing Three.js AudioContext restrictions.
+  // IMPORTANT: audioLive starts false — we only send chunks AFTER session_ready
+  // is sent to the client so there's zero buffered audio delay.
+
+  let audioLive = false; // set true only after session_ready is sent
 
   const ffmpegAudio = spawn("ffmpeg", [
     "-f",                  "pulse",
@@ -378,6 +383,7 @@ async function createSession(sessionId, ws, romFile, romCore, romId, wallet) {
   ], { stdio: ["ignore", "pipe", "pipe"] });
 
   ffmpegAudio.stdout.on("data", (chunk) => {
+    if (!audioLive) return; // drop chunks during loading screen
     if (ws.readyState !== 1) return;
     try {
       ws.send(JSON.stringify({ type: "audio", data: chunk.toString("base64") }));
@@ -427,7 +433,14 @@ async function createSession(sessionId, ws, romFile, romCore, romId, wallet) {
   ws.send(JSON.stringify({ type: "status", message: "" }));
   console.log(`[session:${sessionId}] live — waiting for WHEP offer`);
 
-  return { page, browser, handleWhepOffer, closePeerConnection, destroy };
+  return {
+    page,
+    browser,
+    handleWhepOffer,
+    closePeerConnection,
+    startAudio: () => { audioLive = true; },
+    destroy
+  };
 }
 
 // ─── START ────────────────────────────────────────────────────────────────────
