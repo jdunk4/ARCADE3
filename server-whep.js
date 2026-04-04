@@ -53,7 +53,7 @@ const LOADING_URL   = process.env.LOADING_URL || "https://jdunk4.github.io/ARCAD
 const DISPLAY       = process.env.DISPLAY || ":99";
 const VIEWPORT_W    = 512;
 const VIEWPORT_H    = 448;
-const TARGET_FPS    = 30;
+const TARGET_FPS    = 24;   // 24fps: smoother latency than 30, barely perceptible quality drop
 const LOADING_SCREEN_MS = 12000;
 const MML_DOC_FILE  = "arcade-wario-whep.html";
 
@@ -355,13 +355,15 @@ async function createSession(sessionId, ws, romFile, romCore, romId, wallet) {
   // using its bundled libvpx/openh264 with congestion control baked in.
 
   const ffmpegVideo = spawn("ffmpeg", [
-    "-f",       "x11grab",
-    "-r",       String(TARGET_FPS),
-    "-s",       `${VIEWPORT_W}x${VIEWPORT_H}`,
-    "-i",       `${DISPLAY}.0+0,0`,
-    "-pix_fmt", "yuv420p",
-    "-c:v",     "rawvideo",
-    "-f",       "rawvideo",
+    "-fflags",        "nobuffer",          // disable read buffer — reduces latency
+    "-flags",         "low_delay",         // low delay mode
+    "-f",             "x11grab",
+    "-r",             String(TARGET_FPS),
+    "-s",             `${VIEWPORT_W}x${VIEWPORT_H}`,
+    "-i",             `${DISPLAY}.0+0,0`,
+    "-pix_fmt",       "yuv420p",
+    "-c:v",           "rawvideo",
+    "-f",             "rawvideo",
     "pipe:1"
   ], { stdio: ["ignore", "pipe", "pipe"] });
 
@@ -411,7 +413,7 @@ async function createSession(sessionId, ws, romFile, romCore, romId, wallet) {
       "-vn",
       "-f",                  "webm",
       "-cluster_size_limit", "2M",
-      "-cluster_time_limit", "100",
+      "-cluster_time_limit", "50",
       "pipe:1"
     ], { stdio: ["ignore", "pipe", "pipe"] });
 
