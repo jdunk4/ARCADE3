@@ -208,8 +208,6 @@
     function resumeAudio() {
       if (!audioEnabled) return;
       if (!audioInitialized) initAudio();
-      // DROP stale buffered audio so we start from live, not 20s ago
-      audioChunkQueue = [];
       if (audioEl && audioEl.paused) audioEl.play().catch(function() {});
     }
 
