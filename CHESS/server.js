@@ -41,17 +41,48 @@ const {
 } = require('./chess-document');
 
 // -----------------------------------------------------------------------------
-// PIECE MODELS
+// PIECE MODELS (optional GLB override)
 // -----------------------------------------------------------------------------
-// Replace these URLs with your hosted chess-piece GLBs.
-// Keys must be exactly: wK wQ wR wB wN wP bK bQ bR bB bN bP
-// You said you'd source them - edit this block and restart the server.
+// By default, pieces are built from MML primitives (m-cylinder, m-sphere,
+// m-cube) and need no external files. They render correctly in Otherside today
+// with zero dependencies.
+//
+// To swap in real 3D chess pieces: drop GLB files into the `assets/` folder
+// (at the project root) and flip USE_GLB_PIECES to true. The filenames below
+// are what this project expects — see assets/README.md for download links.
+//
+// The MML plugin in Unreal needs ABSOLUTE URLs for <m-model src>, so we build
+// them at runtime from PUBLIC_HOST. On Render, that's your-service.onrender.com.
+//
+// Set this via environment variable before the server starts, e.g.
+//   PUBLIC_HOST=chess-mml.onrender.com npm start
+// Or set it in the Render dashboard under Environment Variables.
 // -----------------------------------------------------------------------------
-const PIECE_MODELS = {
+const USE_GLB_PIECES = process.env.USE_GLB_PIECES === 'true';
+const PUBLIC_HOST = process.env.PUBLIC_HOST || `localhost:${process.env.PORT || 8080}`;
+const ASSET_PROTO = process.env.PUBLIC_HOST ? 'https' : 'http';
+const ASSET_BASE = `${ASSET_PROTO}://${PUBLIC_HOST}/assets`;
+
+const PIECE_MODELS = USE_GLB_PIECES ? {
+  // White pieces (same GLB, colored/tinted via Unreal materials if needed)
+  wK: `${ASSET_BASE}/king.glb`,
+  wQ: `${ASSET_BASE}/queen.glb`,
+  wR: `${ASSET_BASE}/rook.glb`,
+  wB: `${ASSET_BASE}/bishop.glb`,
+  wN: `${ASSET_BASE}/knight.glb`,
+  wP: `${ASSET_BASE}/pawn.glb`,
+  // Black pieces - same models. If you want distinct black GLBs, rename the
+  // files below to king-black.glb etc. and place them in assets/.
+  bK: `${ASSET_BASE}/king.glb`,
+  bQ: `${ASSET_BASE}/queen.glb`,
+  bR: `${ASSET_BASE}/rook.glb`,
+  bB: `${ASSET_BASE}/bishop.glb`,
+  bN: `${ASSET_BASE}/knight.glb`,
+  bP: `${ASSET_BASE}/pawn.glb`,
+} : {
   ...DEFAULT_PIECE_MODELS,
-  // e.g.:
-  // wP: 'https://your-cdn.example.com/chess/white-pawn.glb',
-  // bK: 'https://your-cdn.example.com/chess/black-king.glb',
+  // Leave empty or add per-piece GLB URLs here to override individual pieces
+  // while keeping primitives for the rest.
 };
 
 // -----------------------------------------------------------------------------
@@ -207,6 +238,10 @@ function broadcastPlayState() {
 // -----------------------------------------------------------------------------
 const app = express();
 app.use(express.static(path.join(__dirname, 'public')));
+
+// Serve chess-piece GLB files (and any other assets you drop here) at /assets/*.
+// The folder lives at the project root so it's easy to find and commit to git.
+app.use('/assets', express.static(path.join(__dirname, '..', 'assets')));
 
 app.get('/', (req, res) => {
   res.redirect('/play');
