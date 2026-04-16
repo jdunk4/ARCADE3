@@ -43,6 +43,18 @@ Render has a persistent free tier. Caveat: **the free instance spins down after 
 
 7. Paste the `wss://` URL into your Otherside MML Object (see README.md → Otherside integration).
 
+### Optional: enable real GLB chess pieces
+
+By default, pieces render as MML primitives (cylinders + spheres). To use the Poly Pizza CC-BY chess GLB set instead:
+
+1. Follow the download steps in `assets/README.md` and commit the 6 GLB files to your repo.
+2. In Render → **Settings** → **Environment** → **Add Environment Variable**:
+   - `USE_GLB_PIECES` = `true`
+   - `PUBLIC_HOST` = `<your-service>.onrender.com` (no `https://`, no trailing slash)
+3. Save. Render auto-redeploys. The MML will now reference `https://<your-service>.onrender.com/assets/king.glb` etc.
+
+If you skip this, pieces still render fine as primitives.
+
 ### Pushing updates
 
 Every `git push` to `main` redeploys automatically. Watch the **Logs** tab on Render while it builds.
@@ -125,5 +137,5 @@ Old forum posts mention this. It was a bug in 2022, fixed since. If you see it, 
 **Otherside can't load the MML.**
 Must be `wss://` (not `ws://`), must be publicly accessible (both Render and Railway URLs are), and the path must be exactly `/mml`.
 
-**Pieces render as ducks.**
-You haven't replaced the placeholder URLs in `src/server.js → PIECE_MODELS` yet. See README.md.
+**Pieces don't appear in 3D.**
+They should render by default as primitive chess shapes (cylinders + spheres). If they're missing entirely, confirm the MML URL is correct (`wss://...`, path `/mml`, server logs show the connection).
