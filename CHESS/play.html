@@ -9,6 +9,14 @@
   <link rel="stylesheet" href="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.css" />
 
   <style>
+    /* ==========================================================
+       CSS variables below are the single source of truth for all
+       colors. The theme switcher (bottom of this <script> block)
+       rewrites these via document.documentElement.style.setProperty
+       so ONE click re-themes the entire app: chrome, board, pieces.
+       Default values here match the "Toxic" (neon green) theme for
+       backward-compatibility with the original design.
+       ========================================================== */
     :root {
       --bg:            #0a0d0a;
       --panel:         #121611;
@@ -18,6 +26,12 @@
       --accent-dim:    #1e8e0c;
       --line:          #1f2a1c;
       --danger:        #ff3366;
+      --sq-light:      #e7ecdc;
+      --sq-dark:       #384232;
+      --scanline-tint: rgba(57,255,20,0.02);
+      --glow-tint:     rgba(57,255,20,0.08);
+      --accent-glow:   rgba(57,255,20,0.45);  /* for header text-shadow */
+      --accent-hover:  rgba(57,255,20,0.5);   /* for button hover glow */
     }
 
     * { box-sizing: border-box; }
@@ -29,10 +43,10 @@
       color: var(--ink);
       font-family: "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace;
       min-height: 100vh;
-      /* subtle scanline texture */
+      /* subtle scanline texture - tint comes from theme */
       background-image:
-        repeating-linear-gradient(0deg, rgba(57,255,20,0.02) 0 1px, transparent 1px 3px),
-        radial-gradient(1200px 600px at 50% -10%, rgba(57,255,20,0.08), transparent 60%);
+        repeating-linear-gradient(0deg, var(--scanline-tint) 0 1px, transparent 1px 3px),
+        radial-gradient(1200px 600px at 50% -10%, var(--glow-tint), transparent 60%);
     }
 
     .app {
@@ -65,7 +79,7 @@
     }
     h1 .accent {
       color: var(--accent);
-      text-shadow: 0 0 12px rgba(57,255,20,0.45);
+      text-shadow: 0 0 12px var(--accent-glow);
     }
     .conn {
       display: inline-flex;
@@ -104,9 +118,9 @@
       margin: 0 auto;
     }
 
-    /* Override chessboard.js square colors to match our neon/terminal vibe */
-    .white-1e1d7 { background: #e7ecdc !important; }
-    .black-3c85d { background: #384232 !important; }
+    /* Board square colors now driven by theme CSS variables */
+    .white-1e1d7 { background: var(--sq-light) !important; }
+    .black-3c85d { background: var(--sq-dark) !important; }
     .highlight-last {
       box-shadow: inset 0 0 0 3px var(--accent) !important;
     }
@@ -162,7 +176,7 @@
     button.reset:hover {
       background: var(--accent);
       color: var(--bg);
-      box-shadow: 0 0 18px rgba(57,255,20,0.5);
+      box-shadow: 0 0 18px var(--accent-hover);
     }
 
     .moves {
@@ -174,6 +188,48 @@
       font-family: "Space Mono", monospace;
     }
     .moves .ply { color: var(--muted); margin-right: 6px; }
+
+    /* THEME SWITCHER - 6 small colored squares in a row, matching the
+       back-of-clock switch panel from the MML 3D version. Each switch
+       is colored with its theme's signature hue. Active = brighter +
+       ring outline. Inactive = dimmed. Click any to jump to that theme. */
+    .theme-switches {
+      display: grid;
+      grid-template-columns: repeat(6, 1fr);
+      gap: 8px;
+    }
+    .theme-sw {
+      aspect-ratio: 1;
+      border-radius: 3px;
+      border: 1px solid var(--line);
+      cursor: pointer;
+      position: relative;
+      transition: all 0.15s ease;
+      filter: saturate(0.55) brightness(0.7);
+    }
+    .theme-sw:hover {
+      filter: saturate(0.85) brightness(0.95);
+      transform: translateY(-1px);
+    }
+    .theme-sw.active {
+      filter: saturate(1) brightness(1);
+      border-color: var(--ink);
+      box-shadow: 0 0 10px var(--accent-glow), inset 0 0 0 1px rgba(255,255,255,0.3);
+      transform: translateY(-2px);
+    }
+    .theme-sw .label {
+      position: absolute;
+      bottom: -18px;
+      left: 50%;
+      transform: translateX(-50%);
+      font-size: 9px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--muted);
+      white-space: nowrap;
+      pointer-events: none;
+    }
+    .theme-sw.active .label { color: var(--ink); }
 
     footer {
       grid-column: 1 / -1;
@@ -203,6 +259,14 @@
     </div>
 
     <aside class="sidebar">
+      <div class="card">
+        <h2>Theme</h2>
+        <div class="theme-switches" id="theme-switches">
+          <!-- Populated by JS: 6 switches matching the MML back-of-clock panel -->
+        </div>
+        <div style="height: 22px;"></div>
+      </div>
+
       <div class="card">
         <h2>Status</h2>
         <div id="status" class="status">--</div>
@@ -281,7 +345,91 @@
       board.position(localChess.fen());
     }
 
-    const PIECE_SVGS = {
+    // ============================================================
+    // THEME SYSTEM
+    // 6 themes matching the MML 3D version's back-of-clock switch panel.
+    // Each theme defines: chrome colors (bg/panel/ink/accent/etc.),
+    // board square colors (sqLight/sqDark), and piece colors (white/black).
+    // Piece SVGs are recolored on-the-fly by string-replacing the fill
+    // colors inside the data-URIs (original uses %23fff and %23000 = #fff/#000).
+    // 'sig' = signature color for the switch swatch (unique per theme so
+    // the row reads as a clear rainbow of theme identifiers).
+    // ============================================================
+    const THEMES = {
+      classic: {
+        label: 'Classic',
+        sig: '#8b6f47',
+        bg: '#1a130a', panel: '#261a0e', ink: '#f0e0c0', muted: '#9a8868',
+        accent: '#ffd633', accentDim: '#8a7010',
+        line: '#3a2a18', danger: '#ff3366',
+        sqLight: '#8b6f47', sqDark: '#3d2817',
+        white: '#f5e8c8', black: '#1a0f08',
+        scanline: 'rgba(255,214,51,0.02)', glow: 'rgba(255,214,51,0.08)',
+        accentGlow: 'rgba(255,214,51,0.45)', accentHover: 'rgba(255,214,51,0.5)',
+      },
+      inferno: {
+        label: 'Inferno',
+        sig: '#ff6600',
+        bg: '#150806', panel: '#20100a', ink: '#ffd0b8', muted: '#a07060',
+        accent: '#ffee00', accentDim: '#8a8000',
+        line: '#3a1a12', danger: '#ff3366',
+        sqLight: '#3d2020', sqDark: '#1a0808',
+        white: '#ff6600', black: '#dc143c',
+        scanline: 'rgba(255,102,0,0.025)', glow: 'rgba(255,102,0,0.10)',
+        accentGlow: 'rgba(255,238,0,0.45)', accentHover: 'rgba(255,238,0,0.5)',
+      },
+      hazard: {
+        label: 'Hazard',
+        sig: '#ffdd00',
+        bg: '#0a0a0a', panel: '#141414', ink: '#ffffff', muted: '#808080',
+        accent: '#ff3030', accentDim: '#8a1a1a',
+        line: '#2a2a2a', danger: '#ff3030',
+        sqLight: '#3a3a3a', sqDark: '#161616',
+        white: '#ffdd00', black: '#ffffff',
+        scanline: 'rgba(255,221,0,0.02)', glow: 'rgba(255,221,0,0.08)',
+        accentGlow: 'rgba(255,48,48,0.45)', accentHover: 'rgba(255,48,48,0.5)',
+      },
+      toxic: {
+        label: 'Toxic',
+        sig: '#39ff14',
+        bg: '#0a0d0a', panel: '#121611', ink: '#e8f5d8', muted: '#7d8f70',
+        accent: '#39ff14', accentDim: '#1e8e0c',
+        line: '#1f2a1c', danger: '#ff3366',
+        sqLight: '#4a4a4a', sqDark: '#1a1a1a',
+        white: '#39ff14', black: '#f0e6c8',
+        scanline: 'rgba(57,255,20,0.02)', glow: 'rgba(57,255,20,0.08)',
+        accentGlow: 'rgba(57,255,20,0.45)', accentHover: 'rgba(57,255,20,0.5)',
+      },
+      arctic: {
+        label: 'Arctic',
+        sig: '#1e3ecc',
+        bg: '#050d14', panel: '#0a1a24', ink: '#d0e8f5', muted: '#6080a0',
+        accent: '#ff9500', accentDim: '#8a5010',
+        line: '#1a3040', danger: '#ff3366',
+        sqLight: '#1e4a5c', sqDark: '#0a1f2a',
+        white: '#ffffff', black: '#1e3ecc',
+        scanline: 'rgba(30,62,204,0.025)', glow: 'rgba(30,62,204,0.10)',
+        accentGlow: 'rgba(255,149,0,0.45)', accentHover: 'rgba(255,149,0,0.5)',
+      },
+      neon: {
+        label: 'Neon',
+        sig: '#ff00aa',
+        bg: '#0a0014', panel: '#14021e', ink: '#f0c8ff', muted: '#8060a0',
+        accent: '#ffee00', accentDim: '#8a8000',
+        line: '#2a0a40', danger: '#ff3366',
+        sqLight: '#2a0040', sqDark: '#0f0020',
+        white: '#00ffff', black: '#ff00aa',
+        scanline: 'rgba(255,0,170,0.025)', glow: 'rgba(255,0,170,0.10)',
+        accentGlow: 'rgba(255,238,0,0.45)', accentHover: 'rgba(255,238,0,0.5)',
+      },
+    };
+    const THEME_KEYS = ['classic', 'inferno', 'hazard', 'toxic', 'arctic', 'neon'];
+    let currentTheme = 'toxic';  // default matches the original page aesthetic
+
+    // Original SVG data-URIs. Each one uses %23fff (#fff) and %23000 (#000)
+    // for fills + strokes. Theming rewrites these to the theme's white/black
+    // piece colors on the fly.
+    const BASE_PIECE_SVGS = {
       wK: 'data:image/svg+xml;utf8,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2045%2045%22%3E%3Cg%20fill%3D%22%23fff%22%20stroke%3D%22%23000%22%20stroke-width%3D%221.5%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%3E%3Cpath%20d%3D%22M22.5%2011.63V6M20%208h5%22%20stroke-linejoin%3D%22miter%22%2F%3E%3Cpath%20d%3D%22M22.5%2025s4.5-7.5%203-10.5c0%200-1-2.5-3-2.5s-3%202.5-3%202.5c-1.5%203%203%2010.5%203%2010.5%22%20fill%3D%22%23fff%22%2F%3E%3Cpath%20d%3D%22M12.5%2037c5.5%203.5%2014.5%203.5%2020%200v-7s9-4.5%206-10.5c-4-6.5-13.5-3.5-16%204V27v-3.5c-2.5-7.5-12-10.5-16-4-3%206%206%2010.5%206%2010.5v7z%22%2F%3E%3Cpath%20d%3D%22M12.5%2030c5.5-3%2014.5-3%2020%200m-20%203.5c5.5-3%2014.5-3%2020%200m-20%203.5c5.5-3%2014.5-3%2020%200%22%20fill%3D%22none%22%2F%3E%3C%2Fg%3E%3C%2Fsvg%3E',
       wQ: 'data:image/svg+xml;utf8,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2045%2045%22%3E%3Cg%20fill%3D%22%23fff%22%20stroke%3D%22%23000%22%20stroke-width%3D%221.5%22%20stroke-linejoin%3D%22round%22%3E%3Cpath%20d%3D%22M8%2012a2%202%200%201%201-4%200%202%202%200%201%201%204%200zM24.5%207.5a2%202%200%201%201-4%200%202%202%200%201%201%204%200zM41%2012a2%202%200%201%201-4%200%202%202%200%201%201%204%200zM16%208.5a2%202%200%201%201-4%200%202%202%200%201%201%204%200zM33%209a2%202%200%201%201-4%200%202%202%200%201%201%204%200z%22%2F%3E%3Cpath%20d%3D%22M9%2026c8.5-1.5%2021-1.5%2027%200l2-12-7%2011V11l-5.5%2013.5-3-15-3%2015-5.5-14V25L7%2014l2%2012zM9%2026c0%202%201.5%202%202.5%204%201%201.5%201%201%20.5%203.5-1.5%201-1.5%202.5-1.5%202.5-1.5%201.5.5%202.5.5%202.5%206.5%201%2016.5%201%2023%200%200%200%201.5-1%200-2.5%200%200%20.5-1.5-1-2.5-.5-2.5-.5-2%20.5-3.5%201-2%202.5-2%202.5-4-8.5-1.5-18.5-1.5-27%200z%22%20stroke-linecap%3D%22butt%22%2F%3E%3Cpath%20d%3D%22M11.5%2030c3.5-1%2018.5-1%2022%200M12%2033.5c6-1%2015-1%2021%200%22%20fill%3D%22none%22%2F%3E%3C%2Fg%3E%3C%2Fsvg%3E',
       wR: 'data:image/svg+xml;utf8,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2045%2045%22%3E%3Cg%20fill%3D%22%23fff%22%20fill-rule%3D%22evenodd%22%20stroke%3D%22%23000%22%20stroke-width%3D%221.5%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%3E%3Cpath%20d%3D%22M9%2039h27v-3H9v3zM12%2036v-4h21v4H12zM11%2014V9h4v2h5V9h5v2h5V9h4v5%22%20stroke-linecap%3D%22butt%22%2F%3E%3Cpath%20d%3D%22M34%2014l-3%203H14l-3-3%22%2F%3E%3Cpath%20d%3D%22M31%2017v12.5H14V17%22%20stroke-linecap%3D%22butt%22%20stroke-linejoin%3D%22miter%22%2F%3E%3Cpath%20d%3D%22M31%2029.5l1.5%202.5h-20l1.5-2.5%22%2F%3E%3Cpath%20d%3D%22M11%2014h23%22%20fill%3D%22none%22%20stroke-linejoin%3D%22miter%22%2F%3E%3C%2Fg%3E%3C%2Fsvg%3E',
@@ -296,17 +444,111 @@
       bP: 'data:image/svg+xml;utf8,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2045%2045%22%3E%3Cpath%20d%3D%22M22.5%209c-2.21%200-4%201.79-4%204%200%20.89.29%201.71.78%202.38C17.33%2016.5%2016%2018.59%2016%2021c0%202.03.94%203.84%202.41%205.03-3%201.06-7.41%205.55-7.41%2013.47h23c0-7.92-4.41-12.41-7.41-13.47%201.47-1.19%202.41-3%202.41-5.03%200-2.41-1.33-4.5-3.28-5.62.49-.67.78-1.49.78-2.38%200-2.21-1.79-4-4-4z%22%20fill%3D%22%23000%22%20stroke%3D%22%23000%22%20stroke-width%3D%221.5%22%20stroke-linecap%3D%22round%22%2F%3E%3C%2Fsvg%3E',
     };
 
+    // Recolor every SVG data-URI for the active theme.
+    // The Wikipedia-designed SVGs use %23fff and %23000 for their fill/stroke
+    // colors. Swapping those to the theme's white/black colors re-paints the
+    // pieces while preserving all the stroke detail and highlight work.
+    // %23 is the URL-encoded form of #, so we can rewrite the whole URI.
+    function recolorPieces(whiteHex, blackHex) {
+      // URL-encode the target colors: strip # and prepend %23
+      const wEnc = '%23' + whiteHex.replace('#', '');
+      const bEnc = '%23' + blackHex.replace('#', '');
+      // Placeholders that won't collide with either the source tokens or each
+      // other, so we can do a safe two-pass swap (naive two-step replace would
+      // clobber the first replacement).
+      const TMP_W = '%23__WHITE__';
+      const TMP_B = '%23__BLACK__';
+      const out = {};
+      for (const key in BASE_PIECE_SVGS) {
+        out[key] = BASE_PIECE_SVGS[key]
+          .split('%23fff').join(TMP_W)
+          .split('%23000').join(TMP_B)
+          .split(TMP_W).join(wEnc)
+          .split(TMP_B).join(bEnc);
+      }
+      return out;
+    }
+
+    // Holds the currently-themed piece SVGs. Rebuilt whenever the theme
+    // changes. chessboard.js calls pieceTheme() on each re-render, so we
+    // just repopulate this object and trigger a board re-render.
+    // IMPORTANT: must be initialized BEFORE the Chessboard constructor,
+    // because chessboard.js calls pieceTheme() immediately during init.
+    let THEMED_PIECE_SVGS = recolorPieces(THEMES[currentTheme].white, THEMES[currentTheme].black);
+
     const board = Chessboard('board', {
       draggable: true,
       position: 'start',
       onDragStart,
       onDrop,
       onSnapEnd,
-      // Inline SVG pieces - no CDN dependency, can't fail to load.
-      // Wikipedia design by Colin M.L. Burnett (public domain).
-      pieceTheme: function(piece) { return PIECE_SVGS[piece]; },
+      // Piece SVGs come from the themed lookup table (rebuilt on theme change).
+      pieceTheme: function(piece) { return THEMED_PIECE_SVGS[piece]; },
     });
     window.addEventListener('resize', board.resize);
+
+    // Apply a theme by name: writes CSS variables, recolors pieces, re-renders
+    // the board, and updates the switch panel's active-state visuals.
+    function applyTheme(name) {
+      const t = THEMES[name];
+      if (!t) return;
+      currentTheme = name;
+
+      // Write all theme values to CSS custom properties on :root. This
+      // re-themes the chrome (bg, panel, text, accent) AND the board squares
+      // in a single pass since the square CSS now reads var(--sq-light/dark).
+      const root = document.documentElement;
+      root.style.setProperty('--bg',            t.bg);
+      root.style.setProperty('--panel',         t.panel);
+      root.style.setProperty('--ink',           t.ink);
+      root.style.setProperty('--muted',         t.muted);
+      root.style.setProperty('--accent',        t.accent);
+      root.style.setProperty('--accent-dim',    t.accentDim);
+      root.style.setProperty('--line',          t.line);
+      root.style.setProperty('--danger',        t.danger);
+      root.style.setProperty('--sq-light',      t.sqLight);
+      root.style.setProperty('--sq-dark',       t.sqDark);
+      root.style.setProperty('--scanline-tint', t.scanline);
+      root.style.setProperty('--glow-tint',     t.glow);
+      root.style.setProperty('--accent-glow',   t.accentGlow);
+      root.style.setProperty('--accent-hover',  t.accentHover);
+
+      // Rebuild the piece SVGs with the theme's white/black fills and trigger
+      // a board re-render at the current position so the pieces repaint.
+      THEMED_PIECE_SVGS = recolorPieces(t.white, t.black);
+      const fen = localChess.fen();
+      board.position(fen, false);  // false = no animation, instant repaint
+
+      // Update switch panel: mark the clicked one active, everyone else inactive
+      document.querySelectorAll('.theme-sw').forEach(function(el) {
+        el.classList.toggle('active', el.dataset.theme === name);
+      });
+    }
+
+    // Build the theme switch row once on page load.
+    // Each switch is a colored tile with the theme's 'sig' color as its background,
+    // plus a small label underneath showing the theme name.
+    function buildThemeSwitches() {
+      const container = document.getElementById('theme-switches');
+      if (!container) return;
+      THEME_KEYS.forEach(function(key) {
+        const theme = THEMES[key];
+        const el = document.createElement('div');
+        el.className = 'theme-sw';
+        el.dataset.theme = key;
+        el.style.background = theme.sig;
+        el.title = theme.label;
+        const label = document.createElement('span');
+        label.className = 'label';
+        label.textContent = theme.label;
+        el.appendChild(label);
+        el.addEventListener('click', function() { applyTheme(key); });
+        container.appendChild(el);
+      });
+    }
+
+    buildThemeSwitches();
+    applyTheme(currentTheme);  // Initialize with the default theme
 
     function renderMoves() {
       const history = localChess.history();
