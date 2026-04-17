@@ -4,7 +4,7 @@
   "description": "Real-time chess board rendered in MML (Otherside / Unreal / Web) synced to a browser chess UI via WebSocket.",
   "main": "src/server.js",
   "scripts": {
-    "start": "node src/server.js"
+    "start": "node server.js"
   },
   "engines": {
     "node": ">=18"
