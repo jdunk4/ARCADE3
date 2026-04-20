@@ -27,6 +27,7 @@ import {
 import {
   civilians, updateCivilians, clearAllCivilians, damageCivilianAt,
 } from './civilians.js';
+import * as PauseMenu from './pauseMenu.js';
 
 // ---- ATTACH RENDERER ----
 document.getElementById('game').appendChild(renderer.domElement);
@@ -78,6 +79,10 @@ S.playerMeebitSource = saved.playerMeebitSource;
 S.walletAddress = saved.walletAddress;
 S.rescuedIds = [...(saved.rescuedIds || [])];
 
+// Tracks the last wave we switched music for, so animate() only triggers
+// a track change once per wave transition (not every frame).
+let _lastMusicWave = 0;
+
 // ---- PLAYER AVATAR LOADING (unchanged) ----
 const loadLog = document.getElementById('load-log');
 const loadBar = document.getElementById('load-bar-fill');
@@ -94,8 +99,15 @@ loadPlayer(
     setLoad(100, 'READY');
     setTimeout(() => {
       document.getElementById('loading').style.display = 'none';
-      if (typeof showIncomingCall === 'function') showIncomingCall();
-      else document.getElementById('title').classList.remove('hidden');
+      if (typeof showIncomingCall === 'function') {
+        showIncomingCall();
+        // Kick off the phone ring when the incoming-call overlay appears.
+        // Audio.init() creates the <audio> element if it wasn't already made.
+        Audio.init();
+        Audio.startPhoneRing();
+      } else {
+        document.getElementById('title').classList.remove('hidden');
+      }
     }, 300);
     if (authCallback) tryUpgradeAvatarFromAuth(authCallback);
     else {
@@ -179,7 +191,11 @@ if (usernameInput) {
 window.addEventListener('keydown', e => {
   keys[e.key.toLowerCase()] = true;
   if (e.code === 'Space') { e.preventDefault(); tryDash(); }
-  if (e.key === 'Escape' && S.running) S.paused = !S.paused;
+  if (e.key === 'Escape' && S.running) {
+    S.paused = !S.paused;
+    if (S.paused) PauseMenu.show();
+    else PauseMenu.hide();
+  }
 
   if (['1', '2', '3', '4', '5'].includes(e.key)) {
     const map = { '1': 'pistol', '2': 'shotgun', '3': 'smg', '4': 'raygun', '5': 'rocket' };
@@ -283,6 +299,10 @@ function tryDash() {
 
 // ---- GAME LIFECYCLE ----
 function startGame() {
+  // Make sure the phone ring isn't still playing if we got here via the
+  // incoming-call accept path (or any other unusual entry).
+  Audio.stopPhoneRing && Audio.stopPhoneRing();
+
   if (!S.username || S.username === 'GUEST') {
     if (usernameInput && !usernameInput.value.trim()) {
       usernameInput.focus();
@@ -322,7 +342,8 @@ function startGame() {
   setRainTint(CHAPTERS[0].full.grid1);
   Audio.init();
   Audio.resume();
-  Audio.startMusic();
+  Audio.startMusic(1);        // wave 1 → Arena I
+  _lastMusicWave = 1;         // sync tracker so animate() doesn't re-trigger
   UI.updateHUD();
   UI.updateWeaponSlots();
   startWave(1);
@@ -332,6 +353,7 @@ function gameOver() {
   S.running = false;
   S.phase = 'gameover';
   Audio.stopMusic();
+  _lastMusicWave = 0;          // reset so next run starts music fresh
   Save.onGameOver({
     score: S.score, wave: S.wave, chapter: S.chapter, rescuedIds: S.rescuedIds,
   });
@@ -346,6 +368,22 @@ function gameOver() {
 
 document.getElementById('start-btn').addEventListener('click', () => { Audio.init(); startGame(); });
 document.getElementById('restart-btn').addEventListener('click', startGame);
+
+// ---- PAUSE MENU HANDLERS ----
+// Registered once. The pause menu calls onResume when the user clicks
+// RESUME, and onQuit when they confirm QUIT RUN — we stop the music and
+// return them to the title screen.
+PauseMenu.setHandlers({
+  onResume: () => { S.paused = false; },
+  onQuit: () => {
+    S.paused = false;
+    S.running = false;
+    Audio.stopMusic();
+    document.querySelectorAll('.hidden-ui').forEach(el => el.style.display = 'none');
+    document.getElementById('gameover').classList.add('hidden');
+    document.getElementById('title').classList.remove('hidden');
+  },
+});
 
 // Re-tint rain whenever the theme changes
 const _origApplyTheme = applyTheme;
@@ -412,6 +450,12 @@ function animate() {
   const dt = Math.min(0.05, clock.getDelta());
 
   if (S.running && !S.paused) {
+    // Switch arena track when a new wave starts.
+    // Waves 1→Arena I, 2→Arena II, 3→Arena III, 4→Arena IV, then cycle.
+    if (S.waveActive && S.wave !== _lastMusicWave) {
+      _lastMusicWave = S.wave;
+      Audio.startMusic(S.wave);
+    }
     updatePlayer(dt);
     updateEnemies(dt);
     updateBullets(dt);
