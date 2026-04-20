@@ -211,4 +211,4 @@ export const MEEBIT_CONFIG = {
 // -------- GUEST AVATAR --------
 // If this file exists in /assets/, player.js uses it for non-signed users
 // instead of the built-in voxel fallback.
-export const GUEST_AVATAR_URL = 'assets/guest_meebit.glb';
+export const GUEST_AVATAR_URL = 'assets/16801_larvalabs.glb';
