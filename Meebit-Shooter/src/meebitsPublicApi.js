@@ -9,13 +9,27 @@
 //   GET https://meebits.app/meebit/{id}
 //   → { image, vrm, sprite_sheet, attributes }
 //
-// VRM is a glTF superset — we load with GLTFLoader (ignoring spring bones and
+// CORS:
+//   meebits.app does NOT send Access-Control-Allow-Origin, so direct fetches
+//   from github.io (or any non-meebits origin) get blocked by the browser.
+//   We route both the JSON metadata and the VRM binary through corsproxy.io,
+//   a free public CORS proxy. Note that this proxy can rate-limit aggressively
+//   and has no uptime guarantees -- if you see widespread fallback-to-voxel
+//   behaviour after heavy play, that's probably the reason. Long-term fix is
+//   to host your own thin proxy on the same origin as the game.
+//
+// VRM is a glTF superset -- we load with GLTFLoader (ignoring spring bones and
 // expressions, which don't matter for a shooter). If the fetch fails for any
-// reason (CORS, 404, network), we fall back to a voxel Meebit so the game
-// always renders something.
+// reason (CORS, 404, network, proxy rate-limit), we fall back to a voxel
+// Meebit so the game always renders something.
 
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+
+// Public CORS proxy. Format: https://corsproxy.io/?<url-encoded-target>
+// Swap this out for your own proxy if you host one.
+const CORS_PROXY = 'https://corsproxy.io/?';
+function proxied(url) { return CORS_PROXY + encodeURIComponent(url); }
 
 const MEEBIT_METADATA_URL = (id) => `https://meebits.app/meebit/${id}`;
 const TOTAL_MEEBITS = 20000;
@@ -78,7 +92,9 @@ export function pickRandomMeebitId(exclude = new Set()) {
 async function fetchMetadata(id) {
   if (metadataCache.has(id)) return metadataCache.get(id);
   try {
-    const res = await fetch(MEEBIT_METADATA_URL(id), { mode: 'cors' });
+    // Route through the public CORS proxy. meebits.app itself won't send
+    // Access-Control-Allow-Origin, so the raw URL would be blocked.
+    const res = await fetch(proxied(MEEBIT_METADATA_URL(id)));
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
     metadataCache.set(id, data);
@@ -132,7 +148,18 @@ async function loadVRMMesh(id) {
     if (!meta || !meta.vrm) {
       throw new Error(`No VRM URL for #${id}`);
     }
-    const gltf = await gltfLoader.loadAsync(meta.vrm);
+    // meta.vrm might be absolute (https://...) or a relative path. Resolve
+    // against the meebits.app origin so we have a full URL before proxying.
+    let vrmUrl = meta.vrm;
+    if (!/^https?:\/\//i.test(vrmUrl)) {
+      vrmUrl = new URL(vrmUrl, 'https://meebits.app').toString();
+    }
+    // GLTFLoader will also fetch any external buffer/texture refs relative
+    // to this URL -- those would hit meebits.app directly and fail CORS. The
+    // meebits VRMs ship as single self-contained .vrm blobs, so external
+    // refs shouldn't be an issue in practice, but watch for that if VRMs
+    // start coming in as multi-file glTF in the future.
+    const gltf = await gltfLoader.loadAsync(proxied(vrmUrl));
     const mesh = gltf.scene;
     // VRMs often come in facing +Z — our game's forward is also +Z so no rotation.
     // Scale to roughly match other enemy heights (~3 units tall).
@@ -198,10 +225,20 @@ export function prefetchMeebits(ids, onProgress) {
 /**
  * Get the portrait image URL (no auth needed, works for all 20K).
  * Used for UI elements like the HUD avatar panel for dead civilians.
+ *
+ * Routed through the CORS proxy so the URL is safe to use in <canvas> /
+ * CanvasRenderingContext2D.drawImage without tainting the canvas. For
+ * plain <img> display a direct URL would work too, but going through the
+ * proxy keeps behaviour consistent with the VRM loader.
  */
 export async function getMeebitPortraitUrl(id) {
   const meta = await fetchMetadata(id);
-  return meta && meta.image ? meta.image : null;
+  if (!meta || !meta.image) return null;
+  let url = meta.image;
+  if (!/^https?:\/\//i.test(url)) {
+    url = new URL(url, 'https://meebits.app').toString();
+  }
+  return proxied(url);
 }
 
 export function getCacheStats() {
