@@ -1,14 +1,65 @@
-// Procedural audio via WebAudio. No sound files.
-// Phone ring is handled separately via <audio> element in main.js.
+// Procedural SFX via WebAudio + streamed MP3 soundtrack and phone ring.
+//
+// Three independent gain buses:
+//   masterGain   ← master volume (mute affects this)
+//   sfxGain      ← all procedural sound effects (shots, hits, pickups…)
+//   musicGain    ← reserved for WebAudio music (legacy). Kept at 0.
+//
+// For the soundtrack we use HTMLAudioElements so we can stream MP3s from
+// the assets folder without decoding them into memory. Each element has
+// its own .volume, which we drive from user settings persisted in
+// localStorage.
+//
+// Tracks on disk (Meebit-Shooter/assets/):
+//   Arena I.mp3, Arena II.mp3, Arena III.mp3, Arena IV.mp3
+//   PHONE RINGS.mp3
+
+const SOUNDTRACK_FILES = [
+  'assets/Arena I.mp3',
+  'assets/Arena II.mp3',
+  'assets/Arena III.mp3',
+  'assets/Arena IV.mp3',
+];
+const PHONE_RING_FILE = 'assets/PHONE RINGS.mp3';
+
+const LS_KEY = 'meebit_audio_prefs_v1';
+
+function loadPrefs() {
+  try {
+    const raw = localStorage.getItem(LS_KEY);
+    if (!raw) return null;
+    const o = JSON.parse(raw);
+    return {
+      sfxVolume: typeof o.sfxVolume === 'number' ? o.sfxVolume : 0.7,
+      musicVolume: typeof o.musicVolume === 'number' ? o.musicVolume : 0.5,
+      muted: !!o.muted,
+    };
+  } catch (e) { return null; }
+}
+function savePrefs(prefs) {
+  try { localStorage.setItem(LS_KEY, JSON.stringify(prefs)); } catch (e) {}
+}
 
 class AudioEngine {
   constructor() {
     this.ctx = null;
-    this.muted = false;
     this.masterGain = null;
     this.sfxGain = null;
     this.musicGain = null;
+
+    // User-controlled volumes (0..1)
+    const prefs = loadPrefs() || { sfxVolume: 0.7, musicVolume: 0.5, muted: false };
+    this.sfxVolume = prefs.sfxVolume;
+    this.musicVolume = prefs.musicVolume;
+    this.muted = prefs.muted;
+
+    // Soundtrack
+    this._trackEls = [];          // HTMLAudioElement[]
+    this._currentTrackIdx = -1;   // which track is currently assigned
     this._musicOn = false;
+
+    // Phone ring
+    this._phoneRingEl = null;
   }
 
   init() {
@@ -16,18 +67,180 @@ class AudioEngine {
     try {
       this.ctx = new (window.AudioContext || window.webkitAudioContext)();
       this.masterGain = this.ctx.createGain();
-      this.masterGain.gain.value = 0.5;
+      this.masterGain.gain.value = this.muted ? 0 : 1;
       this.masterGain.connect(this.ctx.destination);
+
       this.sfxGain = this.ctx.createGain();
-      this.sfxGain.gain.value = 0.7;
+      this.sfxGain.gain.value = this.sfxVolume;
       this.sfxGain.connect(this.masterGain);
+
+      // Legacy music bus (kept for any lingering procedural music). MP3
+      // soundtrack uses HTMLAudioElement volume, not this node.
       this.musicGain = this.ctx.createGain();
-      this.musicGain.gain.value = 0.18;
+      this.musicGain.gain.value = 0;
       this.musicGain.connect(this.masterGain);
     } catch (e) { console.warn('audio unsupported', e); }
+
+    // Build HTMLAudio elements lazily (browsers are fine with this in init)
+    if (this._trackEls.length === 0) {
+      for (const src of SOUNDTRACK_FILES) {
+        const el = new Audio(src);
+        el.preload = 'auto';
+        el.loop = true;     // each track loops until we switch
+        el.volume = this._effectiveMusicVolume();
+        this._trackEls.push(el);
+      }
+    }
+    if (!this._phoneRingEl) {
+      const el = new Audio(PHONE_RING_FILE);
+      el.preload = 'auto';
+      el.loop = true;
+      // Phone ring follows SFX volume (it's a diegetic sound effect)
+      el.volume = this._effectiveSfxVolume();
+      this._phoneRingEl = el;
+    }
   }
 
   resume() { if (this.ctx && this.ctx.state === 'suspended') this.ctx.resume(); }
+
+  // ---------------------------------------------------------------
+  // VOLUME
+  // ---------------------------------------------------------------
+  _effectiveSfxVolume() { return this.muted ? 0 : this.sfxVolume; }
+  _effectiveMusicVolume() { return this.muted ? 0 : this.musicVolume; }
+
+  setSfxVolume(v) {
+    this.sfxVolume = Math.max(0, Math.min(1, v));
+    if (this.sfxGain) this.sfxGain.gain.value = this.sfxVolume;
+    if (this._phoneRingEl) this._phoneRingEl.volume = this._effectiveSfxVolume();
+    this._persist();
+  }
+  setMusicVolume(v) {
+    this.musicVolume = Math.max(0, Math.min(1, v));
+    for (const el of this._trackEls) el.volume = this._effectiveMusicVolume();
+    this._persist();
+  }
+  setMuted(m) {
+    this.muted = !!m;
+    if (this.masterGain) this.masterGain.gain.value = this.muted ? 0 : 1;
+    for (const el of this._trackEls) el.volume = this._effectiveMusicVolume();
+    if (this._phoneRingEl) this._phoneRingEl.volume = this._effectiveSfxVolume();
+    this._persist();
+  }
+  _persist() {
+    savePrefs({
+      sfxVolume: this.sfxVolume,
+      musicVolume: this.musicVolume,
+      muted: this.muted,
+    });
+  }
+
+  // ---------------------------------------------------------------
+  // SOUNDTRACK (MP3)
+  // ---------------------------------------------------------------
+
+  /**
+   * Start the soundtrack. Picks a track based on the optional wave number
+   * so each wave cycles to the next arena song (I → II → III → IV → I…).
+   * If wave is null/undefined, just starts track 0 (or resumes current).
+   */
+  startMusic(wave) {
+    if (!this.ctx) this.init();
+    if (this._trackEls.length === 0) return;
+
+    let idx;
+    if (typeof wave === 'number' && wave > 0) {
+      idx = (wave - 1) % this._trackEls.length;
+    } else {
+      idx = this._currentTrackIdx >= 0 ? this._currentTrackIdx : 0;
+    }
+
+    // If switching tracks, fade out the old one first
+    if (this._currentTrackIdx !== idx && this._currentTrackIdx >= 0) {
+      const oldEl = this._trackEls[this._currentTrackIdx];
+      this._fadeOutAndPause(oldEl);
+    }
+    this._currentTrackIdx = idx;
+    const el = this._trackEls[idx];
+    el.volume = 0;
+    try {
+      const p = el.play();
+      // Modern browsers return a Promise — swallow autoplay rejections
+      if (p && p.catch) p.catch(() => {});
+    } catch (e) {}
+    this._fadeIn(el, this._effectiveMusicVolume(), 0.8);
+    this._musicOn = true;
+  }
+
+  /** Stop the currently playing track (with a quick fade). */
+  stopMusic() {
+    this._musicOn = false;
+    if (this._currentTrackIdx < 0) return;
+    const el = this._trackEls[this._currentTrackIdx];
+    this._fadeOutAndPause(el);
+  }
+
+  /** Explicitly switch to a track by index (0..3), cycling. */
+  setTrack(idx) {
+    if (!this._trackEls.length) return;
+    const n = ((idx % this._trackEls.length) + this._trackEls.length) % this._trackEls.length;
+    this.startMusic(n + 1);
+  }
+
+  _fadeIn(el, target, durSec) {
+    const steps = 20;
+    const stepMs = (durSec * 1000) / steps;
+    let i = 0;
+    const iv = setInterval(() => {
+      i++;
+      const v = target * (i / steps);
+      try { el.volume = Math.max(0, Math.min(1, v)); } catch (e) {}
+      if (i >= steps) clearInterval(iv);
+    }, stepMs);
+  }
+  _fadeOutAndPause(el) {
+    const startVol = el.volume;
+    const steps = 16;
+    const stepMs = 30;
+    let i = 0;
+    const iv = setInterval(() => {
+      i++;
+      try { el.volume = Math.max(0, startVol * (1 - i / steps)); } catch (e) {}
+      if (i >= steps) {
+        clearInterval(iv);
+        try { el.pause(); el.currentTime = 0; } catch (e) {}
+      }
+    }, stepMs);
+  }
+
+  // ---------------------------------------------------------------
+  // PHONE RING (MP3)
+  // ---------------------------------------------------------------
+
+  /** Start the phone-ringing loop (for the incoming call screen). */
+  startPhoneRing() {
+    if (!this._phoneRingEl) this.init();
+    if (!this._phoneRingEl) return;
+    this._phoneRingEl.volume = this._effectiveSfxVolume();
+    try {
+      this._phoneRingEl.currentTime = 0;
+      const p = this._phoneRingEl.play();
+      if (p && p.catch) p.catch(() => {});
+    } catch (e) {}
+  }
+
+  /** Stop the phone ring (accepted/declined or call timed out). */
+  stopPhoneRing() {
+    if (!this._phoneRingEl) return;
+    try {
+      this._phoneRingEl.pause();
+      this._phoneRingEl.currentTime = 0;
+    } catch (e) {}
+  }
+
+  // ---------------------------------------------------------------
+  // PROCEDURAL SFX (unchanged from the original audio engine)
+  // ---------------------------------------------------------------
 
   _beep(opts) {
     if (!this.ctx || this.muted) return;
@@ -44,13 +257,30 @@ class AudioEngine {
     osc.start(t); osc.stop(t + dur + 0.05);
   }
 
+  _noise(dur, cutoff, gain) {
+    if (!this.ctx || this.muted) return;
+    const t = this.ctx.currentTime;
+    const buf = this.ctx.createBuffer(1, this.ctx.sampleRate * dur, this.ctx.sampleRate);
+    const d = buf.getChannelData(0);
+    for (let i = 0; i < d.length; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / d.length);
+    const src = this.ctx.createBufferSource();
+    const g = this.ctx.createGain();
+    const filt = this.ctx.createBiquadFilter();
+    src.buffer = buf;
+    filt.type = 'lowpass';
+    filt.frequency.value = cutoff;
+    g.gain.value = gain;
+    src.connect(filt); filt.connect(g); g.connect(this.sfxGain);
+    src.start(t);
+  }
+
   shot(weapon = 'pistol') {
     if (weapon === 'shotgun') {
       this._noise(0.15, 600, 0.25);
       this._beep({ type: 'sawtooth', freqStart: 120, freqEnd: 40, dur: 0.15, gainStart: 0.25 });
     } else if (weapon === 'smg') {
       this._beep({ type: 'square', freqStart: 1200, freqEnd: 400, dur: 0.04, gainStart: 0.1 });
-    } else if (weapon === 'sniper') {
+    } else if (weapon === 'sniper' || weapon === 'raygun') {
       this._beep({ type: 'sawtooth', freqStart: 300, freqEnd: 80, dur: 0.3, gainStart: 0.3 });
       this._noise(0.08, 2000, 0.2);
     } else if (weapon === 'pickaxe') {
@@ -95,73 +325,6 @@ class AudioEngine {
     [440, 554, 659, 880].forEach((f, i) =>
       this._beep({ type: 'triangle', freqStart: f, dur: 0.2, gainStart: 0.18, delay: i * 0.06 })
     );
-  }
-
-  _noise(dur, cutoff, gain) {
-    if (!this.ctx || this.muted) return;
-    const t = this.ctx.currentTime;
-    const buf = this.ctx.createBuffer(1, this.ctx.sampleRate * dur, this.ctx.sampleRate);
-    const d = buf.getChannelData(0);
-    for (let i = 0; i < d.length; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / d.length);
-    const src = this.ctx.createBufferSource();
-    const g = this.ctx.createGain();
-    const filt = this.ctx.createBiquadFilter();
-    src.buffer = buf;
-    filt.type = 'lowpass';
-    filt.frequency.value = cutoff;
-    g.gain.value = gain;
-    src.connect(filt); filt.connect(g); g.connect(this.sfxGain);
-    src.start(t);
-  }
-
-  startMusic() {
-    if (!this.ctx || this.muted || this._musicOn) return;
-    this._musicOn = true;
-    const bass = this.ctx.createOscillator();
-    bass.type = 'sawtooth';
-    const bassFilt = this.ctx.createBiquadFilter();
-    bassFilt.type = 'lowpass';
-    bassFilt.frequency.value = 400;
-    const bassGain = this.ctx.createGain();
-    bassGain.gain.value = 0;
-    bass.connect(bassFilt); bassFilt.connect(bassGain); bassGain.connect(this.musicGain);
-    bass.start();
-    this._bass = bass; this._bassGain = bassGain;
-
-    const pad = this.ctx.createOscillator();
-    pad.type = 'sine';
-    pad.frequency.value = 220;
-    const padGain = this.ctx.createGain();
-    padGain.gain.value = 0.08;
-    pad.connect(padGain); padGain.connect(this.musicGain);
-    pad.start();
-    this._pad = pad;
-
-    this._step = 0;
-    this._scheduler = setInterval(() => {
-      if (!this._musicOn) return;
-      const t = this.ctx.currentTime;
-      const notes = [55, 55, 82.4, 55, 55, 110, 82.4, 65.4];
-      const f = notes[this._step % notes.length];
-      bass.frequency.setValueAtTime(f, t);
-      bassGain.gain.cancelScheduledValues(t);
-      bassGain.gain.setValueAtTime(0.18, t);
-      bassGain.gain.exponentialRampToValueAtTime(0.001, t + 0.22);
-      this._step++;
-    }, 320);
-  }
-
-  stopMusic() {
-    this._musicOn = false;
-    if (this._scheduler) clearInterval(this._scheduler);
-    try { if (this._bass) this._bass.stop(); } catch(e){}
-    try { if (this._pad) this._pad.stop(); } catch(e){}
-    this._bass = null; this._pad = null;
-  }
-
-  setMuted(m) {
-    this.muted = m;
-    if (this.masterGain) this.masterGain.gain.value = m ? 0 : 0.5;
   }
 }
 
