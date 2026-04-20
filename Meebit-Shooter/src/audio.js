@@ -20,7 +20,14 @@ const SOUNDTRACK_FILES = [
   'assets/Arena III.mp3',
   'assets/Arena IV.mp3',
 ];
-const PHONE_RING_FILE = 'assets/PHONE RINGS.mp3';
+// The phone-ring asset has shipped under several names in this project.
+// We try them in order until one loads; whichever works becomes the source.
+const PHONE_RING_CANDIDATES = [
+  'assets/PHONE RINGS.mp3',
+  'assets/phone_ring.mp3',
+  'assets/Phone Ring.mp3',
+  'assets/phone-ring.mp3',
+];
 
 const LS_KEY = 'meebit_audio_prefs_v1';
 
@@ -92,13 +99,30 @@ class AudioEngine {
       }
     }
     if (!this._phoneRingEl) {
-      const el = new Audio(PHONE_RING_FILE);
-      el.preload = 'auto';
-      el.loop = true;
-      // Phone ring follows SFX volume (it's a diegetic sound effect)
-      el.volume = this._effectiveSfxVolume();
-      this._phoneRingEl = el;
+      // Try each candidate path. Whichever can load becomes our phone ring.
+      // If none load, the ring is silently disabled (game still works).
+      this._tryLoadPhoneRing(0);
     }
+  }
+
+  _tryLoadPhoneRing(idx) {
+    if (idx >= PHONE_RING_CANDIDATES.length) {
+      console.warn('[audio] no phone ring asset found at any known path');
+      return;
+    }
+    const src = PHONE_RING_CANDIDATES[idx];
+    const el = new Audio(src);
+    el.preload = 'auto';
+    el.loop = true;
+    el.volume = this._effectiveSfxVolume();
+    el.addEventListener('canplaythrough', () => {
+      // This candidate loaded; lock it in as our phone ring.
+      if (!this._phoneRingEl) this._phoneRingEl = el;
+    }, { once: true });
+    el.addEventListener('error', () => {
+      // Move to the next candidate silently
+      this._tryLoadPhoneRing(idx + 1);
+    }, { once: true });
   }
 
   resume() { if (this.ctx && this.ctx.state === 'suspended') this.ctx.resume(); }
@@ -219,8 +243,25 @@ class AudioEngine {
 
   /** Start the phone-ringing loop (for the incoming call screen). */
   startPhoneRing() {
-    if (!this._phoneRingEl) this.init();
-    if (!this._phoneRingEl) return;
+    if (!this.ctx) this.init();
+    if (!this._phoneRingEl) {
+      // Loader hasn't found a valid candidate yet — queue the start so
+      // it fires as soon as one does.
+      this._phoneRingPending = true;
+      // Poll briefly in case init() completes shortly
+      let tries = 0;
+      const iv = setInterval(() => {
+        tries++;
+        if (this._phoneRingEl) {
+          clearInterval(iv);
+          if (this._phoneRingPending) this.startPhoneRing();
+        } else if (tries > 30) {
+          clearInterval(iv);   // ~3s — give up, no asset available
+        }
+      }, 100);
+      return;
+    }
+    this._phoneRingPending = false;
     this._phoneRingEl.volume = this._effectiveSfxVolume();
     try {
       this._phoneRingEl.currentTime = 0;
@@ -231,6 +272,7 @@ class AudioEngine {
 
   /** Stop the phone ring (accepted/declined or call timed out). */
   stopPhoneRing() {
+    this._phoneRingPending = false;
     if (!this._phoneRingEl) return;
     try {
       this._phoneRingEl.pause();
