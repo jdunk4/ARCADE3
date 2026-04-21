@@ -134,7 +134,7 @@ export function getWaveDef(wave) {
     return {
       type: 'hive',                           // renamed from 'spawners'
       hiveCount: 4,
-      hiveHp: 50,
+      hiveHp: 12,
       enemies: waveEnemyMix(wave, chapterIdx),
       spawnRate: Math.min(3.5, 1 + wave * 0.2),
       localWave, chapterIdx,
@@ -292,7 +292,7 @@ export const SPAWNER_CONFIG = {
   hiveCount: 4,
   spawnIntervalSec: 0.8,           // was 2.5 → ~3.1× more often
   maxEnemiesPerPortal: 16,         // was 4  → 4× higher cap
-  spawnerHp: 50,                   // 50 shots to kill with pistol (1 dmg each)
+  spawnerHp: 12,                   // ~12 shots to kill with pistol (1 dmg each)
   minPairwiseDist: 22,             // hives can't spawn too close to each other
   minDistFromCenter: 14,           // hives can't spawn on top of player start
 };
