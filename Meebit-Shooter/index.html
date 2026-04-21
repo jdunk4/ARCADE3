@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>MEEBIT :: SURVIVAL PROTOCOL</title>
+<link rel="stylesheet" href="src/styles.css" />
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🤖</text></svg>" />
+</head>
+<body>
+
+<!-- LOADING -->
+<div id="loading">
+  <div class="matrix-bg" id="matrix-bg-load"></div>
+  <div class="title">MEEBIT</div>
+  <div class="bar2"><div id="loadbar"></div></div>
+  <div class="log" id="loadlog">INITIALIZING PROTOCOL...</div>
+</div>
+
+<!-- INCOMING CALL SCREEN -->
+<div id="incoming-call" class="overlay hidden">
+  <div class="call-phone">
+    <div class="call-ring"></div>
+    <div class="call-ring"></div>
+    <div class="call-icon">📞</div>
+  </div>
+  <div class="call-name">THE SOURCE</div>
+  <div class="call-sub">:: INCOMING TRANSMISSION ::</div>
+  <div class="call-timer" id="call-timer">00:00</div>
+  <div class="call-buttons">
+    <button class="call-btn decline" id="call-decline">IGNORE</button>
+    <button class="call-btn accept" id="call-accept">ANSWER</button>
+  </div>
+</div>
+
+<!-- TITLE -->
+<div id="title" class="overlay hidden">
+  <div class="matrix-bg" id="matrix-bg-title"></div>
+  <h1>EXTINGUISH<br>THE VIRUS</h1>
+  <h2>:: OTHERSIDE DEPLOYMENT ::</h2>
+  <p>
+    THE GRID IS BREACHED. THE ZOMEEBS APPROACH.<br>
+    <b>MOVE</b> WASD <span class="mobile-only">/ JOYSTICK</span> &nbsp;|&nbsp; <b>AIM</b> MOUSE <span class="mobile-only">/ AUTO</span><br>
+    <b>FIRE</b> HOLD LMB &nbsp;|&nbsp; <b>Q</b> TOGGLE PICKAXE &nbsp;|&nbsp; <b>SPACE</b> DASH<br>
+    FREE CAGED MEEBITS · MINE FALLING BLOCKS · SURVIVE EACH CHAPTER
+  </p>
+
+  <!-- Saved progress -->
+  <div id="title-save-panel">
+    <div class="save-row"><span>HIGH SCORE</span><b id="title-highscore">0</b></div>
+    <div class="save-row"><span>FURTHEST</span><b id="title-highchap">1 · Wave 1</b></div>
+    <div class="save-row"><span>MEEBITS FREED</span><b id="title-collection">0 / 20000</b></div>
+  </div>
+
+  <button class="cta" id="start-btn">ATTACK THE AI</button>
+  <button class="wallet-btn" id="connect-wallet-btn">🦊 CONNECT WALLET</button>
+  <div style="font-size:10px; letter-spacing:2px; color:#888; margin-top:10px;">
+    OWN A MEEBIT? CONNECT TO PLAY AS YOUR OWN AVATAR
+  </div>
+</div>
+
+<!-- Persistent matrix rain -->
+<div id="matrix-rain-persistent"></div>
+
+<!-- GAME CANVAS -->
+<div id="game"></div>
+
+<!-- HUD -->
+<div id="hud-top" class="hidden-ui">
+  <div id="score-wrap">
+    <div id="score">0</div>
+    <div id="stats-row">
+      <span>WAVE: <b id="wave-num">1</b></span>
+      <span>TIME: <b id="time-num">0:00</b></span>
+      <span>KILLS: <b id="kill-num">0</b></span>
+      <span>FREED: <b id="rescue-count">0</b></span>
+    </div>
+    <div id="chapter-readout">CH.1 · TOXIC · W1/5</div>
+  </div>
+</div>
+
+<div id="player-panel" class="hidden-ui">
+  <div id="avatar"><div class="glasses"></div></div>
+  <div id="player-info">
+    <div id="player-name">MEEBIT #16801</div>
+    <div class="bar-wrap">
+      <span class="bar-label">HP</span>
+      <div class="bar"><div class="bar-fill" id="hp-fill" style="width:100%"></div></div>
+    </div>
+    <div class="bar-wrap">
+      <span class="bar-label">XP</span>
+      <div class="bar"><div class="bar-fill" id="xp-fill" style="width:0%"></div></div>
+    </div>
+    <div style="font-size:11px; letter-spacing:2px; margin-top:2px;">
+      LVL <span id="lvl-num" style="color:var(--xp-yellow); font-weight:900;">1</span>
+      &nbsp;|&nbsp; WEAPON: <span id="weapon-name" style="color:var(--neon-cyan); font-weight:900;">PISTOL</span>
+    </div>
+  </div>
+</div>
+
+<!-- BOSS HEALTH BAR -->
+<div id="boss-bar" class="hidden">
+  <div class="boss-name" id="boss-name">MEGA ZOMEEB</div>
+  <div class="boss-bar-outer">
+    <div class="boss-bar-fill" id="boss-bar-fill"></div>
+  </div>
+</div>
+
+<div id="inventory" class="hidden-ui">
+  <div class="slot active" data-slot="pistol">🔫<span class="label">PISTOL</span></div>
+  <div class="slot" data-slot="shotgun">💥<span class="label">SHOTGUN</span></div>
+  <div class="slot" data-slot="smg">⚡<span class="label">SMG</span></div>
+  <div class="slot" data-slot="sniper">🎯<span class="label">SNIPER</span></div>
+  <div class="slot owned" data-slot="pickaxe">⛏️<span class="label">PICKAXE [Q]</span></div>
+</div>
+
+<!-- WAVE BANNER -->
+<div id="wave-banner" class="hidden">
+  <div id="wave-banner-title">NEXT WAVE IN</div>
+  <div id="wave-banner-countdown">3</div>
+  <div id="wave-banner-sub">PREPARE YOURSELF</div>
+</div>
+
+<!-- OBJECTIVE -->
+<div id="objective" class="hidden">
+  <div class="obj-icon">📍</div>
+  <div class="obj-text">
+    <div class="obj-title" id="obj-title">CAPTURE THE DROP</div>
+    <div class="obj-sub" id="obj-sub">Navigate to the glowing zone</div>
+  </div>
+</div>
+
+<div id="toast"></div>
+<div id="levelup">LEVEL UP!</div>
+<div id="damage-flash"></div>
+
+<!-- MOBILE -->
+<div id="joystick" class="mobile-only"><div class="knob" id="knob"></div></div>
+<div id="fire-btn" class="mobile-only">FIRE</div>
+<div id="pick-btn" class="mobile-only">⛏</div>
+
+<div id="controls">
+  <b>WASD</b> MOVE<br>
+  <b>MOUSE</b> AIM<br>
+  <b>HOLD LMB</b> FIRE<br>
+  <b>SPACE</b> DASH<br>
+  <b>Q</b> PICKAXE<br>
+  <b>1/2/3/4</b> WEAPONS<br>
+  <b>ESC</b> PAUSE<br>
+  <div class="sound" id="sound-toggle">🔊 SOUND: ON</div>
+</div>
+
+<div id="gameover" class="overlay hidden">
+  <h1>SIGNAL LOST</h1>
+  <h2>:: CONNECTION TERMINATED ::</h2>
+  <div class="stats-final">
+    FINAL SCORE: <span id="final-score">0</span><br>
+    WAVE REACHED: <span id="final-wave">1</span><br>
+    KILLS: <span id="final-kills">0</span><br>
+    MEEBITS FREED THIS RUN: <span id="final-rescues">0</span>
+  </div>
+  <button class="cta" id="restart-btn">REBOOT</button>
+</div>
+
+<audio id="phone-ring" src="assets/phone_ring.mp3" loop preload="auto"></audio>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdnjs.cloudflare.com/ajax/libs/three.js/0.160.0/three.module.min.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+<script type="module" src="src/main.js"></script>
+
+</body>
+</html>
