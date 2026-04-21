@@ -11,7 +11,7 @@
 // localStorage.
 //
 // Tracks on disk (Meebit-Shooter/assets/):
-//   Arena I.mp3, Arena II.mp3, Arena III.mp3, Arena IV.mp3
+//   Arena I.mp3, Arena II.mp3, Arena III.mp3, Arena IV.mp3, ASCENT.mp3
 //   PHONE RINGS.mp3
 //   C-drone.mp3   (ambient drone layered UNDER the phone ring during the
 //                  matrix-dive so the ring doesn't feel naked)
@@ -21,6 +21,12 @@ const SOUNDTRACK_FILES = [
   'assets/Arena II.mp3',
   'assets/Arena III.mp3',
   'assets/Arena IV.mp3',
+  // ASCENT plays after Arena IV as the fifth track in the continuous
+  // playlist loop. Music starts ONCE at game start (on "ATTACK THE AI")
+  // with Arena I and advances track-by-track via each track's 'ended'
+  // handler — waves do not swap tracks. So the soundtrack cycles:
+  //   Arena I → II → III → IV → ASCENT → Arena I → ...
+  'assets/ASCENT.mp3',
 ];
 // The phone-ring asset has shipped under several names in this project.
 // We try them in order until one loads; whichever works becomes the source.
