@@ -992,7 +992,6 @@ function _teardownBossCinematic() {
   // in main.js goes back to normal.
   _cinematicActive = false;
 }
-}
 
 // Helper — takes a "#rrggbb" string and an alpha 0..1, returns "rgba(r,g,b,a)".
 function _cssWithAlpha(hexCss, alpha) {
