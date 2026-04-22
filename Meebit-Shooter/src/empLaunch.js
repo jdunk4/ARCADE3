@@ -49,19 +49,18 @@ import { hitBurst } from './effects.js';
 import { getSiloLaunchOrigin, hideSiloMissile, LAYOUT } from './waveProps.js';
 import { spawners } from './spawners.js';
 import { removeHiveShields } from './dormantProps.js';
+import { getCentroidFor } from './triangles.js';
+import { fireShockwave } from './shockwave.js';
 
-// Phase durations. Flight is snappy; countdown is the "hold the line"
-// beat; detonation is dramatic but brief.
-const FLIGHT_SEC = 0.8;
-const PEAK_SEC = 0.4;
-const COUNTDOWN_SEC = 20.0;
+// Phase durations.
+const FLIGHT_SEC = 1.4;       // longer now — missile arcs across the map
+const PEAK_SEC = 0.3;
+const COUNTDOWN_SEC = 5.0;    // shorter — was 20, player asked for 5
 const FLASH_SEC = 0.08;
-const DARKEN_SEC = 1.2;      // shockwave expand duration during darken
+const DARKEN_SEC = 1.2;
 const LIGHT_RECOVER_SEC = 2.0;
 
-// Shockwave geometry.
-const SHOCKWAVE_SEGMENTS = 64;
-const SHOCKWAVE_MAX_R = 55;  // slightly beyond arena edge
+const SHOCKWAVE_MAX_R = 55;
 
 // ---------------------------------------------------------------------------
 // STATE
@@ -73,13 +72,14 @@ let _active = false;
 
 // Per-launch scene objects (created in startLaunch, cleaned in teardown)
 let _missileMesh = null;
-let _exhaustBursts = 0;  // counter for rate-limited exhaust bursts
-let _shockwave = null;
-let _shockwaveHitHives = null;  // Set<hive> — track which hives had shield dropped
-let _domOverlay = null;          // the DOM flash element for phase 2
-let _hudCountdown = null;        // DOM div for the 20s countdown text
-let _ambientSaved = null;        // cached lighting intensities to restore
-let _onDetonation = null;        // callback to fire the real EMP side-effects
+let _exhaustBursts = 0;
+let _flightStart = null;   // THREE.Vector3 silo origin
+let _flightTarget = null;  // THREE.Vector3 hive triangle centroid
+let _shockwaveHitHives = null;
+let _domOverlay = null;
+let _hudCountdown = null;
+let _ambientSaved = null;
+let _onDetonation = null;
 
 // ---------------------------------------------------------------------------
 // PUBLIC API
@@ -113,8 +113,18 @@ export function startLaunch() {
     _missileMesh = _buildFlightMissile(tint);
     _missileMesh.position.copy(origin);
     scene.add(_missileMesh);
+    _flightStart = origin.clone();
+  } else {
+    // Fallback — shouldn't happen in practice.
+    _flightStart = new THREE.Vector3(LAYOUT.silo.x, 6.5, LAYOUT.silo.z);
   }
   hideSiloMissile();
+
+  // Flight target: centroid of the hive triangle. The missile arcs from
+  // the silo toward the hives and detonates directly over them, so the
+  // shockwave ripples outward from the hives instead of from the silo.
+  const hiveCentroid = getCentroidFor('hive');
+  _flightTarget = new THREE.Vector3(hiveCentroid.x, 0.5, hiveCentroid.z);
 
   // Initial ignition burst + shake.
   if (origin) {
@@ -165,23 +175,6 @@ function _buildFlightMissile(tint) {
   exhaust.rotation.x = Math.PI;
   g.add(exhaust);
   return g;
-}
-
-function _buildShockwave(tint) {
-  const mat = new THREE.MeshBasicMaterial({
-    color: tint,
-    transparent: true,
-    opacity: 0.85,
-    side: THREE.DoubleSide,
-  });
-  // Thin ring that we resize each frame.
-  const geo = new THREE.RingGeometry(0.5, 1.0, SHOCKWAVE_SEGMENTS);
-  const m = new THREE.Mesh(geo, mat);
-  m.rotation.x = -Math.PI / 2;
-  // Centered on the silo.
-  const silo = LAYOUT.silo;
-  m.position.set(silo.x, 0.2, silo.z);
-  return m;
 }
 
 // ---------------------------------------------------------------------------
@@ -312,31 +305,57 @@ export function updateLaunch(dt, time) {
   const tint = chapter.full.grid1;
 
   if (_phase === 'flight') {
-    // Missile flies up with accelerating speed. Also lean slightly at
-    // end for the "trailing off" feel before peak.
-    if (_missileMesh) {
-      const f = Math.min(1, _phaseT / FLIGHT_SEC);
-      const speed = 14 + f * 30;
-      _missileMesh.position.y += speed * dt;
-      // Small wobble.
-      _missileMesh.rotation.z = Math.sin(time * 11) * 0.06;
+    // Parabolic arc from silo origin to hive-triangle centroid. Peak
+    // height scales with horizontal distance so the arc feels right even
+    // when the two points are close.
+    const f = Math.min(1, _phaseT / FLIGHT_SEC);
+    if (_missileMesh && _flightStart && _flightTarget) {
+      // Lerp xz linearly; y = lerp + parabola kick at mid-flight.
+      const x = _flightStart.x + (_flightTarget.x - _flightStart.x) * f;
+      const z = _flightStart.z + (_flightTarget.z - _flightStart.z) * f;
+      const baseY = _flightStart.y + (_flightTarget.y - _flightStart.y) * f;
+      // Parabola: peak height = 0.7× horizontal distance, so a long flight
+      // arcs higher than a short one.
+      const horizDist = Math.hypot(
+        _flightTarget.x - _flightStart.x,
+        _flightTarget.z - _flightStart.z
+      );
+      const peakKick = Math.max(6, horizDist * 0.7);
+      const arcY = 4 * peakKick * f * (1 - f);  // classic 4·h·t·(1-t)
+      _missileMesh.position.set(x, baseY + arcY, z);
 
-      // Exhaust burst every 3 frames or so.
+      // Orient along velocity. Derivative of the arc:
+      //   dx/df, dz/df = (target-start) constants
+      //   dy/df = lerpDy + 4*peak*(1 - 2f)
+      const lerpDy = _flightTarget.y - _flightStart.y;
+      const vx = _flightTarget.x - _flightStart.x;
+      const vz = _flightTarget.z - _flightStart.z;
+      const vy = lerpDy + 4 * peakKick * (1 - 2 * f);
+      const horizLen = Math.hypot(vx, vz);
+      // Pitch: angle above horizontal.
+      const pitch = Math.atan2(vy, horizLen);
+      // Yaw: direction of travel in XZ.
+      const yaw = Math.atan2(vx, vz);
+      _missileMesh.rotation.set(pitch - Math.PI / 2, yaw, 0, 'YXZ');
+
+      // Exhaust burst every other frame.
       _exhaustBursts++;
       if (_exhaustBursts % 2 === 0) {
-        const ep = _missileMesh.position.clone();
-        ep.y -= 2.0;
-        hitBurst(ep, 0xffaa00, 4);
-        hitBurst(ep, 0xffffff, 2);
+        // Spawn exhaust slightly behind the missile along velocity.
+        const back = _missileMesh.position.clone();
+        const vLen = Math.hypot(vx, vy, vz) || 1;
+        back.x -= (vx / vLen) * 1.6;
+        back.y -= (vy / vLen) * 1.6;
+        back.z -= (vz / vLen) * 1.6;
+        hitBurst(back, 0xffaa00, 4);
+        hitBurst(back, 0xffffff, 2);
       }
     }
 
     if (_phaseT >= FLIGHT_SEC) {
-      // Transition to peak.
+      // Transition to peak. Missile vanishes; DOM streak carries the beat.
       _phase = 'peak';
       _phaseT = 0;
-      // Remove the flight missile from world — the DOM overlay handles
-      // the "across the screen" beat.
       if (_missileMesh && _missileMesh.parent) scene.remove(_missileMesh);
       _missileMesh = null;
       _showPeakStreak(tint);
@@ -360,42 +379,42 @@ export function updateLaunch(dt, time) {
       _darkenArena();
       shake(1.2, 0.8);
       try { Audio.bigBoom && Audio.bigBoom(); } catch (e) {}
-      // Build the shockwave ring at the silo.
-      _shockwave = _buildShockwave(tint);
-      scene.add(_shockwave);
+      // Shockwave originates from the hive-triangle centroid — where
+      // the missile detonated — not the silo. As the ring passes each
+      // hive, drop that hive's shield via the onRadius callback.
+      const origin = _flightTarget || { x: 0, y: 0.2, z: 0 };
+      fireShockwave(
+        { x: origin.x, y: 0.2, z: origin.z },
+        {
+          maxRadius: SHOCKWAVE_MAX_R,
+          durationSec: DARKEN_SEC,
+          onRadius: (r) => {
+            for (const h of spawners) {
+              if (!h.shielded || _shockwaveHitHives.has(h)) continue;
+              const dx = h.pos.x - origin.x;
+              const dz = h.pos.z - origin.z;
+              const d = Math.sqrt(dx * dx + dz * dz);
+              if (r >= d) {
+                _shockwaveHitHives.add(h);
+                hitBurst(new THREE.Vector3(h.pos.x, 2.5, h.pos.z), 0xffffff, 16);
+                const tintNow = CHAPTERS[S.chapter % CHAPTERS.length].full.grid1;
+                hitBurst(new THREE.Vector3(h.pos.x, 2.5, h.pos.z), tintNow, 14);
+              }
+            }
+          },
+        },
+      );
     }
   }
   else if (_phase === 'detonate') {
-    // Shockwave expands over DARKEN_SEC.
-    const f = Math.min(1, _phaseT / DARKEN_SEC);
-    const r = 1 + f * SHOCKWAVE_MAX_R;
-    if (_shockwave) {
-      _shockwave.scale.set(r, r, 1);
-      _shockwave.material.opacity = 0.85 * (1 - f * 0.6);
-      // When shockwave radius reaches each hive, drop its shield.
-      const silo = LAYOUT.silo;
-      for (const h of spawners) {
-        if (!h.shielded || _shockwaveHitHives.has(h)) continue;
-        const dx = h.pos.x - silo.x;
-        const dz = h.pos.z - silo.z;
-        const d = Math.sqrt(dx * dx + dz * dz);
-        if (r >= d) {
-          _shockwaveHitHives.add(h);
-          // Burst at each hive as the shockwave passes.
-          hitBurst(new THREE.Vector3(h.pos.x, 2.5, h.pos.z), 0xffffff, 16);
-          hitBurst(new THREE.Vector3(h.pos.x, 2.5, h.pos.z), tint, 14);
-        }
-      }
-    }
+    // Shared shockwave module handles the ring expansion + hive-shield
+    // drop-as-ring-passes via the onRadius callback registered above.
     if (_phaseT >= DARKEN_SEC) {
       _phase = 'recover';
       _phaseT = 0;
-      // Drop every remaining hive shield — safety net in case the
-      // shockwave ring missed any (e.g., hive sitting outside SHOCKWAVE_MAX_R).
+      // Safety net: drop every remaining hive shield in case the
+      // shockwave missed any (e.g. a hive sitting outside SHOCKWAVE_MAX_R).
       removeHiveShields();
-      // Clean the ring.
-      if (_shockwave && _shockwave.parent) scene.remove(_shockwave);
-      _shockwave = null;
     }
   }
   else if (_phase === 'recover') {
@@ -420,12 +439,12 @@ export function updateLaunch(dt, time) {
 function _teardown() {
   if (_missileMesh && _missileMesh.parent) scene.remove(_missileMesh);
   _missileMesh = null;
-  if (_shockwave && _shockwave.parent) scene.remove(_shockwave);
-  _shockwave = null;
   _hideCountdown();
   if (_domOverlay) _domOverlay.style.opacity = '0';
   _shockwaveHitHives = null;
   _exhaustBursts = 0;
+  _flightStart = null;
+  _flightTarget = null;
 }
 
 /** Hard reset for game-over / chapter teardown. */
