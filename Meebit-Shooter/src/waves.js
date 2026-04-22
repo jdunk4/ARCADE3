@@ -888,10 +888,27 @@ function _playBossCinematic(wd) {
     console.info(`[cinematic] spawning boss at +${(tSpawn - t0).toFixed(1)}ms`);
     try {
       spawnBoss();
+      // Force an immediate eager shader/PSO compile for everything now in
+      // the scene — notably the freshly-spawned boss.
       try {
         if (renderer && renderer.compile) renderer.compile(scene, camera);
       } catch (compileErr) {
         console.warn('[cinematic] eager compile failed (non-fatal):', compileErr);
+      }
+      // ALSO force a real render pass so the shadow-map render pipeline
+      // compiles depth-only shaders for the boss (renderer.compile() covers
+      // main-pass programs but not the shadow-pass ones that run against
+      // the light's shadow camera — those get compiled on the first real
+      // render, producing a ~50-100ms hitch on the first gameplay frame
+      // after the cinematic if we skip this).
+      //
+      // The overlay is fully opaque at this point, so even though the
+      // render happens behind it, the user doesn't see anything. Any
+      // compile stalls happen right here, masked.
+      try {
+        if (renderer && renderer.render) renderer.render(scene, camera);
+      } catch (renderErr) {
+        console.warn('[cinematic] warmup render failed (non-fatal):', renderErr);
       }
     } catch (err) {
       console.warn('[cinematic] spawnBoss error:', err);
