@@ -185,6 +185,24 @@ function _addShieldToHive(hive, tint) {
 }
 
 /**
+ * Drop ONE hive's shield. Same visual flash + flag flip as
+ * removeHiveShields() but scoped to a single hive, so the shockwave
+ * callback in empLaunch can drop shields as the ring physically passes
+ * each hive instead of all at once at the end of the detonation phase.
+ * Returns true if the shield was dropped, false if the hive had no
+ * shield (already dropped, or hive was unshielded to begin with).
+ */
+export function dropHiveShield(hive) {
+  const shield = _hiveShields.get(hive);
+  if (!shield) return false;
+  if (shield.userData._dropping) return false; // already dropping
+  hive.shielded = false;
+  shield.userData._dropping = true;
+  shield.userData._dropT = 0;
+  return true;
+}
+
+/**
  * Call this when wave 2 ends (EMP fires). Drops every hive shield with a
  * quick flash and flips the `shielded` flag so wave 3 damage calls land.
  */
