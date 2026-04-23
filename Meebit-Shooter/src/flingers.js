@@ -848,15 +848,41 @@ function _loadFlingerMesh(glbName) {
   }
   return glbCache.get(glbName).then(gltf => {
     const clone = skeletonClone(gltf.scene);
+    // ROBUST HEIGHT MEASUREMENT — same approach as pixlPals. Walk each
+    // mesh's geometry.boundingBox (vertex-data-derived, unaffected by
+    // skeleton bind-pose quirks) and union them to get the real height.
     clone.updateMatrixWorld(true);
-    const box = new THREE.Box3().setFromObject(clone);
-    const size = new THREE.Vector3();
-    box.getSize(size);
-    // Normalize to ~2.9 units tall — matches the pixl pal size so pals
-    // and flingers read as peers on-screen. Slightly smaller than the
-    // player (who's ~4 units after PLAYER.scale).
-    if (size.y > 0.01 && isFinite(size.y)) {
-      const s = 2.9 / size.y;
+    const combinedBox = new THREE.Box3();
+    let foundAny = false;
+    clone.traverse((obj) => {
+      if ((obj.isMesh || obj.isSkinnedMesh) && obj.geometry) {
+        if (!obj.geometry.boundingBox) obj.geometry.computeBoundingBox();
+        if (obj.geometry.boundingBox) {
+          const b = obj.geometry.boundingBox.clone();
+          b.applyMatrix4(obj.matrixWorld);
+          if (!foundAny) { combinedBox.copy(b); foundAny = true; }
+          else combinedBox.union(b);
+        }
+      }
+    });
+    let measuredY = 0;
+    if (foundAny) {
+      const sz = new THREE.Vector3();
+      combinedBox.getSize(sz);
+      measuredY = sz.y;
+    } else {
+      const fb = new THREE.Box3().setFromObject(clone);
+      const sz = new THREE.Vector3();
+      fb.getSize(sz);
+      measuredY = sz.y;
+    }
+    // Normalize to 2.9 units tall — matches the pixl pal size so pals
+    // and flingers read as peers on-screen.
+    if (measuredY > 0.01 && isFinite(measuredY)) {
+      // Same normalization target as pixl pals (3.6u) so the two ally
+      // types read as uniform peers in the arena. Both sit just under
+      // the player's ~4u height.
+      const s = 3.6 / measuredY;
       clone.scale.setScalar(s);
       clone.updateMatrixWorld(true);
     }
