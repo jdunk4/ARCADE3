@@ -165,9 +165,15 @@ function remapMixamoClip(rawClip, label) {
  * shoulders pre-rotated 180° around other axes. Mixamo animation data
  * assumes rest = identity everywhere, so applying it directly to these
  * bones folds the character into a ball. When this option is on, every
- * rotation track on the mixer gets pre-multiplied by the target bone's
- * rest quaternion at action-creation time, so the animation plays
- * "on top of" the rest pose instead of replacing it.
+ * rotation track gets remapped so the final bone rotation is
+ *
+ *     final = restQuaternion * (firstKeyframeInverse * currentKeyframe)
+ *
+ * i.e. at frame 0 the bone sits exactly at its rest pose, and at later
+ * frames the DELTA-from-frame-0 motion is applied on top of rest. The
+ * delta subtraction is what keeps Mixamo's baked-in runner-lean (a
+ * constant ~13° forward tilt on the Hips track) from composing with
+ * the Meebit rest and producing a permanent sideways body lean.
  *
  * Returns:
  *   {
@@ -269,10 +275,17 @@ export function animationsReady() {
 // directly to these bones, the motion "replaces" the rest rotation and the
 // character folds into a ball.
 //
-// Fix: for each rotation keyframe on bone B, store `Q_rest * Q_keyframe`
-// instead of just `Q_keyframe`. Since the Mixamo source's own rest is
-// identity, this reduces to a left-multiply of each keyframe by the
-// target bone's rest quaternion.
+// Fix (two-part):
+//   1. DELTA: subtract Mixamo's own first keyframe from every keyframe on
+//      that track. Mixamo run clips bake in a permanent "runner's lean"
+//      on the Hips track (~13° forward) and smaller residuals on the spine
+//      and limbs. Composing those offsets with the Meebit rest produces a
+//      permanent sideways body tilt at frame 0. Delta subtraction ensures
+//      frame 0 = identity motion.
+//
+//   2. COMPOSE: multiply the delta by the target bone's rest quaternion
+//      so the motion plays on top of the bind pose:
+//          final = rest * (firstInv * current)
 //
 // We build a bespoke AnimationClip per (clip, bone-set) so the rest of
 // the mixer code doesn't need to know about compensation.
@@ -313,6 +326,8 @@ function _buildCompensatedClip(rawClip, restByBone) {
 
   const tracks = [];
   const _q = new THREE.Quaternion();
+  const _qFirstInv = new THREE.Quaternion();
+  const _qDelta = new THREE.Quaternion();
   const _qOut = new THREE.Quaternion();
 
   for (const track of rawClip.tracks) {
@@ -329,11 +344,35 @@ function _buildCompensatedClip(rawClip, restByBone) {
     }
 
     // track.values is a flat Float32Array of [x,y,z,w, x,y,z,w, ...].
-    // Clone it, then for each keyframe compute rest * keyframe.
+    // For each keyframe we want:
+    //   final = rest * (firstInv * current)
+    //
+    // `firstInv * current` is the DELTA from Mixamo's own first keyframe —
+    // this strips Mixamo's baked offset (e.g. the 13° forward "runner's
+    // lean" baked into the hip rotation) so at frame 0 the bone sits at
+    // the Meebit rest exactly (no initial tilt), and later frames add
+    // only the per-frame motion relative to Mixamo's opening pose.
+    //
+    // Without the delta step, Mixamo's hip "runner lean" composes with
+    // the Meebit's 180°-around-Y hip rest and the entire body shows up
+    // permanently tilted sideways.
     const values = track.values.slice(0);  // typed-array copy
+
+    if (values.length < 4) {
+      // No keyframes — just push an empty pass-through
+      tracks.push(track);
+      continue;
+    }
+
+    // Extract the first keyframe and invert it (conjugate == inverse for unit quaternions)
+    _qFirstInv.set(-values[0], -values[1], -values[2], values[3]);
+
     for (let i = 0; i < values.length; i += 4) {
       _q.set(values[i], values[i+1], values[i+2], values[i+3]);
-      _qOut.copy(rest).multiply(_q);
+      // delta = firstInv * current
+      _qDelta.copy(_qFirstInv).multiply(_q);
+      // final = rest * delta
+      _qOut.copy(rest).multiply(_qDelta);
       values[i]   = _qOut.x;
       values[i+1] = _qOut.y;
       values[i+2] = _qOut.z;
