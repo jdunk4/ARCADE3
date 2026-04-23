@@ -37,6 +37,7 @@ import { enemies } from './enemies.js';
 import { Audio } from './audio.js';
 import { S, shake } from './state.js';
 import { UI } from './ui.js';
+import { attachMixer, animationsReady } from './animation.js';
 
 // -----------------------------------------------------------------------------
 // ASSETS / CONSTANTS
@@ -203,6 +204,23 @@ export function trySummonPixlPal(playerPos) {
     pal.obj = mesh;
     pal.pos = mesh.position;
     pal.ready = true;
+
+    // Attach rifle-run animation mixer. The pixlpal GLBs use the Unreal-
+    // style rig (thigh_l / upperarm_r / hand_r), which our Mixamo bone map
+    // DOESN'T cover — we only remap to VRM names (HipsBone etc). So the
+    // mixer attach will run but most tracks will silently no-op on these
+    // meshes. The attach is kept anyway: (a) it's harmless when track
+    // names don't match, and (b) it takes over for any VRM-rigged pals
+    // added later. The walk-bob fallback below handles the visual motion
+    // while tracks don't match.
+    if (animationsReady()) {
+      try {
+        pal.mixer = attachMixer(mesh);
+        pal.mixer.playRifleAim();
+      } catch (e) {
+        console.warn('[PixlPal] attachMixer failed', e);
+      }
+    }
   }).catch(err => {
     console.warn('[PixlPal] GLB load failed for', glbId, err);
     // Fallback: keep the placeholder as a glow cube
@@ -218,6 +236,7 @@ export function trySummonPixlPal(playerPos) {
  */
 export function clearAllPixlPals() {
   for (const p of pals) {
+    if (p.mixer) { try { p.mixer.stop && p.mixer.stop(); } catch (e) {} p.mixer = null; }
     if (p.obj && p.obj.parent) scene.remove(p.obj);
   }
   pals.length = 0;
@@ -262,6 +281,7 @@ export function updatePixlPals(dt, playerPos) {
       }
       if (p.despawnTimer <= 0) {
         _palSpawnFx(p.pos);
+        if (p.mixer) { try { p.mixer.stop && p.mixer.stop(); } catch (e) {} p.mixer = null; }
         scene.remove(p.obj);
         pals.splice(i, 1);
         continue;
@@ -298,6 +318,9 @@ export function updatePixlPals(dt, playerPos) {
         if (dist > desired) {
           p.pos.x += _v.x * PAL_MOVE_SPEED * dt;
           p.pos.z += _v.z * PAL_MOVE_SPEED * dt;
+          p._movedThisFrame = true;
+        } else {
+          p._movedThisFrame = false;
         }
         // Face the move direction
         if (p.obj) p.obj.rotation.y = Math.atan2(_v.x, _v.z);
@@ -308,9 +331,30 @@ export function updatePixlPals(dt, playerPos) {
       if (p.pos.x < -lim) p.pos.x = -lim;
       if (p.pos.z > lim) p.pos.z = lim;
       if (p.pos.z < -lim) p.pos.z = -lim;
+    } else {
+      p._movedThisFrame = false;
     }
 
-    // Subtle walk bob so the pal doesn't look frozen
+    // Drive rifle animation if the mixer attached successfully. The
+    // pixlpal GLBs use an Unreal-style rig whose bone names don't match
+    // our Mixamo → VRM retargeting map, so in practice `p.mixer` may be
+    // present but most tracks will no-op. That's fine — when it works
+    // (future VRM-rigged pals), rifle-run plays; when it doesn't, the
+    // walk-bob fallback below keeps things moving visually.
+    if (p.mixer) {
+      if (p._movedThisFrame) {
+        p.mixer.playRifleRun();
+        p.mixer.setSpeed(1.0);
+      } else {
+        p.mixer.playRifleAim();
+        p.mixer.setSpeed(1.0);
+      }
+      p.mixer.update(dt);
+    }
+
+    // Subtle walk bob — keeps pals visually alive regardless of whether the
+    // mixer's tracks match their rig. Harmless when the mixer is driving
+    // the bones (they'll just override the y position anyway).
     p.walkPhase += dt * 10;
     if (p.obj && !p.despawning) {
       p.obj.position.y = Math.abs(Math.sin(p.walkPhase)) * 0.06;
