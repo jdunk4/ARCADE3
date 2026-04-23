@@ -29,11 +29,15 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 // Note: spaces in filenames are fine as long as the GLB loader encodes them
 // for the HTTP request. Three.js's GLTFLoader URL-encodes by default.
 const ANIM_PATHS = {
-  walk:  'assets/animations/Walking-a.glb',
-  run:   'assets/animations/Running-a.glb',
-  idle2: 'assets/animations/Standing Idle 02.glb',
-  idle3: 'assets/animations/Standing Idle 03.glb',
-  idle4: 'assets/animations/Standing Idle 04.glb',
+  walk:      'assets/animations/Walking-a.glb',
+  run:       'assets/animations/Running-a.glb',
+  idle2:     'assets/animations/Standing Idle 02.glb',
+  idle3:     'assets/animations/Standing Idle 03.glb',
+  idle4:     'assets/animations/Standing Idle 04.glb',
+  // Combat clips — used by the player, follower meebits, and pixl pals.
+  // Filenames match the GLBs that already ship in assets/animations/.
+  rifleRun:  'assets/animations/rifle run.glb',
+  rifleAim:  'assets/animations/rifle aiming idle.glb',
 };
 
 // Mixamo bone name -> VRM bone name. Mixamo source files have bones named
@@ -193,6 +197,17 @@ export function attachMixer(mesh) {
     setSpeed(scale) { mixer.timeScale = scale; },
     playWalk() { playClip('walk'); },
     playRun()  { playClip('run');  },
+    // Combat clips — used by the player, follower meebits, and pixl pals.
+    // Silently falls through to walk if the rifle clip hasn't loaded yet
+    // (e.g. first frame of a run before preloadAnimations resolves).
+    playRifleRun() {
+      if (_clipCache.rifleRun) playClip('rifleRun');
+      else playClip('run');
+    },
+    playRifleAim() {
+      if (_clipCache.rifleAim) playClip('rifleAim');
+      else if (_clipCache.idle2) playClip('idle2');
+    },
     // Idle playback. Pass a number 2/3/4 to pick a specific clip, or omit
     // to get a deterministic-but-varied pick based on whatever's available.
     // Returns the clip key that actually played (or null if no idles loaded).
