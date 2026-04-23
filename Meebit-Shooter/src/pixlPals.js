@@ -34,7 +34,7 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { clone as skeletonClone } from 'three/addons/utils/SkeletonUtils.js';
 import { scene } from './scene.js';
-import { ARENA, WEAPONS, CHAPTERS } from './config.js';
+import { ARENA, WEAPONS, CHAPTERS, PARADISE_FALLEN_CHAPTER_IDX } from './config.js';
 import { hitBurst } from './effects.js';
 import { enemies } from './enemies.js';
 import { Audio } from './audio.js';
@@ -238,6 +238,12 @@ export async function preloadPixlPalGLBs(onProgress, renderer, camera) {
 // don't spam. The pal's own despawn logic handles everything after that.
 let _bossPalDeployed = false;
 
+// Tracks whether we've deployed the ch7 pal yet. Ch7 has no boss — the
+// pal is force-deployed the first update tick in ch7 and persists until
+// the run ends. Reset when leaving ch7 (via the ch7 check in
+// updatePixlPals) and on clearAllPixlPals.
+let _ch7PalDeployed = false;
+
 /**
  * Back-compat stub. The old system awarded a charge every 3 waves; the
  * new system auto-deploys a pal 10 seconds into every boss fight (wave 5
@@ -410,6 +416,7 @@ export function clearAllPixlPals() {
   lastWaveAwarded = 0;
   S.pixlPalCharges = 0;
   _bossPalDeployed = false;
+  _ch7PalDeployed = false;
   _syncHUD();
 }
 
@@ -445,6 +452,25 @@ export function updatePixlPals(dt, playerPos) {
     _bossPalDeployed = false;
   }
 
+  // --- CH7 CO-DEPLOY ---
+  // Chapter 7 (PARADISE FALLEN) has no boss, so the boss-fight timer
+  // above never fires. Instead, we force-deploy one pal the first time
+  // updatePixlPals runs in ch7 so the player gets their ally alongside
+  // the flinger that was also force-deployed by onWaveStartedForFlingers.
+  // Both stay until the run ends (ch7 persistence gate, below).
+  if (S.chapter === PARADISE_FALLEN_CHAPTER_IDX &&
+      !_ch7PalDeployed &&
+      S.running && !S.paused) {
+    _ch7PalDeployed = true;
+    S.pixlPalCharges = Math.max(1, S.pixlPalCharges || 1);
+    trySummonPixlPal(playerPos);
+    UI.toast && UI.toast('PIXL PAL DEPLOYED', '#00ff66', 2000);
+  }
+  // Reset the ch7 dedupe flag whenever we leave ch7 (back to title, new run).
+  if (S.chapter !== PARADISE_FALLEN_CHAPTER_IDX) {
+    _ch7PalDeployed = false;
+  }
+
   // --- Pals ---
   for (let i = pals.length - 1; i >= 0; i--) {
     const p = pals[i];
@@ -453,7 +479,10 @@ export function updatePixlPals(dt, playerPos) {
     p.life += dt;
 
     // Despawn conditions: lifetime expired, mission complete, or game over.
-    if (!p.despawning && (
+    // EXCEPT in chapter 7 (PARADISE FALLEN), where pals + flingers are
+    // summoned together as final-chapter allies and stay until the run ends.
+    const isCh7 = S.chapter === PARADISE_FALLEN_CHAPTER_IDX;
+    if (!p.despawning && !isCh7 && (
         p.life >= p.maxLife ||
         p.killsThisSummon >= p.killsGoal
     )) {
@@ -876,7 +905,10 @@ function _loadPalMesh(id) {
     // skeleton to the cloned bones so the mesh renders correctly.
     const clone = skeletonClone(gltf.scene);
 
-    // Pal avatars import with Z-up or mis-scaled; normalize to ~2.2 units tall.
+    // Pal avatars import with Z-up or mis-scaled; normalize to ~2.9 units tall
+    // so they read close to the player's apparent size (player = PLAYER.scale
+    // 1.8 on a raw Meebit VRM ≈ 4 units). Pals sit a touch smaller than the
+    // player — they're allies, not peers.
     // setFromObject can return an invalid box on SkinnedMeshes because
     // their geometry's bounding volumes are relative to bind pose. We
     // still ask for one and accept whatever we get — it's close enough
@@ -886,7 +918,7 @@ function _loadPalMesh(id) {
     const size = new THREE.Vector3();
     box.getSize(size);
     if (size.y > 0.01 && isFinite(size.y)) {
-      const s = 2.2 / size.y;
+      const s = 2.9 / size.y;
       clone.scale.setScalar(s);
       clone.updateMatrixWorld(true);
     }
