@@ -912,14 +912,51 @@ function _loadPalMesh(id) {
     // player — they're allies, not peers.
     // setFromObject can return an invalid box on SkinnedMeshes because
     // their geometry's bounding volumes are relative to bind pose. We
-    // still ask for one and accept whatever we get — it's close enough
-    // for a rough scale normalization.
+    // ROBUST HEIGHT MEASUREMENT. setFromObject(clone) on a SkinnedMesh
+    // returns a bounding box based on the skeleton's bind pose — which
+    // varies WILDLY between pal GLBs (some import with Z-up, some with
+    // offset pelvises, etc). That variance is why some pals were
+    // rendering 2× the size of others even though every one was
+    // "normalized" to 2.9u.
+    //
+    // Instead we walk every mesh, union their geometry.boundingBox
+    // (which is vertex-data-derived, not transform-derived), and take
+    // the world-space Y extent of that combined box. Consistent across
+    // all variants.
     clone.updateMatrixWorld(true);
-    const box = new THREE.Box3().setFromObject(clone);
-    const size = new THREE.Vector3();
-    box.getSize(size);
-    if (size.y > 0.01 && isFinite(size.y)) {
-      const s = 2.9 / size.y;
+    const combinedBox = new THREE.Box3();
+    let foundAny = false;
+    clone.traverse((obj) => {
+      if ((obj.isMesh || obj.isSkinnedMesh) && obj.geometry) {
+        if (!obj.geometry.boundingBox) obj.geometry.computeBoundingBox();
+        if (obj.geometry.boundingBox) {
+          const b = obj.geometry.boundingBox.clone();
+          b.applyMatrix4(obj.matrixWorld);
+          if (!foundAny) { combinedBox.copy(b); foundAny = true; }
+          else combinedBox.union(b);
+        }
+      }
+    });
+    let measuredY = 0;
+    if (foundAny) {
+      const sz = new THREE.Vector3();
+      combinedBox.getSize(sz);
+      measuredY = sz.y;
+    } else {
+      // Fallback to the scene-graph box if no geometries had bounding
+      // boxes (shouldn't happen but be safe).
+      const fb = new THREE.Box3().setFromObject(clone);
+      const sz = new THREE.Vector3();
+      fb.getSize(sz);
+      measuredY = sz.y;
+    }
+    if (measuredY > 0.01 && isFinite(measuredY)) {
+      // Normalize to ~3.6 units tall. Previously 2.9 → pals read as
+      // noticeably smaller than the player (player ~4u) and small next
+      // to flingers. 3.6 puts pals and flingers at the same height and
+      // just a touch shorter than the player so they still read as
+      // allies rather than rivals.
+      const s = 3.6 / measuredY;
       clone.scale.setScalar(s);
       clone.updateMatrixWorld(true);
     }
