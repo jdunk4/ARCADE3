@@ -174,15 +174,18 @@ export async function preloadPixlPalGLBs(onProgress, renderer, camera) {
   let loaded = 0;
 
   // --- Phase A: fetch all GLBs (populates glbCache as Promise<gltf>) ---
-  await Promise.all(ids.map(id => {
+  // Throttled via a 3-worker queue (not all-in-parallel) so we don't
+  // slam the host with 10 simultaneous chunky GLB requests alongside
+  // whatever Phase 1 (herd VRMs) is doing. GitHub Pages in particular
+  // rate-limits aggressive parallelism with 503s. Each fetch also
+  // auto-retries up to 3 times on 5xx with exponential backoff.
+  await _runWithConcurrency(ids, 3, async (id) => {
     if (!glbCache.has(id)) {
       const url = `assets/civilians/pixlpal/voxlpal-${id}.glb`;
-      glbCache.set(id, new Promise((resolve, reject) => {
-        gltfLoader.load(url, resolve, undefined, reject);
-      }));
+      glbCache.set(id, _loadGLBWithRetry(url));
     }
-    return glbCache.get(id).then(() => {}, () => {});
-  }));
+    try { await glbCache.get(id); } catch (e) { /* non-fatal */ }
+  });
   console.info(`[pixlPal] fetched ${total} GLBs`);
 
   // --- Phase B: build the hidden mesh pool (clones, parked at y=-1000) ---
@@ -890,9 +893,7 @@ function _findNearestEnemy(fromPos, maxRange) {
 function _loadPalMesh(id) {
   if (!glbCache.has(id)) {
     const url = `assets/civilians/pixlpal/voxlpal-${id}.glb`;
-    glbCache.set(id, new Promise((resolve, reject) => {
-      gltfLoader.load(url, resolve, undefined, reject);
-    }));
+    glbCache.set(id, _loadGLBWithRetry(url));
   }
   return glbCache.get(id).then(gltf => {
     // CRITICAL: these GLBs are rigged (SkinnedMesh + Skin + 80-bone rig).
@@ -940,6 +941,76 @@ function _loadPalMesh(id) {
     });
 
     return clone;
+  });
+}
+
+// -----------------------------------------------------------------------------
+// INTERNAL: NETWORK HELPERS (concurrency + retry)
+// -----------------------------------------------------------------------------
+
+/**
+ * Run an async task over `items` with at most `limit` in flight at once.
+ * Prevents us from slamming the host with all N parallel requests — GitHub
+ * Pages in particular rate-limits with 503 when we go too hard.
+ */
+async function _runWithConcurrency(items, limit, taskFn) {
+  let cursor = 0;
+  async function worker() {
+    while (cursor < items.length) {
+      const item = items[cursor++];
+      try { await taskFn(item); } catch (e) { /* task-level errors already swallowed */ }
+    }
+  }
+  const workers = [];
+  const n = Math.min(limit, items.length);
+  for (let i = 0; i < n; i++) workers.push(worker());
+  await Promise.all(workers);
+}
+
+/**
+ * Wrap GLTFLoader.load in a Promise with retry-on-503. Detects 5xx by
+ * fetching HEAD first (cheap); if 5xx, backs off 1s/2s/4s and retries.
+ * Three total attempts before giving up. Resolves with the gltf or
+ * rejects with the last error.
+ *
+ * Uses a plain fetch probe rather than parsing GLTFLoader's error codes
+ * because three.js doesn't expose the HTTP status on load errors.
+ */
+function _loadGLBWithRetry(url, maxAttempts = 3) {
+  return new Promise((resolve, reject) => {
+    let attempt = 0;
+    const tryLoad = () => {
+      attempt++;
+      gltfLoader.load(
+        url,
+        (gltf) => resolve(gltf),
+        undefined,
+        (err) => {
+          if (attempt >= maxAttempts) {
+            reject(err);
+            return;
+          }
+          // Probe the URL to see if it's a transient 5xx. If HEAD returns
+          // 2xx/3xx, the error was something else (parse error, CORS) and
+          // retry won't help.
+          fetch(url, { method: 'HEAD' }).then(res => {
+            if (res.status >= 500 && res.status < 600) {
+              const delay = Math.min(5000, 1000 * Math.pow(2, attempt - 1));
+              console.info(`[pixlPal] ${url} got ${res.status}, retrying in ${delay}ms (attempt ${attempt + 1}/${maxAttempts})`);
+              setTimeout(tryLoad, delay);
+            } else {
+              // Non-transient — give up.
+              reject(err);
+            }
+          }).catch(() => {
+            // HEAD also failed → network issue. Retry anyway.
+            const delay = Math.min(5000, 1000 * Math.pow(2, attempt - 1));
+            setTimeout(tryLoad, delay);
+          });
+        },
+      );
+    };
+    tryLoad();
   });
 }
 
