@@ -129,32 +129,39 @@ let flameMuzzleMat = null;
 const flameEmbers = []; // { mesh, vel, life, maxLife }
 function ensureFlameMeshes() {
   if (flameOuter) return;
-  // Cones point +Z by default. We orient them to player facing each frame.
-  // ConeGeometry(radius, height, radialSegments). We scale X/Y for width
-  // and Z for length at runtime.
-  const outerGeo = new THREE.ConeGeometry(1, 1, 12, 1, true);
-  outerGeo.translate(0, 0.5, 0);                // tip at origin, base at +Y
-  outerGeo.rotateX(Math.PI / 2);                // point at +Z
+  // SINGLE-CONE FLAME.
+  // v8: FLIPPED ORIENTATION — now reads like a real flamethrower. Wide
+  // base at the muzzle, narrowing to a point at the far end. This is the
+  // physically-correct direction: flame billows out of the gun and the
+  // stream thins with distance as fuel disperses.
+  //
+  // Previously (v7) the cone was tip-at-muzzle, base-at-target, which
+  // looked like a funnel — visually backwards. The new orientation is
+  // both more accurate AND reads better in gameplay because the wide
+  // part is RIGHT at the player, so the weapon feels punchy up close.
+  //
+  // ConeGeometry(radius, height, radialSegments, heightSegments, openEnded).
+  // Default cone: tip at +Y, base at -Y. We translate so the BASE is at
+  // origin and the tip extends along +Y, then rotate so tip points at +Z.
+  // At runtime we scale Z by length, X/Y by BASE radius (the wide muzzle
+  // end).
+  const flameGeo = new THREE.ConeGeometry(1, 1, 14, 1, true);
+  flameGeo.translate(0, 0.5, 0);                // base at origin, tip at +Y
+  flameGeo.rotateX(Math.PI / 2);                // base at origin, tip at +Z
   flameOuterMat = new THREE.MeshBasicMaterial({
-    color: 0xff4411, transparent: true, opacity: 0.55,
+    color: 0xff6622, transparent: true, opacity: 0.75,
     side: THREE.DoubleSide, depthWrite: false,
     blending: THREE.AdditiveBlending,
   });
-  flameOuter = new THREE.Mesh(outerGeo, flameOuterMat);
+  flameOuter = new THREE.Mesh(flameGeo, flameOuterMat);
   flameOuter.visible = false;
   scene.add(flameOuter);
 
-  const innerGeo = new THREE.ConeGeometry(1, 1, 10, 1, true);
-  innerGeo.translate(0, 0.5, 0);
-  innerGeo.rotateX(Math.PI / 2);
-  flameInnerMat = new THREE.MeshBasicMaterial({
-    color: 0xffdd66, transparent: true, opacity: 0.85,
-    side: THREE.DoubleSide, depthWrite: false,
-    blending: THREE.AdditiveBlending,
-  });
-  flameInner = new THREE.Mesh(innerGeo, flameInnerMat);
-  flameInner.visible = false;
-  scene.add(flameInner);
+  // Keep flameInner references defined-but-null so the rest of the
+  // codebase (updateFlame, damage ticks) can test for them without
+  // crashing. They're no longer rendered.
+  flameInner = null;
+  flameInnerMat = null;
 
   const muzzleGeo = new THREE.SphereGeometry(0.35, 8, 8);
   flameMuzzleMat = new THREE.MeshBasicMaterial({
@@ -177,41 +184,32 @@ function updateFlame(dt) {
     w && w.isFlame && player.ready;
   if (!firing) {
     flameOuter.visible = false;
-    flameInner.visible = false;
     flameMuzzle.visible = false;
     // Let embers keep finishing their arc after stream stops
   } else {
     flameOuter.visible = true;
-    flameInner.visible = true;
     flameMuzzle.visible = true;
 
     const dirX = Math.sin(player.facing);
     const dirZ = Math.cos(player.facing);
     const origin = new THREE.Vector3(player.pos.x, 1.25, player.pos.z);
 
-    // Cones grow/shrink slightly per frame for lick flicker
+    // Length flickers slightly per frame for lick motion
     const flicker = 0.88 + Math.random() * 0.24;
     const length = w.flameRange * flicker;
-    // Width at the far end — outer now hugs closely around the inner cone
-    // instead of flaring wide. Previously outer was 1.1× the nominal cone
-    // width and inner was 0.55× of that (outer ~1.8× wider than inner).
-    // Now outer is 0.75× and inner is 0.55× of nominal — outer reads as
-    // a soft halo around the inner stream rather than a separate flare.
-    const outerWidth = w.flameRange * Math.tan(w.flameAngle) * 0.75;
-    const innerWidth = outerWidth * 0.70;
+    // Base (muzzle-end) radius. Since the cone tapers to a point at the
+    // far tip, the muzzle reads WIDE and the far reach is a narrow jet.
+    // Slightly tighter than the old far-end flare because a wide muzzle
+    // blob is already very legible.
+    const baseRadius = w.flameRange * Math.tan(w.flameAngle) * 0.75;
 
-    // Position cones: tip at the muzzle, base extending forward
+    // Position: base at the muzzle, tip extending forward along facing.
     flameOuter.position.copy(origin);
-    flameOuter.scale.set(outerWidth, outerWidth, length);
+    flameOuter.scale.set(baseRadius, baseRadius, length);
+    // lookAt rotates so local +Z points toward the target. Our cone was
+    // built with base at origin and tip at +Z (see ensureFlameMeshes), so
+    // lookAt alone correctly orients it.
     flameOuter.lookAt(origin.x + dirX, 1.25, origin.z + dirZ);
-    flameOuter.rotateX(Math.PI / 2); // pointing along Z after lookAt
-    // (lookAt+rotate: the cone was built along +Z, lookAt rotates toward
-    // target; additional rotation not needed. Reverting the rotateX.)
-    flameOuter.rotation.x -= Math.PI / 2;
-
-    flameInner.position.copy(origin);
-    flameInner.scale.set(innerWidth, innerWidth, length * 0.85);
-    flameInner.lookAt(origin.x + dirX, 1.25, origin.z + dirZ);
 
     // Muzzle ball pulses brighter
     flameMuzzle.position.set(
@@ -223,9 +221,8 @@ function updateFlame(dt) {
     flameMuzzle.scale.setScalar(muzzlePulse);
     flameMuzzleMat.opacity = 0.8 + Math.random() * 0.2;
 
-    // Opacity flicker on both cones
-    flameOuterMat.opacity = 0.45 + Math.random() * 0.2;
-    flameInnerMat.opacity = 0.75 + Math.random() * 0.2;
+    // Opacity flicker on the single cone
+    flameOuterMat.opacity = 0.65 + Math.random() * 0.22;
 
     // Spawn a couple of embers per frame that drift upward while the
     // stream is live. Cheap — small cap to prevent particle blowout.
