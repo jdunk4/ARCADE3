@@ -555,15 +555,50 @@ export function clearAllOres() {
 // --------- DEPOT ---------
 
 // --------- DEPOT SHARED RESOURCES ---------
-// Geometries are shared globally; materials are cached per chapter tint
-// so each chapter's depot compiles exactly once.
-const DEPOT_PLATE_GEO = new THREE.CylinderGeometry(2.4, 2.6, 0.35, 6);
+// v8: REFINERY VISUAL PASS.
+// The depot is now a proper industrial refinery — hex platform, central
+// crucible (where ores get crushed), tall chimney (with smoke puff FX
+// later), catapult arm (for the mega-ore launch), 4 support legs, and
+// progressive indicator bands that light up one-by-one as the player
+// delivers ores.
+//
+// Geometries are shared globally; materials cached per chapter tint so
+// each chapter's depot compiles exactly once.
+
+// Platform (hex base, stepped)
+const DEPOT_PLATE_GEO      = new THREE.CylinderGeometry(3.0, 3.3, 0.45, 6);
+const DEPOT_PLATE_STEP_GEO = new THREE.CylinderGeometry(2.5, 2.8, 0.18, 6);
+// Central crucible — wide cylinder with a thick rim (where ores get crushed)
+const DEPOT_CRUCIBLE_GEO   = new THREE.CylinderGeometry(1.3, 1.5, 1.6, 16, 1, true);
+const DEPOT_CRUCIBLE_RIM_GEO = new THREE.TorusGeometry(1.35, 0.14, 6, 20);
+const DEPOT_CRUCIBLE_FLOOR_GEO = new THREE.CircleGeometry(1.25, 18);
+// Chimney — 3-stage tapered stack
+const DEPOT_CHIMNEY_LOW_GEO  = new THREE.CylinderGeometry(0.55, 0.7, 2.0, 10);
+const DEPOT_CHIMNEY_MID_GEO  = new THREE.CylinderGeometry(0.42, 0.55, 1.8, 10);
+const DEPOT_CHIMNEY_TOP_GEO  = new THREE.CylinderGeometry(0.35, 0.42, 1.4, 10);
+const DEPOT_CHIMNEY_CAP_GEO  = new THREE.TorusGeometry(0.38, 0.08, 6, 16);
+// Catapult: a boxy arm anchored to a cylinder pivot
+const DEPOT_CATAPULT_PIVOT_GEO = new THREE.CylinderGeometry(0.2, 0.2, 0.6, 10);
+const DEPOT_CATAPULT_ARM_GEO   = new THREE.BoxGeometry(0.3, 0.3, 3.2);
+const DEPOT_CATAPULT_BUCKET_GEO = new THREE.CylinderGeometry(0.45, 0.5, 0.5, 10, 1, true);
+// Support legs — 4 boxy legs tucked under the hex plate
+const DEPOT_LEG_GEO = new THREE.BoxGeometry(0.28, 1.0, 0.28);
+// Indicator bands on the chimney — 5 rings that light up per ore deposited
+const DEPOT_IND_BAND_GEO = new THREE.TorusGeometry(0.62, 0.07, 6, 18);
+
+// Legacy — still used for the flat-glow disk in the center and the
+// upward-beacon effect. Kept so we don't delete working visuals mid-refactor.
 const DEPOT_DISK_GEO = new THREE.CircleGeometry(1.8, 24);
 const DEPOT_BEACON_GEO = new THREE.CylinderGeometry(0.35, 0.7, 14, 8, 1, true);
 
-const _depotPlateMatCache = new Map();
-const _depotDiskMatCache = new Map();
-const _depotBeaconMatCache = new Map();
+const _depotPlateMatCache    = new Map();
+const _depotArmorMatCache    = new Map();
+const _depotCrucibleMatCache = new Map();
+const _depotIndicatorDimCache = new Map();
+const _depotIndicatorLitCache = new Map();
+const _depotDiskMatCache     = new Map();
+const _depotBeaconMatCache   = new Map();
+
 function _getDepotPlateMat(tint) {
   let m = _depotPlateMatCache.get(tint);
   if (!m) {
@@ -575,6 +610,71 @@ function _getDepotPlateMat(tint) {
   }
   return m;
 }
+
+// Dark industrial armor — used for crucible shell, chimney stack, catapult.
+// No tint, just a dark slightly-metallic body that reads as machinery.
+function _getDepotArmorMat() {
+  const key = 'armor';
+  let m = _depotArmorMatCache.get(key);
+  if (!m) {
+    m = new THREE.MeshStandardMaterial({
+      color: 0x15151f,
+      emissive: 0x0a0a12,
+      emissiveIntensity: 0.15,
+      metalness: 0.65,
+      roughness: 0.55,
+    });
+    _depotArmorMatCache.set(key, m);
+  }
+  return m;
+}
+
+// Crucible INTERIOR — a hotter emissive material. Gets bumped brighter
+// per ore deposited (see _updateDepotDepositVisuals). Clone per-depot
+// so the emissive ramp is independent across chapters.
+function _getDepotCrucibleMat(tint) {
+  let m = _depotCrucibleMatCache.get(tint);
+  if (!m) {
+    m = new THREE.MeshStandardMaterial({
+      color: tint,
+      emissive: tint,
+      emissiveIntensity: 0.6,       // baseline at 0 deposits
+      metalness: 0.4,
+      roughness: 0.6,
+      side: THREE.DoubleSide,
+    });
+    _depotCrucibleMatCache.set(tint, m);
+  }
+  return m;
+}
+
+// Indicator band — dim (unlit) and lit (ore delivered) variants.
+function _getDepotIndDimMat(tint) {
+  let m = _depotIndicatorDimCache.get(tint);
+  if (!m) {
+    m = new THREE.MeshStandardMaterial({
+      color: 0x0a0a12,
+      emissive: tint,
+      emissiveIntensity: 0.05,      // very faint; reads as "not yet lit"
+      metalness: 0.8, roughness: 0.4,
+    });
+    _depotIndicatorDimCache.set(tint, m);
+  }
+  return m;
+}
+function _getDepotIndLitMat(tint) {
+  let m = _depotIndicatorLitCache.get(tint);
+  if (!m) {
+    m = new THREE.MeshStandardMaterial({
+      color: tint,
+      emissive: tint,
+      emissiveIntensity: 1.8,       // bright when lit
+    });
+    _depotIndicatorLitCache.set(tint, m);
+  }
+  return m;
+}
+
 function _getDepotDiskMat(tint) {
   let m = _depotDiskMatCache.get(tint);
   if (!m) {
@@ -599,24 +699,34 @@ function _getDepotBeaconMat(tint) {
 // Exposed to prewarm so every chapter's depot shader is compiled up front.
 export function prewarmDepotMats(tint) {
   _getDepotPlateMat(tint);
+  _getDepotArmorMat();
+  _getDepotCrucibleMat(tint);
+  _getDepotIndDimMat(tint);
+  _getDepotIndLitMat(tint);
   _getDepotDiskMat(tint);
   _getDepotBeaconMat(tint);
 }
 
 /**
- * Build the depot for this mining wave. Placed at a random angle, at a
- * fixed distance from center so it's always reachable but varies run-to-run.
+ * Build the depot for this mining wave. Placed at a random angle inside
+ * the mining triangle. v8 builds a full refinery silhouette — hex
+ * platform on support legs, central crucible (where ores crush), tall
+ * 3-stage chimney with 5 indicator bands, and a catapult arm that will
+ * launch the mega ore toward the silo.
+ *
+ * Returned depot object exposes refs to the animated pieces so the
+ * update loop can drive:
+ *   - crucibleMat.emissiveIntensity (brighter per deposit)
+ *   - indicatorBands[0..4] swapping from dim→lit mat per deposit
+ *   - chimney.position.y  (slight bob)
+ *   - catapult.rotation.x (scoop → release swing)
  */
 export function spawnDepot(chapterIdx) {
   clearDepot();
   const tint = CHAPTERS[chapterIdx % CHAPTERS.length].full.lamp;
-  // Place the depot at the centroid of the mining triangle so wave 1
-  // objectives live in their assigned arena wedge. Adds a small random
-  // offset inside the wedge so the depot isn't in exactly the same spot
-  // every chapter even when the same triangle is assigned twice in a row.
   const t = getTriangleFor('mining');
-  const jitterA = (Math.random() - 0.5) * 0.4;  // ±0.2 rad along the wedge
-  const jitterR = (Math.random() - 0.5) * 6;    // ±3 units along radius
+  const jitterA = (Math.random() - 0.5) * 0.4;
+  const jitterR = (Math.random() - 0.5) * 6;
   const a = t.centerAngle + jitterA;
   const r = 22 + jitterR;
   const x = Math.cos(a) * r;
@@ -624,53 +734,156 @@ export function spawnDepot(chapterIdx) {
 
   const group = new THREE.Group();
   group.position.set(x, 0, z);
+  // Rotate the depot so the catapult arm points toward the silo (arena
+  // center). We use the angle from depot position to (0,0,0), which is
+  // -a. Caller-facing: depot group's +Z axis now aims at silo.
+  group.rotation.y = Math.atan2(-x, -z);
 
-  // Plate — shared material (color identical across all depots of a chapter)
+  // --- SUPPORT LEGS (4 corner boxes under the hex plate) ---
+  for (let i = 0; i < 4; i++) {
+    const la = (i / 4) * Math.PI * 2 + Math.PI / 4;
+    const leg = new THREE.Mesh(DEPOT_LEG_GEO, _getDepotArmorMat());
+    leg.position.set(Math.cos(la) * 2.1, 0.5, Math.sin(la) * 2.1);
+    leg.castShadow = true;
+    group.add(leg);
+  }
+
+  // --- PLATFORM (hex base, two-stepped) ---
   const plate = new THREE.Mesh(DEPOT_PLATE_GEO, _getDepotPlateMat(tint));
-  plate.position.y = 0.18;
+  plate.position.y = 1.15;       // lifted by the legs
   plate.castShadow = true;
   plate.receiveShadow = true;
   group.add(plate);
 
-  // Disk — clone cached material so this depot's opacity pulse is independent
+  const plateStep = new THREE.Mesh(DEPOT_PLATE_STEP_GEO, _getDepotArmorMat());
+  plateStep.position.y = 1.5;
+  plateStep.castShadow = true;
+  group.add(plateStep);
+
+  // --- GLOW DISK (chapter-tinted) on the top of the plate ---
+  // Legacy element — keeps the "deposit here" affordance from before.
   const diskMat = _getDepotDiskMat(tint).clone();
   const disk = new THREE.Mesh(DEPOT_DISK_GEO, diskMat);
   disk.rotation.x = -Math.PI / 2;
-  disk.position.y = 0.36;
+  disk.position.y = 1.6;
+  disk.scale.setScalar(0.85);    // slightly smaller to fit inside the crucible base
   group.add(disk);
 
-  // Beacon — clone for same reason
+  // --- CRUCIBLE (central chamber where ores get crushed) ---
+  // Shell + rim + floor. Clone the crucible material per-depot so the
+  // emissive ramp (brighter per deposit) doesn't bleed across chapters.
+  const crucibleMat = _getDepotCrucibleMat(tint).clone();
+  const crucibleShell = new THREE.Mesh(DEPOT_CRUCIBLE_GEO, crucibleMat);
+  crucibleShell.position.y = 2.45;   // sits on the stepped plate
+  group.add(crucibleShell);
+
+  const crucibleRim = new THREE.Mesh(DEPOT_CRUCIBLE_RIM_GEO, _getDepotArmorMat());
+  crucibleRim.position.y = 3.25;
+  crucibleRim.rotation.x = Math.PI / 2;
+  group.add(crucibleRim);
+
+  // Floor of the crucible — a glowing disc that brightens with the
+  // interior (same material as shell so they ramp in lockstep).
+  const crucibleFloor = new THREE.Mesh(DEPOT_CRUCIBLE_FLOOR_GEO, crucibleMat);
+  crucibleFloor.rotation.x = -Math.PI / 2;
+  crucibleFloor.position.y = 1.66;
+  group.add(crucibleFloor);
+
+  // --- CHIMNEY (3-stage stack beside the crucible) ---
+  // Offset to one side so the catapult has room on the other. Chimney
+  // is structurally separate from the crucible — reads as an exhaust
+  // stack, not part of the forge.
+  const chimney = new THREE.Group();
+  chimney.position.set(1.6, 1.65, 0);
+  group.add(chimney);
+
+  const chimneyLow = new THREE.Mesh(DEPOT_CHIMNEY_LOW_GEO, _getDepotArmorMat());
+  chimneyLow.position.y = 1.0;
+  chimneyLow.castShadow = true;
+  chimney.add(chimneyLow);
+
+  const chimneyMid = new THREE.Mesh(DEPOT_CHIMNEY_MID_GEO, _getDepotArmorMat());
+  chimneyMid.position.y = 2.9;
+  chimney.add(chimneyMid);
+
+  const chimneyTop = new THREE.Mesh(DEPOT_CHIMNEY_TOP_GEO, _getDepotArmorMat());
+  chimneyTop.position.y = 4.5;
+  chimney.add(chimneyTop);
+
+  const chimneyCap = new THREE.Mesh(DEPOT_CHIMNEY_CAP_GEO, _getDepotIndLitMat(tint));
+  chimneyCap.position.y = 5.2;
+  chimneyCap.rotation.x = Math.PI / 2;
+  chimney.add(chimneyCap);
+
+  // --- 5 INDICATOR BANDS (stacked on the chimney low stage) ---
+  // Each band starts with the DIM material; when an ore is deposited,
+  // updateDepotDepositVisuals() swaps it for the LIT material.
+  const indicatorBands = [];
+  for (let i = 0; i < 5; i++) {
+    const band = new THREE.Mesh(DEPOT_IND_BAND_GEO, _getDepotIndDimMat(tint));
+    band.position.y = 0.4 + i * 0.35;
+    band.rotation.x = Math.PI / 2;
+    chimney.add(band);
+    indicatorBands.push(band);
+  }
+
+  // --- CATAPULT (pivot + arm + bucket, for the mega-ore launch) ---
+  // Anchored to the OPPOSITE side of the crucible from the chimney, on
+  // a tall pivot post. The arm rests "loaded" angle (-0.45 rad) — tip
+  // lowered into the crucible mouth so at spawn time you can visually
+  // tell the ore is about to be scooped. Launch animation will come in
+  // Part B; for now the catapult just sits there looking ready.
+  const catapult = new THREE.Group();
+  catapult.position.set(-1.6, 1.65, 0);
+  group.add(catapult);
+
+  const pivot = new THREE.Mesh(DEPOT_CATAPULT_PIVOT_GEO, _getDepotArmorMat());
+  pivot.position.y = 0.3;
+  catapult.add(pivot);
+
+  // The arm pivots around this inner group — rotating its X will swing
+  // the arm end up (launch) or down (load). Positioned so the origin of
+  // catapultArm is at the pivot top.
+  const catapultArm = new THREE.Group();
+  catapultArm.position.y = 0.6;
+  catapultArm.rotation.x = -0.45;     // loaded/scoop pose
+  catapult.add(catapultArm);
+
+  const arm = new THREE.Mesh(DEPOT_CATAPULT_ARM_GEO, _getDepotArmorMat());
+  arm.position.z = 1.4;               // arm extends forward along +Z
+  arm.castShadow = true;
+  catapultArm.add(arm);
+
+  const bucket = new THREE.Mesh(DEPOT_CATAPULT_BUCKET_GEO, _getDepotArmorMat());
+  bucket.position.set(0, 0.1, 2.85);  // at the tip of the arm
+  catapultArm.add(bucket);
+
+  // Tall beacon — kept from the original design so the depot reads
+  // from across the arena. Moved to the chimney cap area so it plays
+  // nice with the new silhouette.
   const beaconMat = _getDepotBeaconMat(tint).clone();
   const beacon = new THREE.Mesh(DEPOT_BEACON_GEO, beaconMat);
-  beacon.position.y = 7;
+  beacon.position.set(0, 7, 0);        // centered above the whole rig
   group.add(beacon);
 
-  // Depot light removed — was another PointLight added per mining
-  // wave start, contributing to wave-start recompile stalls. The
-  // emissive plate + beacon + disk + crowd side lights give the
-  // depot enough presence.
   const light = null;
-
   scene.add(group);
 
   depot = {
     obj: group,
     pos: group.position,
+    // Legacy refs the update loop still uses
     plate, disk, beacon, diskMat, beaconMat, light,
+    // v8 refinery refs
+    crucibleShell, crucibleFloor, crucibleMat,
+    chimney, chimneyCap,
+    indicatorBands,
+    catapult, catapultArm, bucket,
     tint,
     deposited: 0,
     required: MINING_CONFIG.oresRequired,
     pulsePhase: 0,
-    // Depot is visible from chapter start (dormant prop) but only ACCEPTS
-    // deposits while the mining wave is active. waves.js flips this when
-    // wave 1 starts / ends.
     active: false,
-
-    // Drive-off animation state. After wave 1 completes, waves.js calls
-    // startDepotDriveOff() which sets drivingOff=true. The updater below
-    // ramps drivingOffT 0→1 over DRIVE_OFF_SEC, translating depot.obj
-    // outward along the mining-triangle centerline past the arena edge.
-    // When drivingOffT hits 1, the depot is removed from the scene.
     drivingOff: false,
     driveT: 0,
     driveStartX: 0,
@@ -767,9 +980,51 @@ export function updateDepot(dt, player) {
   const depositedLive = _depotMegaOre ? depot.required : parkedOrFlying;
   depot.deposited = Math.min(depot.required, depositedLive);
 
+  // v8 PROGRESSIVE LIT-UP.
+  // As ores arrive, light up indicator bands on the chimney one-by-one
+  // and crank the crucible interior's emissive intensity brighter. Both
+  // track depot.deposited so the visual state is always in sync with
+  // the real count — if an ore gets lost somehow the bands dim back.
+  _updateDepotDepositVisuals();
+
   // Wave completes the frame the mega ore's ascend-explosion finishes.
   if (megaExploded) return true;
   return false;
+}
+
+/**
+ * Ramp the refinery visuals to match depot.deposited (0-5).
+ *
+ * Crucible emissive intensity: 0.6 (baseline) → 3.5 (full, all 5 ores).
+ * Chimney cap intensity pulses with the crucible.
+ * Indicator bands [0..N-1] swap from the DIM material to the LIT material
+ * as each ore arrives; remaining bands stay DIM.
+ *
+ * Safe to call every frame — changing material.emissiveIntensity is
+ * cheap, and we only reassign band.material when it actually differs.
+ */
+function _updateDepotDepositVisuals() {
+  if (!depot || !depot.crucibleMat) return;
+  const count = depot.deposited || 0;
+  // Crucible: linear ramp from 0.6 → 3.5 across 0→5 ores, with a small
+  // sine wobble so the "molten" glow doesn't read as a flat light.
+  const base = 0.6 + (count / depot.required) * 2.9;
+  const wobble = Math.sin((depot.pulsePhase || 0) * 3.5) * 0.15;
+  depot.crucibleMat.emissiveIntensity = Math.max(0.3, base + wobble);
+
+  // Indicator bands — swap materials per count. The DIM → LIT mats are
+  // cached globally per tint so we can freely swap back and forth if
+  // deposit count drops (shouldn't normally but the code is defensive).
+  const litMat = _getDepotIndLitMat(depot.tint);
+  const dimMat = _getDepotIndDimMat(depot.tint);
+  if (depot.indicatorBands) {
+    for (let i = 0; i < depot.indicatorBands.length; i++) {
+      const shouldBeLit = i < count;
+      const b = depot.indicatorBands[i];
+      const wanted = shouldBeLit ? litMat : dimMat;
+      if (b.material !== wanted) b.material = wanted;
+    }
+  }
 }
 
 // Drive-off tuning.
