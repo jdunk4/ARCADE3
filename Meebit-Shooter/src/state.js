@@ -102,6 +102,9 @@ export const S = {
 
   xpClearThreshold: 50,
   xpSinceWave: 0,
+
+  // Pixl Pal summon ability — earns a charge every 3 waves (see pixlPals.js).
+  pixlPalCharges: 0,
 };
 
 export const keys = {};
@@ -168,6 +171,7 @@ export function resetGame() {
   S.muzzleTimer = 0;
   S.recoilTimer = 0;
   S.xpSinceWave = 0;
+  S.pixlPalCharges = 0;
 }
 
 export function getWeapon() {
