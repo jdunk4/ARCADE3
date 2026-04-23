@@ -12,7 +12,7 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { scene } from './scene.js';
 import { PLAYER, WEAPONS, GUEST_AVATAR_URL } from './config.js';
 import { S } from './state.js';
-import { attachMixer, animationsReady } from './animation.js';
+import { attachMixer, animationsReady, applyGunHoldPose, GUN_HOLD_EXCLUDE_BONES } from './animation.js';
 
 export const player = {
   obj: null,
@@ -267,19 +267,12 @@ function tryAttachPlayerMixer() {
     console.info('[player] Larva-Labs bind pose detected — enabling rest-pose compensation');
   }
 
-  // Bones we DON'T want the walk/run clips to animate. Arms stay out of the
-  // mixer so our own per-frame gun-hold pose (in animatePlayer) can drive
-  // them without fighting the clip. Shoulders are included so the whole
-  // arm chain from the torso out stays under our control — otherwise a
-  // shoulder bob from the walk clip would offset the gun hold.
-  const PLAYER_EXCLUDE_ARMS = [
-    'LeftShoulderBone',  'LeftUpperArmBone',  'LeftLowerArmBone',  'LeftHandBone',
-    'RightShoulderBone', 'RightUpperArmBone', 'RightLowerArmBone', 'RightHandBone',
-  ];
-
+  // Bones we DON'T want the walk/run clips to animate. Imported from
+  // animation.js so the player, followers, and pixl pals all use the
+  // exact same exclusion list (they all share the Meebit VRM rig).
   player.mixer = attachMixer(player.obj, {
     restPoseCompensation: needsCompensation,
-    excludeBones: PLAYER_EXCLUDE_ARMS,
+    excludeBones: GUN_HOLD_EXCLUDE_BONES,
   });
   player.mixer.playIdle(2);   // start in a still idle; update loop flips to walk when moving
   return true;
@@ -428,42 +421,6 @@ function rotateBone(name, dx, dy, dz) {
   b.quaternion.copy(rest).multiply(_qDelta);
 }
 
-// Gun-hold pose for the Meebit VRM rig. Meebits ship in T-pose — arms
-// extending straight along the X axis. To get a shooter stance we rotate
-// the upper arms forward and inward (bringing them from sideways to
-// forward-and-down) and bend the lower arms 90° so the hands are in
-// front of the chest.
-//
-// These numbers are Euler angles in the bone's local space, applied on
-// top of its rest quaternion. Values came from pose-sketching against
-// the Meebits rig's axis conventions: +X runs outward from the body,
-// so a negative rotation around Z pulls the arm down, and a negative
-// rotation around Y pulls it forward.
-//
-// Called every frame AFTER the mixer update, so these rotations
-// override anything a clip might try to set on the arm bones — but
-// since those bones are in the mixer's excludeBones set, the mixer
-// doesn't write them at all. We're writing into a clean slate.
-const _GUN_HOLD_POSE = {
-  // RIGHT ARM — primary grip (weapon hand)
-  RightShoulderBone: { x:  0,     y:  0,     z:  0    },  // neutral
-  RightUpperArmBone: { x:  0,     y: -1.30,  z: -1.20 },  // forward (y) + down (z)
-  RightLowerArmBone: { x: -0.40,  y: -0.60,  z:  0    },  // bend elbow, point forward
-  RightHandBone:     { x:  0,     y:  0,     z: -0.20 },  // slight wrist tilt
-  // LEFT ARM — support grip (braces the weapon)
-  LeftShoulderBone:  { x:  0,     y:  0,     z:  0    },
-  LeftUpperArmBone:  { x:  0,     y:  1.30,  z:  1.20 },  // mirrored
-  LeftLowerArmBone:  { x: -0.40,  y:  0.60,  z:  0    },
-  LeftHandBone:      { x:  0,     y:  0,     z:  0.20 },
-};
-
-function _applyGunHoldPose() {
-  for (const name in _GUN_HOLD_POSE) {
-    const p = _GUN_HOLD_POSE[name];
-    rotateBone(name, p.x, p.y, p.z);
-  }
-}
-
 export function animatePlayer(dt, moving, timeElapsed) {
   if (!player.ready) return;
 
@@ -491,13 +448,9 @@ export function animatePlayer(dt, moving, timeElapsed) {
       }
       player.mixer.update(dt);
 
-      // AFTER the mixer update: write the static gun-hold pose into the arm
-      // bones. The mixer didn't touch these bones (they're in the exclude
-      // list), so the rest T-pose is still on them — we overwrite it with
-      // rotations that bring the arms forward-and-down and bend the
-      // forearms so the hand is in front of the chest. Right hand holds
-      // the weapon, left hand braces it.
-      _applyGunHoldPose();
+      // Static shooter pose on the arm bones — the mixer excluded them so
+      // the walk/idle cycle doesn't fight this write.
+      applyGunHoldPose(player.obj);
     } else {
       // Larva-Labs rig (or anims not yet loaded): use procedural walk.
       animateGLB(dt, moving, timeElapsed);
