@@ -220,16 +220,18 @@ export async function preloadFlingerGLBs(onProgress, renderer, camera) {
   const total = names.length;
   let loaded = 0;
 
-  // --- Phase A: fetch all GLBs in parallel ---
-  await Promise.all(names.map(glbName => {
+  // --- Phase A: fetch all GLBs ---
+  // Throttled to 2 workers — flinger GLBs are 4-7 MB each, chunkier than
+  // the pixl pal GLBs, so we stay conservative to avoid 503 rate limits
+  // from static hosts (GitHub Pages etc). Each fetch auto-retries on 5xx
+  // with exponential backoff.
+  await _runWithConcurrency(names, 2, async (glbName) => {
     if (!glbCache.has(glbName)) {
       const url = `assets/civilians/flingers/${glbName}.glb`;
-      glbCache.set(glbName, new Promise((resolve, reject) => {
-        gltfLoader.load(url, resolve, undefined, reject);
-      }));
+      glbCache.set(glbName, _loadGLBWithRetry(url));
     }
-    return glbCache.get(glbName).then(() => {}, () => {});
-  }));
+    try { await glbCache.get(glbName); } catch (e) { /* non-fatal */ }
+  });
   console.info(`[flinger] fetched ${total} GLBs`);
 
   // --- Phase B: build hidden mesh pool (clones parked at y=-1000) ---
@@ -842,9 +844,7 @@ function _findFlingTarget(fromPos) {
 function _loadFlingerMesh(glbName) {
   if (!glbCache.has(glbName)) {
     const url = `assets/civilians/flingers/${glbName}.glb`;
-    glbCache.set(glbName, new Promise((resolve, reject) => {
-      gltfLoader.load(url, resolve, undefined, reject);
-    }));
+    glbCache.set(glbName, _loadGLBWithRetry(url));
   }
   return glbCache.get(glbName).then(gltf => {
     const clone = skeletonClone(gltf.scene);
@@ -871,6 +871,68 @@ function _loadFlingerMesh(glbName) {
       }
     });
     return clone;
+  });
+}
+
+// -----------------------------------------------------------------------------
+// INTERNAL: NETWORK HELPERS (concurrency + retry)
+// -----------------------------------------------------------------------------
+
+/**
+ * Run an async task over `items` with at most `limit` in flight at once.
+ * Prevents us from slamming the host with all N parallel requests — GitHub
+ * Pages in particular rate-limits with 503 when we go too hard.
+ */
+async function _runWithConcurrency(items, limit, taskFn) {
+  let cursor = 0;
+  async function worker() {
+    while (cursor < items.length) {
+      const item = items[cursor++];
+      try { await taskFn(item); } catch (e) { /* task-level errors already swallowed */ }
+    }
+  }
+  const workers = [];
+  const n = Math.min(limit, items.length);
+  for (let i = 0; i < n; i++) workers.push(worker());
+  await Promise.all(workers);
+}
+
+/**
+ * Wrap GLTFLoader.load in a Promise with retry-on-503. HEAD-probes the
+ * URL on error to check for 5xx; if so, backs off exponentially and
+ * retries. Three attempts total. Resolves with the gltf or rejects with
+ * the last error.
+ */
+function _loadGLBWithRetry(url, maxAttempts = 3) {
+  return new Promise((resolve, reject) => {
+    let attempt = 0;
+    const tryLoad = () => {
+      attempt++;
+      gltfLoader.load(
+        url,
+        (gltf) => resolve(gltf),
+        undefined,
+        (err) => {
+          if (attempt >= maxAttempts) {
+            reject(err);
+            return;
+          }
+          fetch(url, { method: 'HEAD' }).then(res => {
+            if (res.status >= 500 && res.status < 600) {
+              const delay = Math.min(5000, 1000 * Math.pow(2, attempt - 1));
+              console.info(`[flinger] ${url} got ${res.status}, retrying in ${delay}ms (attempt ${attempt + 1}/${maxAttempts})`);
+              setTimeout(tryLoad, delay);
+            } else {
+              reject(err);
+            }
+          }).catch(() => {
+            const delay = Math.min(5000, 1000 * Math.pow(2, attempt - 1));
+            setTimeout(tryLoad, delay);
+          });
+        },
+      );
+    };
+    tryLoad();
   });
 }
 
