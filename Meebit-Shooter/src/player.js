@@ -222,7 +222,7 @@ function tryAttachPlayerMixer() {
   }
 
   player.mixer = attachMixer(player.obj);
-  player.mixer.playWalk();
+  player.mixer.playRifleAim();
   return true;
 }
 
@@ -372,43 +372,32 @@ function rotateBone(name, dx, dy, dz) {
 export function animatePlayer(dt, moving, timeElapsed) {
   if (!player.ready) return;
 
-  // ANIMATIONS DISABLED — user wants a clean static pose while the
-  // animation system is being reworked. We still reset bones to their
-  // rest quaternions every frame so a previously-applied animation
-  // doesn't linger, and we still update the skinning so skinned meshes
-  // don't freeze in a stale pose.
   if (player.mode === 'glb') {
-    // Stop any mixer that may have attached earlier
-    if (player.mixer) {
-      try { player.mixer.stop && player.mixer.stop(); } catch (e) {}
-      player.mixer = null;
+    // Attempt to attach the mixer once anims are loaded. Only works on
+    // VRM rigs (HipsBone etc). Non-VRM rigs (Larva-Labs Meebit) fall
+    // through to the procedural animateGLB path.
+    if (!player.mixer && !player._mixerSkipped) {
+      tryAttachPlayerMixer();
     }
-    player._mixerSkipped = true; // prevent re-attach attempts
 
-    // Reset every bone to its rest quaternion. If the rig's rest pose
-    // isn't a true T-pose, that's an asset-side fix — but for now this
-    // gives a consistent, readable pose instead of whatever mixer the
-    // animation system had partially applied.
-    if (player.bones && player.restQuat) {
-      for (const name in player.bones) {
-        const b = player.bones[name];
-        const rest = player.restQuat[name];
-        if (b && rest) b.quaternion.copy(rest);
+    if (player.mixer) {
+      // VRM rig with mixer: drive rifle-run / rifle-aim from the `moving`
+      // flag the main loop passes in (set when keyboard/joystick input
+      // produces non-zero movement this frame).
+      if (moving) {
+        player.mixer.playRifleRun();
+        player.mixer.setSpeed(1.0);
+      } else {
+        player.mixer.playRifleAim();
+        player.mixer.setSpeed(1.0);
       }
-    }
-    if (player.skinnedMeshes) {
-      for (const skin of player.skinnedMeshes) {
-        if (skin.skeleton) skin.skeleton.update();
-      }
+      player.mixer.update(dt);
+    } else {
+      // Larva-Labs rig (or anims not yet loaded): use procedural walk.
+      animateGLB(dt, moving, timeElapsed);
     }
   } else {
-    // Voxel mode: zero the limb rotations so the little boxy player
-    // stands straight rather than mid-stride.
-    if (player.legL) player.legL.rotation.x = 0;
-    if (player.legR) player.legR.rotation.x = 0;
-    if (player.armL) player.armL.rotation.x = 0;
-    if (player.armR) player.armR.rotation.x = 0;
-    if (player.obj) player.obj.position.y = player.pos.y;
+    animateVoxel(dt, moving, timeElapsed);
   }
 
   // Invuln flicker — keep this so damage feedback still works.
