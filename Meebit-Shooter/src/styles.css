@@ -545,6 +545,17 @@ canvas { display: block; }
   color: var(--xp-yellow); font-size: 30px;
   touch-action: none;
 }
+#pal-btn {
+  position: fixed; bottom: 300px; right: 20px;
+  width: 70px; height: 70px; z-index: 15;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(0,255,102,0.25), rgba(0,0,0,0.6));
+  border: 3px solid #00ff66;
+  box-shadow: 0 0 14px rgba(0,255,102,0.5);
+  display: flex; align-items: center; justify-content: center;
+  color: #00ff66; font-size: 30px;
+  touch-action: none;
+}
 
 /* ====== USERNAME INPUT ====== */
 #username-wrap {
