@@ -170,8 +170,30 @@ async function _loadVRM(herdId, filename) {
   const gltf = await gltfLoader.loadAsync(url);
   const vrmScene = gltf.scene;
 
-  // Match civilian VRM sizing.
-  vrmScene.scale.setScalar(1.8);
+  // NORMALIZED SIZING.
+  // Previously we applied a blanket `scale.setScalar(1.8)` to match the
+  // player. But different herds have different rest-pose heights — the
+  // dissected VRMs in particular are intrinsically larger than the pigs/
+  // robots/etc. After a blanket multiply they rendered noticeably
+  // oversized next to the other saved meebits.
+  //
+  // Fix: measure the current world-space height and rescale to a fixed
+  // target of 2.6 units (matches the player's ~2.6u on-screen height =
+  // raw Meebit VRM ~1.44u × PLAYER.scale 1.8). Now every herd, regardless
+  // of rest pose, ends up looking the same size as every other saved
+  // meebit. This is the single source of truth — the bonus-wave pool
+  // clones inherit this scale automatically.
+  vrmScene.updateMatrixWorld(true);
+  const box = new THREE.Box3().setFromObject(vrmScene);
+  const sizeV = new THREE.Vector3();
+  box.getSize(sizeV);
+  if (sizeV.y > 0.01 && isFinite(sizeV.y)) {
+    vrmScene.scale.multiplyScalar(2.6 / sizeV.y);
+  } else {
+    // Fallback if bounding box is invalid — apply the legacy multiplier so
+    // we at least render something recognizable.
+    vrmScene.scale.setScalar(1.8);
+  }
   vrmScene.traverse(obj => {
     if (obj.isMesh) {
       obj.castShadow = true;
