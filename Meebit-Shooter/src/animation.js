@@ -174,12 +174,20 @@ function remapMixamoClip(rawClip, label) {
  * delta subtraction is what keeps Mixamo's baked-in runner-lean (a
  * constant ~13° forward tilt on the Hips track) from composing with
  * the Meebit rest and producing a permanent sideways body lean.
- * `opts.excludeBones` — array of bone names whose tracks should be dropped
- * from every clip this mixer plays. Bones matching any name in the list
- * stay at whatever rotation the caller writes to them AFTER the mixer
- * update runs. The player uses this to drop the arm tracks from walk/run
- * clips (so the full-body walk doesn't swing the arms) and then applies
- * a static gun-hold pose to the arm bones in its own update tick.
+ * `opts.excludeBones` — bones whose tracks should be dropped from clips on
+ * this mixer. Accepts two shapes:
+ *
+ *   Array: `['LeftArm', 'RightArm', ...]`
+ *     Exclusion applies to EVERY clip this mixer plays.
+ *
+ *   Object: `{ default: ['LeftArm', ...], idle2: ['HipsBone', 'SpineBone'] }`
+ *     `default` is the base exclusion list applied to all clips; per-clip-key
+ *     entries are ADDED to the default for that specific clip. E.g. the
+ *     player uses this to exclude arms globally (gun-hold pose takes over)
+ *     and additionally excludes hip/spine on idle clips (the Mixamo idles
+ *     have a 60°+ hip cock baked in that tips the character over on VRM
+ *     rigs — removing hip/spine keeps the breath/head motion while
+ *     eliminating the cock).
  *
  * Returns:
  *   {
@@ -198,11 +206,29 @@ export function attachMixer(mesh, opts = {}) {
   // restPoseCompensation is requested.
   const restByBone = opts.restPoseCompensation ? _collectRestPose(mesh) : null;
 
-  // Bones whose tracks should be stripped from every clip on this mixer.
-  // Stored as a Set for O(1) lookup during filtering.
-  const excludeSet = (opts.excludeBones && opts.excludeBones.length)
-    ? new Set(opts.excludeBones)
-    : null;
+  // Bones whose tracks should be stripped. Normalize both shapes (array or
+  // { default, <clipKey>: [...] }) into one lookup:
+  //   defaultSet:   bones excluded on every clip
+  //   perClipExtra: Map<clipKey, Set<bone>>   ADDITIONAL bones per clip
+  let defaultSet = null;
+  let perClipExtra = null;
+  if (opts.excludeBones) {
+    if (Array.isArray(opts.excludeBones)) {
+      if (opts.excludeBones.length) defaultSet = new Set(opts.excludeBones);
+    } else {
+      if (opts.excludeBones.default && opts.excludeBones.default.length) {
+        defaultSet = new Set(opts.excludeBones.default);
+      }
+      perClipExtra = new Map();
+      for (const clipKey in opts.excludeBones) {
+        if (clipKey === 'default') continue;
+        const extras = opts.excludeBones[clipKey];
+        if (Array.isArray(extras) && extras.length) {
+          perClipExtra.set(clipKey, extras);
+        }
+      }
+    }
+  }
 
   function getAction(key) {
     if (actions[key]) return actions[key];
@@ -213,8 +239,17 @@ export function attachMixer(mesh, opts = {}) {
     // Both return the same clip reference when no transform is needed, so
     // a mixer with neither option set pays zero cost.
     let effectiveClip = clip;
-    if (restByBone)  effectiveClip = _buildCompensatedClip(effectiveClip, restByBone);
-    if (excludeSet)  effectiveClip = _buildFilteredClip(effectiveClip, excludeSet);
+    if (restByBone) effectiveClip = _buildCompensatedClip(effectiveClip, restByBone);
+
+    // Build the effective exclude set for this specific clip: default + extras.
+    let excludeSet = defaultSet;
+    if (perClipExtra && perClipExtra.has(key)) {
+      excludeSet = new Set(defaultSet || []);
+      for (const b of perClipExtra.get(key)) excludeSet.add(b);
+    }
+    if (excludeSet && excludeSet.size) {
+      effectiveClip = _buildFilteredClip(effectiveClip, excludeSet);
+    }
 
     const action = mixer.clipAction(effectiveClip);
     action.setLoop(THREE.LoopRepeat, Infinity);
@@ -304,6 +339,18 @@ export function animationsReady() {
 export const GUN_HOLD_EXCLUDE_BONES = [
   'LeftShoulderBone',  'LeftUpperArmBone',  'LeftLowerArmBone',  'LeftHandBone',
   'RightShoulderBone', 'RightUpperArmBone', 'RightLowerArmBone', 'RightHandBone',
+];
+
+// Bones to additionally exclude on the "Standing Idle" Mixamo clips. These
+// idles have a 60°+ hip rotation baked in around -Y (Mixamo authored them
+// as "stand with hip cocked, weight on one leg") which reads as the
+// character tipping sideways on the Meebit VRM rig. Dropping the hip +
+// spine tracks preserves the subtle head / shoulder / leg-lower motion
+// that sells "alive and breathing" without the cock.
+//
+// Only applies to the idle2/idle3/idle4 clip keys — walk/run are unaffected.
+export const IDLE_HIP_EXCLUDE_BONES = [
+  'HipsBone', 'SpineBone', 'ChestBone',
 ];
 
 const GUN_HOLD_POSE = {
