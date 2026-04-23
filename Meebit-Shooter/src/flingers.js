@@ -137,6 +137,10 @@ const RECOVERY_SEC = 0.45;           // post-release idle
 const flingers = [];             // currently active flingers
 const flungEnemies = [];         // enemies mid-flight (airborne)
 
+// Hidden mesh pool — prebuilt during matrix dive by preloadFlingerGLBs().
+// Mirrors the pixl-pal pool pattern. Zero-jank first arrival.
+const flingerPoolEntries = [];
+
 let lastWaveAwarded = 0;         // last wave for which we granted a charge
 let _killHandler = null;         // main.js registers a hook that routes kills
 let _lastKnownKillCount = 0;     // tracks S.kills deltas to advance KILLS_TO_DESPAWN
@@ -176,8 +180,13 @@ export function registerFlingerKillHandler(fn) {
  * Flingers are chunky (~7 MB each), so prefetching these during the dive
  * is where this helper saves the most visible jank in gameplay.
  */
-export async function preloadFlingerGLBs(onProgress) {
+const FLINGER_POOL_STASH_Y = -1000;
+const FLINGER_POOL_BATCH_PER_FRAME = 2;
+
+export async function preloadFlingerGLBs(onProgress, renderer, camera) {
   let names = FLINGER_GLB_NAMES.slice();
+
+  // --- Discover names from manifest ---
   try {
     const res = await fetch('assets/civilians/flingers/manifest.json', { cache: 'no-cache' });
     if (res.ok) {
@@ -186,19 +195,25 @@ export async function preloadFlingerGLBs(onProgress) {
         const parsed = [];
         for (const entry of data) {
           if (typeof entry !== 'string') continue;
-          // Accept either "FlingerX.glb" or "FlingerX"
           const clean = entry.replace(/\.glb$/i, '').trim();
           if (/^Flinger[A-Z]+$/i.test(clean)) parsed.push(clean);
         }
-        if (parsed.length > 0) names = parsed;
+        if (parsed.length > 0) {
+          names = parsed;
+          console.info(`[flinger] manifest found (${names.length} files)`);
+        }
       }
+    } else {
+      console.info('[flinger] no manifest, using hardcoded list (' + names.length + ' files)');
     }
   } catch (e) {
-    // Manifest missing — silently use hardcoded list.
+    console.info('[flinger] manifest fetch failed, using hardcoded list');
   }
 
-  let loaded = 0;
   const total = names.length;
+  let loaded = 0;
+
+  // --- Phase A: fetch all GLBs in parallel ---
   await Promise.all(names.map(glbName => {
     if (!glbCache.has(glbName)) {
       const url = `assets/civilians/flingers/${glbName}.glb`;
@@ -206,12 +221,85 @@ export async function preloadFlingerGLBs(onProgress) {
         gltfLoader.load(url, resolve, undefined, reject);
       }));
     }
-    return glbCache.get(glbName).then(
-      () => { loaded++; onProgress && onProgress({ loaded, total, name: glbName }); },
-      () => { loaded++; onProgress && onProgress({ loaded, total, name: glbName, err: true }); },
-    );
+    return glbCache.get(glbName).then(() => {}, () => {});
   }));
+  console.info(`[flinger] fetched ${total} GLBs`);
+
+  // --- Phase B: build hidden mesh pool (clones parked at y=-1000) ---
+  const tmpScene = new THREE.Scene();
+  for (let i = 0; i < names.length; i++) {
+    const glbName = names[i];
+    try {
+      const mesh = await _loadFlingerMesh(glbName);
+      mesh.position.set(0, FLINGER_POOL_STASH_Y, 0);
+      mesh.visible = false;
+      mesh.matrixAutoUpdate = false;
+      mesh.updateMatrix();
+      mesh.traverse(o => { o.frustumCulled = false; });
+      scene.add(mesh);
+      tmpScene.add(mesh);
+      flingerPoolEntries.push({ name: glbName, obj: mesh, inUse: false });
+    } catch (err) {
+      console.warn('[flinger] pool build failed for', glbName, err);
+    }
+    loaded++;
+    if (onProgress) onProgress({ loaded, total, name: glbName });
+    if ((i + 1) % FLINGER_POOL_BATCH_PER_FRAME === 0) {
+      await new Promise(r => requestAnimationFrame(r));
+    }
+  }
+
+  // --- Phase C: PSO warm ---
+  try {
+    if (renderer && camera) {
+      renderer.compile(tmpScene, camera);
+    }
+  } catch (err) {
+    console.warn('[flinger] renderer.compile failed (non-fatal):', err);
+  }
+  while (tmpScene.children.length > 0) {
+    const m = tmpScene.children[0];
+    tmpScene.remove(m);
+    scene.add(m);
+  }
+  console.info(`[flinger] pool ready: ${flingerPoolEntries.length} clones`);
+
   return { loaded, total };
+}
+
+/**
+ * Acquire a flinger pool mesh by NAME (so we always get the chapter's
+ * color). Returns null if no matching entry is free or the pool is empty.
+ */
+function _acquireFlingerPoolMesh(glbName) {
+  for (let i = 0; i < flingerPoolEntries.length; i++) {
+    const e = flingerPoolEntries[i];
+    if (!e.inUse && e.name === glbName) {
+      e.inUse = true;
+      return e.obj;
+    }
+  }
+  return null;
+}
+
+function _releaseFlingerPoolMesh(mesh, mixer) {
+  if (!mesh) return;
+  if (mixer) { try { mixer.stop && mixer.stop(); } catch (e) {} }
+  for (let i = 0; i < flingerPoolEntries.length; i++) {
+    const e = flingerPoolEntries[i];
+    if (e.obj === mesh) {
+      e.inUse = false;
+      _resetFlingerHighlight(mesh);
+      mesh.visible = false;
+      mesh.matrixAutoUpdate = false;
+      mesh.position.set(0, FLINGER_POOL_STASH_Y, 0);
+      mesh.rotation.set(0, 0, 0);
+      mesh.scale.setScalar(1);
+      mesh.updateMatrix();
+      return;
+    }
+  }
+  if (mesh.parent) scene.remove(mesh);
 }
 
 /**
@@ -251,8 +339,8 @@ export function addFlingerCharge(n = 1) {
  */
 export function clearAllFlingers() {
   for (const f of flingers) {
-    if (f.mixer) { try { f.mixer.stop && f.mixer.stop(); } catch (e) {} f.mixer = null; }
-    if (f.obj && f.obj.parent) scene.remove(f.obj);
+    _releaseFlingerPoolMesh(f.obj, f.mixer);
+    f.mixer = null;
   }
   flingers.length = 0;
 
@@ -321,8 +409,8 @@ export function updateFlingers(dt, playerPos) {
       }
       if (f.despawnTimer <= 0) {
         _flingerSpawnFx(f.pos, f.tint);
-        if (f.mixer) { try { f.mixer.stop && f.mixer.stop(); } catch (e) {} f.mixer = null; }
-        scene.remove(f.obj);
+        _releaseFlingerPoolMesh(f.obj, f.mixer);
+        f.mixer = null;
         flingers.splice(i, 1);
         continue;
       }
@@ -552,6 +640,43 @@ function _tryAutoSummon() {
   UI.toast && UI.toast('FLINGER · ' + glbName.replace('Flinger', ''),
                        '#' + tint.toString(16).padStart(6, '0'), 1600);
 
+  // --- POOL PATH — find the prebuilt flinger for this chapter's color ---
+  // Pool was built during the matrix dive by preloadFlingerGLBs(). All
+  // six color variants are pre-cloned + PSO-warmed, so first-arrival is
+  // zero-jank.
+  const pooledMesh = _acquireFlingerPoolMesh(glbName);
+  if (pooledMesh) {
+    scene.remove(f.obj);
+    pooledMesh.visible = true;
+    pooledMesh.matrixAutoUpdate = true;
+    pooledMesh.position.copy(f.pos);
+    pooledMesh.rotation.y = Math.random() * Math.PI * 2;
+    _resetFlingerHighlight(pooledMesh);
+    _applyFlingerHighlight(pooledMesh, tint);
+    f.obj = pooledMesh;
+    f.pos = pooledMesh.position;
+    f.ready = true;
+
+    if (animationsReady()) {
+      try {
+        f.mixer = attachMixer(pooledMesh, {
+          excludeBones: {
+            default: GUN_HOLD_EXCLUDE_BONES,
+            idle2:   IDLE_HIP_EXCLUDE_BONES,
+            idle3:   IDLE_HIP_EXCLUDE_BONES,
+            idle4:   IDLE_HIP_EXCLUDE_BONES,
+          },
+        });
+        f.mixer.playIdle(2);
+      } catch (e) {
+        console.warn('[Flinger] attachMixer failed', e);
+      }
+    }
+    return;
+  }
+
+  // --- FALLBACK PATH — pool missing / exhausted. Slow path (will jank). ---
+  console.warn('[Flinger] pool miss — falling back to on-demand load');
   _loadFlingerMesh(glbName).then(mesh => {
     if (!flingers.includes(f)) return;
     scene.remove(f.obj);
@@ -732,15 +857,20 @@ function _applyFlingerHighlight(mesh, tint) {
       const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
       for (const m of mats) {
         if (m.emissive) {
-          m.emissive = m.emissive.clone().add(tintColor.clone().multiplyScalar(0.25));
-          m.emissiveIntensity = Math.max(0.3, m.emissiveIntensity || 0.3);
+          if (!m.userData) m.userData = {};
+          if (!m.userData.__flingerOrigEmissive) {
+            m.userData.__flingerOrigEmissive = m.emissive.clone();
+            m.userData.__flingerOrigIntensity = m.emissiveIntensity || 0;
+          }
+          m.emissive = m.userData.__flingerOrigEmissive.clone()
+            .add(tintColor.clone().multiplyScalar(0.25));
+          m.emissiveIntensity = Math.max(0.3, m.userData.__flingerOrigIntensity);
           m.needsUpdate = true;
         }
       }
     }
   });
-  // Aura ring at the feet — flingers get a wider, more intense ring
-  // than pixl pals because they're a more "intense" ally.
+  // Outer aura ring at the feet
   const auraGeo = new THREE.RingGeometry(1.1, 1.7, 28);
   const auraMat = new THREE.MeshBasicMaterial({
     color: tint,
@@ -749,11 +879,12 @@ function _applyFlingerHighlight(mesh, tint) {
     opacity: 0.6,
   });
   const aura = new THREE.Mesh(auraGeo, auraMat);
+  aura.name = 'flinger-aura';
   aura.rotation.x = -Math.PI / 2;
   aura.position.y = 0.05;
   mesh.add(aura);
 
-  // Secondary inner ring for extra glow
+  // Inner white ring for extra glow
   const innerGeo = new THREE.RingGeometry(0.7, 0.95, 20);
   const innerMat = new THREE.MeshBasicMaterial({
     color: 0xffffff,
@@ -762,9 +893,33 @@ function _applyFlingerHighlight(mesh, tint) {
     opacity: 0.35,
   });
   const inner = new THREE.Mesh(innerGeo, innerMat);
+  inner.name = 'flinger-aura';
   inner.rotation.x = -Math.PI / 2;
   inner.position.y = 0.06;
   mesh.add(inner);
+}
+
+function _resetFlingerHighlight(mesh) {
+  for (let i = mesh.children.length - 1; i >= 0; i--) {
+    const c = mesh.children[i];
+    if (c && c.name === 'flinger-aura') {
+      mesh.remove(c);
+      if (c.geometry) c.geometry.dispose();
+      if (c.material) c.material.dispose();
+    }
+  }
+  mesh.traverse(obj => {
+    if (obj.isMesh && obj.material) {
+      const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+      for (const m of mats) {
+        if (m.userData && m.userData.__flingerOrigEmissive) {
+          m.emissive.copy(m.userData.__flingerOrigEmissive);
+          m.emissiveIntensity = m.userData.__flingerOrigIntensity;
+          m.needsUpdate = true;
+        }
+      }
+    }
+  });
 }
 
 function _buildFallbackVoxel(placeholder, tint) {
