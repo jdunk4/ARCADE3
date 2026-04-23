@@ -41,7 +41,7 @@
 
 import * as THREE from 'three';
 import { scene, renderer } from './scene.js';
-import { CHAPTERS } from './config.js';
+import { CHAPTERS, getWaveDef } from './config.js';
 import { S, shake } from './state.js';
 import { UI } from './ui.js';
 import { Audio } from './audio.js';
@@ -52,7 +52,6 @@ import { removeHiveShields, dropHiveShield } from './dormantProps.js';
 import { getCentroidFor } from './triangles.js';
 import { fireShockwave } from './shockwave.js';
 import { makeEnemy } from './enemies.js';
-import { CHAPTERS, getWaveDef } from './config.js';
 
 // Phase durations.
 const FLIGHT_SEC = 1.4;       // longer now — missile arcs across the map
