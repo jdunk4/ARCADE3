@@ -63,7 +63,7 @@ export function registerTurretKillHandler(fn) {
 // Turret tuning.
 const TURRET_CFG = {
   range: 22,            // units — enemies outside this radius are ignored
-  fireIntervalSec: 0.55,// was 1.35 — roughly 2.5× faster default cadence
+  fireIntervalSec: 1.35,// seconds between shots (per turret)
   bulletSpeed: 44,      // units/sec
   bulletDamage: 28,     // per hit
   bulletLife: 1.6,      // seconds before despawn
@@ -91,18 +91,18 @@ const TURRET_CFG = {
 // ---------------------------------------------------------------------------
 const TURRET_PROFILES = [
   {
-    // Chapter 1 — Pistol. Faster cadence (was 1.35 → 0.55).
+    // Chapter 1 — Pistol.
     type: 'bullet',
-    fireInterval: 0.55,
+    fireInterval: 1.35,
     damage: 28,
     bulletSpeed: 44,
     bulletColor: 0xfff08a,   // soft yellow
     hitRadius: 1.0,
   },
   {
-    // Chapter 2 — Shotgun. Faster cadence (was 1.85 → 0.80).
+    // Chapter 2 — Shotgun. Slower cadence but fires a spread of 5 pellets.
     type: 'shotgun',
-    fireInterval: 0.80,
+    fireInterval: 1.85,
     damage: 16,              // per pellet
     pellets: 5,
     spread: 0.22,            // radians half-angle
@@ -111,18 +111,18 @@ const TURRET_PROFILES = [
     hitRadius: 0.9,
   },
   {
-    // Chapter 3 — SMG. Already fast, tightened a hair (was 0.32 → 0.18).
+    // Chapter 3 — SMG. Fast cadence, small bullets.
     type: 'smg',
-    fireInterval: 0.18,
+    fireInterval: 0.32,
     damage: 14,
     bulletSpeed: 48,
     bulletColor: 0xff3cac,
     hitRadius: 0.8,
   },
   {
-    // Chapter 4 — Rocket. Faster cadence (was 2.4 → 1.1).
+    // Chapter 4 — Rocket. Slow cadence, heavy damage + AoE on impact.
     type: 'rocket',
-    fireInterval: 1.1,
+    fireInterval: 2.4,
     damage: 70,              // direct hit
     explosionRadius: 3.5,
     explosionDamage: 55,
@@ -131,7 +131,9 @@ const TURRET_PROFILES = [
     hitRadius: 1.1,
   },
   {
-    // Chapter 5 — Raygun. Already a continuous beam; leave tick cadence.
+    // Chapter 5 — Raygun. Continuous beam that ticks damage rapidly while
+    // a target is in range. Represented as a visible ray each tick rather
+    // than a persistent mesh (cheaper, still reads as a beam weapon).
     type: 'beam',
     fireInterval: 0.12,      // tick cadence while target acquired
     damage: 10,              // per tick
@@ -152,11 +154,38 @@ function getTurretProfile() {
 // SHARED GEOMETRIES + CACHED MATERIALS
 // ---------------------------------------------------------------------------
 
-const BASE_GEO = new THREE.CylinderGeometry(0.9, 1.1, 0.5, 8);
-const PEDESTAL_GEO = new THREE.CylinderGeometry(0.55, 0.7, 1.1, 8);
-const SWIVEL_GEO = new THREE.BoxGeometry(0.9, 0.55, 0.9);
-const BARREL_GEO = new THREE.CylinderGeometry(0.13, 0.13, 1.6, 8);
-const MUZZLE_GEO = new THREE.SphereGeometry(0.18, 8, 6);
+// ---------------------------------------------------------------------------
+// TURRET GEOMETRY — v6 visual pass
+// ---------------------------------------------------------------------------
+// The original turret was a stack of plain cylinders. v6 adds structural
+// detail: a tiered base, armor plating, cooling vents, muzzle brake, and
+// an ammo-feed block behind the swivel. All geometry is cached module-level
+// so we pay one upload per shape across all turrets.
+
+// Base: wider, heavier, with a second stepped ring on top
+const BASE_GEO = new THREE.CylinderGeometry(1.0, 1.25, 0.55, 12);
+const BASE_STEP_GEO = new THREE.CylinderGeometry(0.85, 1.0, 0.18, 12);
+
+// Pedestal: the main body column with armor plating
+const PEDESTAL_GEO = new THREE.CylinderGeometry(0.6, 0.8, 1.15, 12);
+// Vents (8 small slotted cuts ringing the pedestal — lit emissive)
+const VENT_GEO = new THREE.BoxGeometry(0.06, 0.3, 0.06);
+
+// Swivel: chunkier armor block
+const SWIVEL_GEO = new THREE.BoxGeometry(1.0, 0.6, 1.05);
+// Ammo feed box on the back of the swivel
+const AMMO_BOX_GEO = new THREE.BoxGeometry(0.55, 0.5, 0.45);
+// Armored cheek plates on the sides of the swivel
+const CHEEK_GEO = new THREE.BoxGeometry(0.1, 0.45, 0.85);
+
+// Barrel: slightly longer + thicker for a meatier read
+const BARREL_GEO = new THREE.CylinderGeometry(0.16, 0.16, 1.8, 10);
+// Barrel heat shroud — wider jacket around the first half of the barrel
+const SHROUD_GEO = new THREE.CylinderGeometry(0.24, 0.24, 0.9, 10);
+// Muzzle brake — 4 radial slots cut into a wider sleeve at the muzzle
+const BRAKE_SLEEVE_GEO = new THREE.CylinderGeometry(0.24, 0.24, 0.3, 10);
+const BRAKE_SLOT_GEO = new THREE.BoxGeometry(0.55, 0.1, 0.15);
+const MUZZLE_GEO = new THREE.SphereGeometry(0.2, 10, 8);
 
 const BULLET_GEO = new THREE.BoxGeometry(0.25, 0.25, 0.65);
 
@@ -345,50 +374,115 @@ function _buildTurret(idx, x, z, tint) {
   const group = new THREE.Group();
   group.position.set(x, 0, z);
 
-  // Base plate (lowest, widest)
+  // --- BASE (stepped) ---
+  // Wide heavy base plate, then a narrower stepped ring on top for
+  // visual hierarchy. Gives the turret a planted, industrial look
+  // versus the old single-disc base.
   const base = new THREE.Mesh(BASE_GEO, _getBodyMat(tint));
-  base.position.y = 0.25;
+  base.position.y = 0.275;
   base.castShadow = true;
   base.receiveShadow = true;
   group.add(base);
 
-  // Emissive ring under the swivel — this is the visible on/off tell.
+  const baseStep = new THREE.Mesh(BASE_STEP_GEO, _getBarrelMat(tint));
+  baseStep.position.y = 0.64;
+  baseStep.castShadow = true;
+  group.add(baseStep);
+
+  // Emissive ring under the swivel — visible on/off tell (unchanged)
   const accent = new THREE.Mesh(
-    new THREE.TorusGeometry(1.1, 0.12, 8, 16),
+    new THREE.TorusGeometry(1.1, 0.14, 8, 20),
     _getDormantEmissive(tint),
   );
-  accent.position.y = 0.55;
+  accent.position.y = 0.8;
   accent.rotation.x = Math.PI / 2;
   group.add(accent);
 
-  // Pedestal column
+  // --- PEDESTAL (column) with cooling vents ---
   const pedestal = new THREE.Mesh(PEDESTAL_GEO, _getBodyMat(tint));
-  pedestal.position.y = 1.1;
+  pedestal.position.y = 1.2;
   pedestal.castShadow = true;
   group.add(pedestal);
 
-  // Swivel block (rotates around Y to aim)
+  // 8 vertical vent slots ringing the pedestal, emissive so they glow.
+  // Tagged `turret-vent` so we could later pulse them based on fire
+  // state — for now they just reinforce the chapter color silhouette.
+  for (let i = 0; i < 8; i++) {
+    const a = (i / 8) * Math.PI * 2;
+    const vent = new THREE.Mesh(VENT_GEO, _getDormantEmissive(tint));
+    vent.position.set(Math.cos(a) * 0.78, 1.2, Math.sin(a) * 0.78);
+    vent.rotation.y = -a;
+    vent.name = 'turret-vent';
+    group.add(vent);
+  }
+
+  // --- SWIVEL (rotates around Y to aim) ---
   const swivel = new THREE.Group();
-  swivel.position.y = 1.8;
+  swivel.position.y = 1.95;
   group.add(swivel);
 
   const swivelBox = new THREE.Mesh(SWIVEL_GEO, _getBodyMat(tint));
   swivelBox.castShadow = true;
   swivel.add(swivelBox);
 
-  // Barrel pivot inside the swivel — rotates around X for pitch
+  // Cheek armor plates — flat sides framing the barrel pivot.
+  const cheekL = new THREE.Mesh(CHEEK_GEO, _getBarrelMat(tint));
+  cheekL.position.set(-0.5, 0, 0.05);
+  cheekL.castShadow = true;
+  swivel.add(cheekL);
+  const cheekR = new THREE.Mesh(CHEEK_GEO, _getBarrelMat(tint));
+  cheekR.position.set(0.5, 0, 0.05);
+  cheekR.castShadow = true;
+  swivel.add(cheekR);
+
+  // Ammo-feed box on the back of the swivel.
+  const ammoBox = new THREE.Mesh(AMMO_BOX_GEO, _getBarrelMat(tint));
+  ammoBox.position.set(0, 0.1, -0.6);
+  ammoBox.castShadow = true;
+  swivel.add(ammoBox);
+
+  // Small emissive strip on the ammo box (chapter-tinted indicator).
+  const ammoIndicator = new THREE.Mesh(
+    new THREE.BoxGeometry(0.4, 0.08, 0.04),
+    _getDormantEmissive(tint),
+  );
+  ammoIndicator.position.set(0, 0.22, -0.82);
+  swivel.add(ammoIndicator);
+
+  // --- BARREL PIVOT (inside swivel, rotates around X for pitch) ---
   const barrelPivot = new THREE.Group();
   barrelPivot.position.set(0, 0.1, 0);
   barrelPivot.rotation.x = -0.35;   // drooped while dormant
   swivel.add(barrelPivot);
 
   const barrel = new THREE.Mesh(BARREL_GEO, _getBarrelMat(tint));
-  barrel.rotation.x = Math.PI / 2;  // stand the cylinder along +Z
-  barrel.position.z = 0.8;
+  barrel.rotation.x = Math.PI / 2;
+  barrel.position.z = 0.9;
   barrelPivot.add(barrel);
 
+  // Heat shroud around the first half of the barrel — reads as a
+  // ventilated jacket. Wider than the barrel so it's visually distinct.
+  const shroud = new THREE.Mesh(SHROUD_GEO, _getBodyMat(tint));
+  shroud.rotation.x = Math.PI / 2;
+  shroud.position.z = 0.55;
+  barrelPivot.add(shroud);
+
+  // Muzzle brake — slotted sleeve at the end of the barrel.
+  const brakeSleeve = new THREE.Mesh(BRAKE_SLEEVE_GEO, _getBarrelMat(tint));
+  brakeSleeve.rotation.x = Math.PI / 2;
+  brakeSleeve.position.z = 1.65;
+  barrelPivot.add(brakeSleeve);
+  // Two crossed slots through the brake (horizontal + vertical).
+  const slotH = new THREE.Mesh(BRAKE_SLOT_GEO, _getBodyMat(tint));
+  slotH.position.z = 1.65;
+  barrelPivot.add(slotH);
+  const slotV = new THREE.Mesh(BRAKE_SLOT_GEO, _getBodyMat(tint));
+  slotV.position.z = 1.65;
+  slotV.rotation.z = Math.PI / 2;
+  barrelPivot.add(slotV);
+
   const muzzle = new THREE.Mesh(MUZZLE_GEO, _getBarrelMat(tint));
-  muzzle.position.z = 1.6;
+  muzzle.position.z = 1.8;
   barrelPivot.add(muzzle);
 
   scene.add(group);
