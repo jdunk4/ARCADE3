@@ -177,14 +177,20 @@ async function _spawnFollower(chapterIdx) {
     }
 
     if (mesh) {
-      // Follower should read the same size as the player. PLAYER.scale (1.8)
-      // is applied directly on the raw Meebit VRM in player.js; matching
-      // that here keeps followers in proportion. We skip the 2.2-unit
-      // normalization that was in place before — that was tuned for small
-      // herd critters, not the player-size Meebit.
+      // Follower should read the same on-screen height as the player.
+      // Player ends up ~2.6 units tall (raw Meebit VRM ~1.44u × PLAYER.scale 1.8).
+      // The herd GLBs the follower pulls from are smaller at rest than the
+      // player VRM, so we normalize to 2.6 directly instead of applying
+      // PLAYER.scale (which overshoots on these meshes — they were reading
+      // noticeably taller than the player at scale 1.8).
       mesh.updateMatrixWorld(true);
-      mesh.scale.setScalar(PLAYER.scale);
-      mesh.updateMatrixWorld(true);
+      const box = new THREE.Box3().setFromObject(mesh);
+      const size = new THREE.Vector3();
+      box.getSize(size);
+      if (size.y > 0.01 && isFinite(size.y)) {
+        mesh.scale.multiplyScalar(2.6 / size.y);
+        mesh.updateMatrixWorld(true);
+      }
       const box2 = new THREE.Box3().setFromObject(mesh);
       if (isFinite(box2.min.y)) mesh.position.y -= box2.min.y;
       mesh.traverse(o => {
@@ -269,8 +275,12 @@ function _updateFollowers(dt, playerPos, playerFacing) {
     // push it back along -playerFacing so it sits behind. Each slot gets
     // progressively farther back (slot 0 closest, slot N farthest) so
     // multiple followers form a tail instead of all crowding one point.
-    const STANDOFF_BASE = 2.4;                  // base distance behind player
-    const STANDOFF_PER_SLOT = 1.6;              // extra offset per slot
+    //
+    // Personal-space values: follower 0 sits ~4u behind (a comfortable
+    // step back from the player), each subsequent follower another 2u
+    // behind that. Previous values (2.4/1.6) read as crowding.
+    const STANDOFF_BASE = 4.0;                  // base distance behind player
+    const STANDOFF_PER_SLOT = 2.0;              // extra offset per slot
     const desiredBehind = STANDOFF_BASE + STANDOFF_PER_SLOT * f.slot;
     const dxFromPlayer = f.pos.x - playerPos.x;
     const dzFromPlayer = f.pos.z - playerPos.z;
