@@ -256,6 +256,68 @@ function _orbitSlotPos(slotIdx, angleOffset) {
   };
 }
 
+// Crucible mouth — where ores are smashed. Relative offsets from
+// depot.pos (x/z) and an absolute world Y.
+const CRUCIBLE_MOUTH_Y = 3.25;     // matches crucibleRim.position.y in spawnDepot
+// Tether — gravitational pull effect during the converge. Each orbit
+// ore gets a bright line back to the crucible that brightens as it
+// approaches. Implemented with per-ore THREE.Line meshes built on demand.
+const TETHER_SEG_COUNT = 8;        // polyline segments per tether (smooth curve)
+
+/**
+ * Build a tether line mesh from an ore's current position to the
+ * crucible mouth. Returns a THREE.Line with `TETHER_SEG_COUNT + 1`
+ * vertices along a gentle arc. Material is additive-blended so it
+ * reads as energy, not a solid rope.
+ *
+ * Allocated per-ore once the converge phase starts; disposed when the
+ * ore merges. Cheap: 9 vertices, 1 draw call per tether.
+ */
+function _buildOreTether(tint) {
+  const positions = new Float32Array((TETHER_SEG_COUNT + 1) * 3);
+  const geom = new THREE.BufferGeometry();
+  geom.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  const mat = new THREE.LineBasicMaterial({
+    color: tint,
+    transparent: true,
+    opacity: 0.6,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+  });
+  const line = new THREE.Line(geom, mat);
+  line.frustumCulled = false;
+  return line;
+}
+
+/**
+ * Update a tether's vertex positions along a gentle curved path from
+ * `from` to `to`, with a mid-arc lift of `arcHeight`. The curve is a
+ * simple quadratic bezier so the tether bows upward, reading as a
+ * gravitational pull toward the crucible mouth.
+ *
+ * Also ramps the line's opacity with progress `t` (0→1) so the tether
+ * blazes brighter as the ore accelerates inward.
+ */
+function _updateTetherGeometry(line, from, to, t, arcHeight) {
+  const mx = (from.x + to.x) * 0.5;
+  const my = Math.max(from.y, to.y) + arcHeight;
+  const mz = (from.z + to.z) * 0.5;
+  const positions = line.geometry.attributes.position.array;
+  for (let i = 0; i <= TETHER_SEG_COUNT; i++) {
+    const u = i / TETHER_SEG_COUNT;
+    // Quadratic bezier
+    const omu = 1 - u;
+    const x = omu * omu * from.x + 2 * omu * u * mx + u * u * to.x;
+    const y = omu * omu * from.y + 2 * omu * u * my + u * u * to.y;
+    const z = omu * omu * from.z + 2 * omu * u * mz + u * u * to.z;
+    positions[i * 3]     = x;
+    positions[i * 3 + 1] = y;
+    positions[i * 3 + 2] = z;
+  }
+  line.geometry.attributes.position.needsUpdate = true;
+  line.material.opacity = 0.3 + t * 0.6;
+}
+
 /**
  * Per-frame tick for every orbiting / flying / converging ore. Returns
  * true when the wave-1 smash-and-form-mega completes (caller uses this
@@ -275,9 +337,20 @@ function _updateOrbitOres(dt, time) {
       o.state = 'converging';
       o.convergeT = 0;
       o.mergeBasePos.set(o.mesh.position.x, o.mesh.position.y, o.mesh.position.z);
+      // v8 Part B: build a tether line for this ore. Pulls from the
+      // ore's current position to the crucible mouth, pulses brighter
+      // as the ore spirals inward. Disposed when the ore merges.
+      if (!o.tether) {
+        o.tether = _buildOreTether(depot.tint);
+        scene.add(o.tether);
+      }
     }
-    // Soft rumble as they gather.
-    shake(0.25, 0.25);
+    // Deeper rumble — the crucible is activating.
+    shake(0.45, 0.4);
+    // Flash the crucible interior bright to cue "pull starting."
+    if (depot.crucibleMat) {
+      depot.crucibleMat.emissiveIntensity = 4.5;
+    }
   }
 
   let allConvergedDone = orbitOres.length > 0;
@@ -286,12 +359,10 @@ function _updateOrbitOres(dt, time) {
       o.flyT = Math.min(1, o.flyT + dt / FLY_TO_DEPOT_SEC);
       const target = _orbitSlotPos(o.slotIdx, _orbitAngle);
       const targetY = ORBIT_HEIGHT;
-      // Ease-out: 1 - (1-t)^2
       const e = 1 - (1 - o.flyT) * (1 - o.flyT);
       o.mesh.position.x = o.startPos.x + (target.x - o.startPos.x) * e;
       o.mesh.position.y = o.startPos.y + (targetY - o.startPos.y) * e;
       o.mesh.position.z = o.startPos.z + (target.z - o.startPos.z) * e;
-      // Spin a little faster during the fly-in for drama.
       if (o.mesh.rotation) {
         o.mesh.rotation.y += dt * 6;
         o.mesh.rotation.x += dt * 3;
@@ -301,29 +372,79 @@ function _updateOrbitOres(dt, time) {
       }
       allConvergedDone = false;
     } else if (o.state === 'orbiting') {
-      // Parked at orbit slot, rotating with the shared ring angle.
       const p = _orbitSlotPos(o.slotIdx, _orbitAngle);
       o.mesh.position.x = p.x;
       o.mesh.position.z = p.z;
       o.mesh.position.y = ORBIT_HEIGHT + Math.sin(time * 3 + o.slotIdx) * 0.1;
-      // Individual ore spin
       o.mesh.rotation.y += dt * 2.5;
       o.mesh.rotation.x += dt * 1.1;
       allConvergedDone = false;
     } else if (o.state === 'converging') {
-      // Fly inward to the depot center over CONVERGE_SEC.
+      // v8 PART B: SPIRAL SMASH.
+      // Replace the straight-line converge with a spiral dive into the
+      // crucible mouth. Each ore follows a tightening helix centered on
+      // the crucible at (depot.pos.x, CRUCIBLE_MOUTH_Y, depot.pos.z).
+      // The tether line updates in lockstep so the energy pull reads
+      // visually ahead of the ore's trailing position.
       o.convergeT = Math.min(1, o.convergeT + dt / CONVERGE_SEC);
-      const e = o.convergeT * o.convergeT;
+      const e = o.convergeT * o.convergeT;   // ease-in: slow start, snap at end
+
+      // Target: crucible mouth (not depot.pos center — the ores should
+      // dive INTO the crucible, not land on the flat plate).
+      const tx = depot.pos.x;
+      const ty = CRUCIBLE_MOUTH_Y;
+      const tz = depot.pos.z;
+
+      // Spiral parameters: base radius shrinks from initial offset to 0,
+      // with an angular sweep of ~2 full turns around the vertical axis
+      // so the ore visibly orbits as it dives in. Each ore has a unique
+      // phase offset (its slot index) so the 5 don't overlap.
       const sx = o.mergeBasePos.x, sy = o.mergeBasePos.y, sz = o.mergeBasePos.z;
-      const tx = depot.pos.x, ty = 1.4, tz = depot.pos.z;
-      o.mesh.position.x = sx + (tx - sx) * e;
-      o.mesh.position.y = sy + (ty - sy) * e;
-      o.mesh.position.z = sz + (tz - sz) * e;
-      // Shrink into the merge point.
+      const baseDx = sx - tx;
+      const baseDz = sz - tz;
+      const baseR = Math.sqrt(baseDx * baseDx + baseDz * baseDz);
+      const baseAngle = Math.atan2(baseDz, baseDx);
+      const sweep = Math.PI * 2 * 1.8;   // ~1.8 turns across the converge
+      const angleNow = baseAngle + sweep * e;
+      const radiusNow = baseR * (1 - e);
+
+      o.mesh.position.x = tx + Math.cos(angleNow) * radiusNow;
+      o.mesh.position.z = tz + Math.sin(angleNow) * radiusNow;
+      // Y arcs up briefly (reads as "lifted by the pull") then descends
+      // into the crucible mouth.
+      const yArc = Math.sin(e * Math.PI) * 1.2;    // peaks mid-converge
+      o.mesh.position.y = sy + (ty - sy) * e + yArc;
+
+      // Shrink as it dives in.
       const s = Math.max(0.02, o.startScale * (1 - e * 0.9));
       o.mesh.scale.setScalar(s);
-      // Faster spin as they converge.
-      o.mesh.rotation.y += dt * (4 + e * 10);
+
+      // Fast spin during the dive.
+      o.mesh.rotation.y += dt * (4 + e * 14);
+      o.mesh.rotation.x += dt * (2 + e * 8);
+
+      // Update the tether from ore's CURRENT position to crucible mouth
+      // so it pulls taut as the ore spirals in. Arc height decays with
+      // progress so the tether flattens near the mouth.
+      if (o.tether) {
+        const arcH = 1.5 * (1 - e * 0.5);
+        _updateTetherGeometry(
+          o.tether,
+          o.mesh.position,
+          { x: tx, y: ty, z: tz },
+          e,
+          arcH,
+        );
+      }
+
+      // Per-frame particle trail behind the ore — spirals it visually.
+      if (Math.random() < 0.55) {
+        hitBurst(
+          new THREE.Vector3(o.mesh.position.x, o.mesh.position.y, o.mesh.position.z),
+          depot.tint, 1,
+        );
+      }
+
       if (o.convergeT < 1) allConvergedDone = false;
     }
   }
@@ -331,9 +452,15 @@ function _updateOrbitOres(dt, time) {
   // When every converging ore has arrived, spawn the mega ore + burst.
   if (allConvergedDone && orbitOres.length > 0 && !_depotMegaOre) {
     _formDepotMegaOre();
-    // Dispose the original 5 ore meshes — the mega ore replaces them.
+    // Dispose the original 5 ore meshes AND their tethers — the mega
+    // ore replaces them.
     for (const o of orbitOres) {
       if (o.mesh && o.mesh.parent) scene.remove(o.mesh);
+      if (o.tether) {
+        if (o.tether.parent) scene.remove(o.tether);
+        if (o.tether.geometry) o.tether.geometry.dispose();
+        if (o.tether.material) o.tether.material.dispose();
+      }
     }
     orbitOres.length = 0;
     return true;   // caller: wave complete
@@ -343,41 +470,42 @@ function _updateOrbitOres(dt, time) {
 
 function _formDepotMegaOre() {
   if (!depot) return;
-  // Big cascading burst at depot center (white → gold → chapter tint).
-  const origin = new THREE.Vector3(depot.pos.x, 1.5, depot.pos.z);
-  hitBurst(origin, 0xffffff, 36);
-  hitBurst(origin, 0xffd93d, 32);
-  setTimeout(() => hitBurst(origin, 0xffd93d, 20), 60);
-  setTimeout(() => hitBurst(origin, depot.tint, 18), 140);
-  shake(0.6, 0.45);
+  // v8 Part B: forms at the CRUCIBLE mouth (not the plate center) so
+  // the catapult arm can reach it. Big cascading burst centered on the
+  // crucible.
+  const origin = new THREE.Vector3(depot.pos.x, CRUCIBLE_MOUTH_Y, depot.pos.z);
+  hitBurst(origin, 0xffffff, 42);
+  hitBurst(origin, 0xffd93d, 36);
+  setTimeout(() => hitBurst(origin, 0xffd93d, 22), 60);
+  setTimeout(() => hitBurst(origin, depot.tint, 20), 140);
+  shake(0.8, 0.55);
   try { Audio.levelup && Audio.levelup(); } catch (e) {}
 
-  // The mega ore is a GIANT rainbow ore — same compound-of-6-cones shape
-  // as the orbit ores, just scaled up dramatically. Reads as "the 5 orbs
-  // are now one giant ore" because the color identity is preserved.
+  // Scaled smaller than before (5.0 → 3.5) so it visually fits the
+  // catapult bucket during the launch animation. Still reads as large
+  // vs the player.
   const ore = _buildRainbowMesh();
-  ore.scale.setScalar(5.0);
-  ore.position.set(depot.pos.x, 1.5, depot.pos.z);
+  ore.scale.setScalar(3.5);
+  ore.position.copy(origin);
   scene.add(ore);
 
   // Gold halo sphere around the rainbow crystal.
-  const haloGeo = new THREE.SphereGeometry(2.2, 16, 12);
+  const haloGeo = new THREE.SphereGeometry(1.6, 16, 12);
   const haloMat = new THREE.MeshBasicMaterial({
-    color: 0xffd93d, transparent: true, opacity: 0.28, depthWrite: false,
+    color: 0xffd93d, transparent: true, opacity: 0.32, depthWrite: false,
   });
   const halo = new THREE.Mesh(haloGeo, haloMat);
-  halo.position.set(depot.pos.x, 1.5, depot.pos.z);
+  halo.position.copy(origin);
   scene.add(halo);
 
   _depotMegaOre = {
     ore, halo, haloGeo, haloMat,
-    // The ore group shares cached cone geometry + rainbow materials — we
-    // don't dispose them on teardown (cache stays warm for next wave).
     lifeT: 0,
     phase: 'hover',
     phaseT: 0,
-    liftoffX: 0,
-    liftoffZ: 0,
+    // Launch trajectory bookkeeping (populated when we enter the launch phase)
+    launchStart: null,   // THREE.Vector3 — bucket release position
+    launchEnd: null,     // THREE.Vector3 — silo impact target
     sparkT: 0,
   };
   // Clear the carrying count — the ores are now represented by the
@@ -391,139 +519,194 @@ function _tickDepotMegaOre(dt, time) {
   m.lifeT += dt;
 
   // Phase machine:
-  //   'hover'    — sit on the depot revolving, ~3.5s; shows off the payoff
-  //   'drive'    — horizontal flight to the silo, ~1.4s; leaves a trail
-  //   'absorb'   — shrink into the silo with a fuel-absorbed burst
-  //   'done'     — signals wave-complete; missile launch takes over
+  //   'hover'   — ore revolves at the crucible mouth, ~2s showoff
+  //   'load'    — catapult arm swings down, bucket scoops up the ore
+  //   'launch'  — arm swings fast upward; at release the ore detaches
+  //   'arc'     — ballistic flight from release point to silo landing
+  //   'impact'  — shockwave at silo, dispose mega ore, wave ends
   // Default phase is 'hover'; _formDepotMegaOre sets m.phase = 'hover'.
-  const HOVER_SEC = 3.5;
-  const DRIVE_SEC = 1.4;
-  const ABSORB_SEC = 0.35;
-  const HOVER_Y = 1.5;
-
-  // Follow depot position while still on it (hover). Once we leave hover
-  // we lock to the liftoff xz for the drive animation's start point.
-  const px = depot ? depot.pos.x : m.ore.position.x;
-  const pz = depot ? depot.pos.z : m.ore.position.z;
+  const HOVER_SEC  = 2.0;
+  const LOAD_SEC   = 0.45;
+  const LAUNCH_SEC = 0.25;
+  const ARC_SEC    = 1.1;
+  // Crucible mouth in world coords (ore sits here during hover)
+  const MOUTH_X = depot ? depot.pos.x : m.ore.position.x;
+  const MOUTH_Y = CRUCIBLE_MOUTH_Y;
+  const MOUTH_Z = depot ? depot.pos.z : m.ore.position.z;
 
   if (m.phase === 'hover') {
-    // Revolve big, pulse bright. Sit on the depot.
-    m.ore.rotation.y += dt * 1.8;
-    m.ore.rotation.x += dt * 0.9;
-    m.ore.position.x = px;
-    m.ore.position.z = pz;
-    m.ore.position.y = HOVER_Y + Math.sin(time * 2) * 0.18;
-    m.halo.position.x = px;
-    m.halo.position.z = pz;
-    m.halo.position.y = m.ore.position.y;
+    // Revolve at the crucible mouth, pulse bright. The catapult arm
+    // stays in its loaded pose (-0.45 rad) during this phase so the
+    // player sees it waiting to fire.
+    m.ore.rotation.y += dt * 2.4;
+    m.ore.rotation.x += dt * 1.2;
+    m.ore.position.set(MOUTH_X, MOUTH_Y + Math.sin(time * 2) * 0.18, MOUTH_Z);
+    m.halo.position.copy(m.ore.position);
     const pulse = 0.5 + 0.5 * Math.sin(time * 4);
-    // Rainbow ore mesh: no single oreMat. Scale-pulse it for a "pulsing" read.
-    const pulseScale = 5.0 + pulse * 0.3;
-    m.ore.scale.setScalar(pulseScale);
+    m.ore.scale.setScalar(3.5 + pulse * 0.25);
     if (m.haloMat) m.haloMat.opacity = 0.22 + pulse * 0.14;
 
-    // Ambient gold sparks every ~0.25s so the hover feels alive, not static.
+    // Ambient gold sparks so the hover feels alive.
     m.sparkT = (m.sparkT || 0) - dt;
     if (m.sparkT <= 0) {
       m.sparkT = 0.22;
       const a = Math.random() * Math.PI * 2;
-      const r = 1.2 + Math.random() * 0.8;
+      const r = 0.9 + Math.random() * 0.6;
       hitBurst(
-        new THREE.Vector3(px + Math.cos(a) * r, HOVER_Y + Math.random() * 0.8, pz + Math.sin(a) * r),
+        new THREE.Vector3(MOUTH_X + Math.cos(a) * r, MOUTH_Y + Math.random() * 0.6, MOUTH_Z + Math.sin(a) * r),
         0xffd93d, 2
       );
     }
 
     if (m.lifeT >= HOVER_SEC) {
-      m.phase = 'drive';
+      m.phase = 'load';
       m.phaseT = 0;
-      m.liftoffX = px;
-      m.liftoffZ = pz;
-      // Lock the drive destination to wherever the silo is at this moment.
-      // LAYOUT.silo is updated per-chapter, so we snapshot here rather
-      // than re-reading each frame (silo doesn't move mid-wave, but this
-      // is still the safer pattern).
-      m.destX = LAYOUT.silo.x;
-      m.destZ = LAYOUT.silo.z;
-      // Liftoff cue: screen shake + audio + thrust burst beneath the ore.
-      shake(0.35, 0.3);
+      // Audio cue: catapult priming
       try { Audio.bigBoom && Audio.bigBoom(); } catch (e) {}
-      hitBurst(new THREE.Vector3(px, 1.0, pz), 0xffffff, 18);
-      hitBurst(new THREE.Vector3(px, 1.0, pz), 0xffd93d, 22);
-      hitBurst(new THREE.Vector3(px, 1.0, pz), depot ? depot.tint : 0xff6a1a, 12);
     }
-  } else if (m.phase === 'drive') {
-    // Drive horizontally from depot to silo at HOVER_Y. The ore is the
-    // "fuel" for the missile — it delivers itself to the launcher and
-    // vanishes into the silo, kicking off the EMP launch cinematic.
+  } else if (m.phase === 'load') {
+    // Catapult arm swings DOWN from -0.45 (resting) to -1.15 (deep scoop)
+    // while the ore follows the bucket to it. At the end of this phase
+    // the ore is locked to the bucket tip — next phase the bucket whips
+    // back up carrying it.
     m.phaseT += dt;
-    const f = Math.min(1, m.phaseT / DRIVE_SEC);
-    // Ease-in-out so the ore accelerates out of the depot, cruises,
-    // then decelerates approaching the silo. smoothstep gives the
-    // natural settle-in motion.
-    const e = f * f * (3 - 2 * f);
-    const x = m.liftoffX + (m.destX - m.liftoffX) * e;
-    const z = m.liftoffZ + (m.destZ - m.liftoffZ) * e;
-    // Subtle bob across the drive so it reads as "flying" not "sliding".
-    const y = HOVER_Y + Math.sin(f * Math.PI) * 0.6;
+    const f = Math.min(1, m.phaseT / LOAD_SEC);
+    const armAngle = -0.45 + (-0.70) * f;   // -0.45 → -1.15
+    if (depot && depot.catapultArm) {
+      depot.catapultArm.rotation.x = armAngle;
+    }
+    // Ore follows the bucket position in world space. We read the bucket's
+    // world matrix each frame since the depot group is rotated to face
+    // the silo and we need world coords, not local.
+    const bucketWorld = _getDepotBucketWorldPos();
+    if (bucketWorld) {
+      m.ore.position.lerp(bucketWorld, 0.35);   // soft catch
+      m.halo.position.copy(m.ore.position);
+    }
+    m.ore.rotation.y += dt * 3;
+    m.ore.rotation.x += dt * 2;
+
+    if (f >= 1) {
+      m.phase = 'launch';
+      m.phaseT = 0;
+    }
+  } else if (m.phase === 'launch') {
+    // FAST arm swing from -1.15 back up to +1.15 (80° of sweep). The
+    // ore stays locked to the bucket until the arm reaches 0 (arm
+    // horizontal with the ground), then detaches — the release point.
+    // Release momentum = direction of arm tip motion at detach.
+    m.phaseT += dt;
+    const f = Math.min(1, m.phaseT / LAUNCH_SEC);
+    // Ease-out snap: very fast start, decelerating — gives the "whip" feel.
+    const e = 1 - (1 - f) * (1 - f) * (1 - f);
+    const armAngle = -1.15 + (2.30) * e;   // -1.15 → +1.15
+    if (depot && depot.catapultArm) {
+      depot.catapultArm.rotation.x = armAngle;
+    }
+
+    // Ore follows the bucket until release point (arm angle crosses 0
+    // i.e. pointing straight up). Once released, we snapshot the ore's
+    // position + compute a ballistic launch velocity and enter 'arc'.
+    const bucketWorld = _getDepotBucketWorldPos();
+    if (bucketWorld) {
+      m.ore.position.copy(bucketWorld);
+      m.halo.position.copy(m.ore.position);
+    }
+    m.ore.rotation.y += dt * 8;
+    m.ore.rotation.x += dt * 6;
+
+    // Release when arm sweeps past +0.5 rad (past vertical, about to
+    // flatten forward). Earlier release = higher arc. +0.5 gives a
+    // good apex roughly 2x the hop distance.
+    if (armAngle >= 0.5 || f >= 1) {
+      m.phase = 'arc';
+      m.phaseT = 0;
+      m.launchStart = m.ore.position.clone();
+      m.launchEnd = new THREE.Vector3(LAYOUT.silo.x, 0.6, LAYOUT.silo.z);
+      // Big screen shake + release burst at the bucket.
+      shake(0.55, 0.35);
+      try { Audio.bigBoom && Audio.bigBoom(); } catch (e) {}
+      hitBurst(m.launchStart.clone(), 0xffffff, 22);
+      hitBurst(m.launchStart.clone(), 0xffd93d, 18);
+      hitBurst(m.launchStart.clone(), depot ? depot.tint : 0xff6a1a, 14);
+    }
+  } else if (m.phase === 'arc') {
+    // Parabolic arc from launchStart to launchEnd (silo). Peak apex
+    // height scales with horizontal distance so short-range arcs don't
+    // fly into orbit.
+    m.phaseT += dt;
+    const f = Math.min(1, m.phaseT / ARC_SEC);
+    const sx = m.launchStart.x, sy = m.launchStart.y, sz = m.launchStart.z;
+    const ex = m.launchEnd.x,   ey = m.launchEnd.y,   ez = m.launchEnd.z;
+    const dx = ex - sx, dz = ez - sz;
+    const hdist = Math.sqrt(dx * dx + dz * dz);
+    const apex  = Math.max(6, hdist * 0.35);   // roughly 1/3 of distance
+
+    const x = sx + dx * f;
+    const z = sz + dz * f;
+    // Parabolic Y: linear interp + 4*apex*f*(1-f) hump (peaks at f=0.5)
+    const y = sy + (ey - sy) * f + 4 * apex * f * (1 - f);
+
     m.ore.position.set(x, y, z);
-    m.halo.position.set(x, y, z);
-    // Spin faster during transit for energy.
-    m.ore.rotation.y += dt * (3 + f * 4);
-    m.ore.rotation.x += dt * (2 + f * 3);
-    m.ore.scale.setScalar(5.0);
-    if (m.haloMat) m.haloMat.opacity = 0.3 + Math.sin(f * Math.PI) * 0.3;
-    // Comet trail — gold sparks behind the ore. Density ramps with speed
-    // (peaks mid-flight where the ease is fastest).
-    if (Math.random() < 0.6 + 0.3 * Math.sin(f * Math.PI)) {
+    m.halo.position.copy(m.ore.position);
+    m.ore.rotation.y += dt * 6;
+    m.ore.rotation.x += dt * 4;
+    m.ore.scale.setScalar(3.5);
+    if (m.haloMat) m.haloMat.opacity = 0.3 + Math.sin(f * Math.PI) * 0.35;
+
+    // Dense comet trail during the arc.
+    if (Math.random() < 0.75) {
       hitBurst(new THREE.Vector3(x, y - 0.4, z), 0xffd93d, 2);
     }
-    if (Math.random() < 0.3) {
+    if (Math.random() < 0.5) {
       hitBurst(new THREE.Vector3(x, y - 0.6, z), 0xffffff, 1);
     }
 
     if (f >= 1) {
-      m.phase = 'absorb';
+      m.phase = 'impact';
       m.phaseT = 0;
     }
-  } else if (m.phase === 'absorb') {
-    // Shrink and sink into the silo. Silo is at (destX, destZ); we
-    // collapse the ore to zero scale and drop it from HOVER_Y down to
-    // silo base. The missile-launch sequence will take over once we
-    // return true below.
+  } else if (m.phase === 'impact') {
+    // Big explosion at the silo. The wave-1 shockwave (moved to silo
+    // position in waves.js) fires when this phase returns `true` to
+    // caller → endWave.
     m.phaseT += dt;
-    const f = Math.min(1, m.phaseT / ABSORB_SEC);
-    const scaleRemaining = 5.0 * (1 - f);
-    m.ore.scale.setScalar(Math.max(0.01, scaleRemaining));
-    m.ore.position.y = HOVER_Y - f * 1.3;   // sink into the silo tube
-    m.ore.position.x = m.destX;
-    m.ore.position.z = m.destZ;
-    m.halo.position.copy(m.ore.position);
-    if (m.haloMat) m.haloMat.opacity = Math.max(0, 0.6 * (1 - f));
-    // Extra spin at absorption.
-    m.ore.rotation.y += dt * 12;
-    m.ore.rotation.x += dt * 8;
-    // Cued fuel-absorbed burst at the silo mouth a frame after start,
-    // and a second impact at the base once fully absorbed.
+    const impactPos = m.launchEnd || new THREE.Vector3(LAYOUT.silo.x, 0.6, LAYOUT.silo.z);
     if (m.phaseT - dt <= 0) {
-      const mouth = new THREE.Vector3(m.destX, HOVER_Y + 0.2, m.destZ);
-      hitBurst(mouth, 0xffd93d, 26);
-      hitBurst(mouth, 0xffffff, 14);
-      hitBurst(mouth, depot ? depot.tint : 0xff6a1a, 18);
+      // First frame — fire the explosion effects.
+      hitBurst(impactPos, 0xffffff, 42);
+      hitBurst(impactPos, 0xffd93d, 36);
+      setTimeout(() => hitBurst(impactPos, 0xffd93d, 26), 60);
+      setTimeout(() => hitBurst(impactPos, depot ? depot.tint : 0xff6a1a, 22), 140);
+      setTimeout(() => hitBurst(impactPos, 0xffffff, 16), 220);
+      shake(1.1, 0.7);
       try { Audio.bigBoom && Audio.bigBoom(); } catch (e) {}
-      shake(0.45, 0.3);
+      // Hide the ore on impact — the burst covers the pop.
+      if (m.ore) m.ore.visible = false;
+      if (m.halo) m.halo.visible = false;
     }
-    if (f >= 1) {
-      // Final burst at absorption and dispose.
-      const impact = new THREE.Vector3(m.destX, 0.6, m.destZ);
-      hitBurst(impact, 0xffffff, 20);
-      hitBurst(impact, depot ? depot.tint : 0xff6a1a, 14);
+    // Wait ~0.2s after impact so the bursts read before wave-end fires.
+    if (m.phaseT >= 0.2) {
       _disposeDepotMegaOre();
-      return true;    // signal: wave complete → missile launches
+      return true;   // signal: wave complete → shockwave + missile follow-up
     }
   }
 
   return false;
+}
+
+/**
+ * World-space position of the catapult bucket tip. Bucket is nested
+ * inside the depot group → catapult group → catapultArm group, each of
+ * which has rotations. Rather than compose those by hand we ask the
+ * bucket for its world matrix.
+ */
+function _getDepotBucketWorldPos() {
+  if (!depot || !depot.bucket) return null;
+  depot.bucket.updateWorldMatrix(true, false);
+  const v = new THREE.Vector3();
+  v.setFromMatrixPosition(depot.bucket.matrixWorld);
+  return v;
 }
 
 function _disposeDepotMegaOre() {
@@ -546,6 +729,11 @@ export function clearAllOres() {
   // Also dispose any orbit ring / depot mega ore — they're mining-wave-scoped.
   for (const o of orbitOres) {
     if (o.mesh && o.mesh.parent) scene.remove(o.mesh);
+    if (o.tether) {
+      if (o.tether.parent) scene.remove(o.tether);
+      if (o.tether.geometry) o.tether.geometry.dispose();
+      if (o.tether.material) o.tether.material.dispose();
+    }
   }
   orbitOres.length = 0;
   _disposeDepotMegaOre();
@@ -1043,6 +1231,15 @@ export function startDepotDriveOff() {
   depot.driveT = 0;
   depot.driveStartX = depot.obj.position.x;
   depot.driveStartZ = depot.obj.position.z;
+
+  // Reset the catapult arm back to its rest pose — otherwise the
+  // drive-off keeps the arm in whatever launch angle it finished at,
+  // which looks weird. Next chapter's spawnDepot rebuilds from scratch
+  // anyway, but the drive-off animation runs before teardown so this
+  // matters visually.
+  if (depot.catapultArm) {
+    depot.catapultArm.rotation.x = -0.45;
+  }
 
   // Direction: along the mining triangle's centerline, outward from origin.
   const t = getTriangleFor('mining');
