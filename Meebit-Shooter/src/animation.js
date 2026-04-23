@@ -277,6 +277,87 @@ export function animationsReady() {
 }
 
 // ============================================================================
+// GUN-HOLD POSE
+// ============================================================================
+// Meebit VRMs ship in T-pose (arms extending sideways along +X/-X). For a
+// shooter we want the arms tucked forward with forearms bent so the hands
+// are in front of the chest — a rifle-grip stance. This is applied as a
+// static per-frame override on the arm bones, keyed by bone name, on top
+// of each bone's rest quaternion.
+//
+// The player, follower meebits, and pixl pals all share one Meebits-style
+// rig (HipsBone / LeftUpperArmBone / ...) so a single pose table drives
+// all three. To use it:
+//
+//   1. At attachMixer time, pass `excludeBones: GUN_HOLD_EXCLUDE_BONES`
+//      so walk/run clips don't write to arm bones.
+//   2. Every frame, after `mixer.update(dt)`, call `applyGunHoldPose(mesh)`.
+//
+// The Euler values come from pose-sketching against the Meebit rig's
+// axis conventions:
+//   +X extends outward along the arm's length in rest
+//   negative Y rotation on UpperArm → arm swings forward
+//   negative Z rotation on UpperArm → arm drops from horizontal
+//   negative X rotation on LowerArm → elbow bends
+// ============================================================================
+
+export const GUN_HOLD_EXCLUDE_BONES = [
+  'LeftShoulderBone',  'LeftUpperArmBone',  'LeftLowerArmBone',  'LeftHandBone',
+  'RightShoulderBone', 'RightUpperArmBone', 'RightLowerArmBone', 'RightHandBone',
+];
+
+const GUN_HOLD_POSE = {
+  // RIGHT ARM — primary grip (weapon hand)
+  RightShoulderBone: { x:  0,     y:  0,     z:  0    },
+  RightUpperArmBone: { x:  0,     y: -1.30,  z: -1.20 },  // forward + down
+  RightLowerArmBone: { x: -0.40,  y: -0.60,  z:  0    },  // bend elbow
+  RightHandBone:     { x:  0,     y:  0,     z: -0.20 },
+  // LEFT ARM — support grip
+  LeftShoulderBone:  { x:  0,     y:  0,     z:  0    },
+  LeftUpperArmBone:  { x:  0,     y:  1.30,  z:  1.20 },  // mirrored
+  LeftLowerArmBone:  { x: -0.40,  y:  0.60,  z:  0    },
+  LeftHandBone:      { x:  0,     y:  0,     z:  0.20 },
+};
+
+// Reusable scratch quaternions/euler — allocation-free per-frame path.
+const _ghEuler  = new THREE.Euler();
+const _ghDelta  = new THREE.Quaternion();
+// Per-mesh rest-quaternion cache. Looking up bones by name every frame
+// is cheap (Three.js already does a name→index lookup on the skeleton),
+// but caching the rest quaternions avoids repeat clone() allocations.
+const _restCache = new WeakMap();  // mesh -> { boneName: { bone, rest } }
+
+function _getArmRestCache(mesh) {
+  let cache = _restCache.get(mesh);
+  if (cache) return cache;
+  cache = {};
+  mesh.traverse(o => {
+    if (o.isBone && GUN_HOLD_POSE[o.name]) {
+      cache[o.name] = { bone: o, rest: o.quaternion.clone() };
+    }
+  });
+  _restCache.set(mesh, cache);
+  return cache;
+}
+
+/**
+ * Apply the shooter arm pose to a Meebit-rigged mesh. Safe to call every
+ * frame — allocation-free after the first call. If the mesh doesn't have
+ * the expected arm bones (wrong rig naming), this is a no-op.
+ */
+export function applyGunHoldPose(mesh) {
+  const cache = _getArmRestCache(mesh);
+  for (const name in GUN_HOLD_POSE) {
+    const entry = cache[name];
+    if (!entry) continue;
+    const p = GUN_HOLD_POSE[name];
+    _ghEuler.set(p.x, p.y, p.z, 'XYZ');
+    _ghDelta.setFromEuler(_ghEuler);
+    entry.bone.quaternion.copy(entry.rest).multiply(_ghDelta);
+  }
+}
+
+// ============================================================================
 // REST-POSE COMPENSATION HELPERS
 // ============================================================================
 // The Larva-Labs Meebit GLB ships with a bind (rest) pose that is NOT a
