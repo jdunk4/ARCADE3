@@ -29,6 +29,7 @@
 
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { clone as skeletonClone } from 'three/addons/utils/SkeletonUtils.js';
 import { scene } from './scene.js';
 import { ARENA, WEAPONS, CHAPTERS } from './config.js';
 import { hitBurst } from './effects.js';
@@ -574,19 +575,47 @@ function _loadPalMesh(id) {
     }));
   }
   return glbCache.get(id).then(gltf => {
-    // Deep-clone the loaded scene so each pal instance is independent.
-    const clone = gltf.scene.clone(true);
-    // Pal avatars import at varying scales — normalize to ~2.2 units tall.
+    // CRITICAL: these GLBs are rigged (SkinnedMesh + Skin + 80-bone rig).
+    // THREE.Object3D.clone() does NOT properly clone rigs — the cloned
+    // SkinnedMeshes still reference the original scene graph's bones,
+    // so when the clone is inserted into our scene they render at the
+    // identity transform (collapsed / invisible).
+    //
+    // SkeletonUtils.clone is the standard Three.js fix — it rebinds the
+    // skeleton to the cloned bones so the mesh renders correctly.
+    const clone = skeletonClone(gltf.scene);
+
+    // Pal avatars import with Z-up or mis-scaled; normalize to ~2.2 units tall.
+    // setFromObject can return an invalid box on SkinnedMeshes because
+    // their geometry's bounding volumes are relative to bind pose. We
+    // still ask for one and accept whatever we get — it's close enough
+    // for a rough scale normalization.
+    clone.updateMatrixWorld(true);
     const box = new THREE.Box3().setFromObject(clone);
     const size = new THREE.Vector3();
     box.getSize(size);
-    if (size.y > 0.001) {
+    if (size.y > 0.01 && isFinite(size.y)) {
       const s = 2.2 / size.y;
       clone.scale.setScalar(s);
+      clone.updateMatrixWorld(true);
     }
-    // Drop them feet-on-ground
+
+    // Drop them feet-on-ground. Recompute box after rescale.
     const box2 = new THREE.Box3().setFromObject(clone);
-    clone.position.y -= box2.min.y;
+    if (isFinite(box2.min.y)) {
+      clone.position.y -= box2.min.y;
+    }
+
+    // Disable frustum culling for skinned meshes. Their bounding volume
+    // is bind-pose based and often sits offset from the rendered pose,
+    // causing sporadic invisibility at glancing camera angles.
+    clone.traverse(obj => {
+      if (obj.isMesh || obj.isSkinnedMesh) {
+        obj.frustumCulled = false;
+        obj.castShadow = true;
+      }
+    });
+
     return clone;
   });
 }
