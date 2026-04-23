@@ -386,7 +386,7 @@ export function getWaveDef(wave) {
     killTarget: 1,
     enemies: { zomeeb: 0.6, sprinter: 0.25, [CHAPTERS[chapterIdx % CHAPTERS.length].signatureEnemy]: 0.15 },
     spawnRate: 1.4,
-    bossType: ['MEGA_ZOMEEB', 'BRUTE_KING', 'VOID_LORD', 'SOLAR_TYRANT'][chapterIdx % 4],
+    bossType: ['BLAZE_WARDEN', 'SCARLET_REAPER', 'SOLAR_TYRANT', 'TOXIC_MAW', 'GLACIER_WRAITH', 'NIGHT_HERALD', 'VESSEL_ZERO'][chapterIdx],
     localWave, chapterIdx,
   };
 }
@@ -520,11 +520,24 @@ export const ENEMY_TYPES = {
 };
 
 // -------- BOSSES --------
+// One boss per chapter. Ch.1-6 use escalating HP and a pattern themed to
+// their chapter. Ch.7 VESSEL_ZERO is the final-boss wall: spawns after
+// the 3 ch.7 hives are destroyed (see waves.js ch.7 finale path), uses
+// a custom mesh, and runs the `broodmother` pattern which floods the
+// arena with infectors + roaches on a brutal cadence.
 export const BOSSES = {
-  MEGA_ZOMEEB: { hp: 1500, speed: 1.1, damage: 30, xp: 40, score: 15000, scale: 3.2, name: 'MEGA ZOMEEB', pattern: 'summoner' },
-  BRUTE_KING:  { hp: 2800, speed: 0.9, damage: 40, xp: 60, score: 25000, scale: 3.8, name: 'BRUTE KING',  pattern: 'cubestorm' },
-  VOID_LORD:   { hp: 4000, speed: 1.5, damage: 35, xp: 80, score: 40000, scale: 3.4, name: 'VOID LORD',   pattern: 'summoner' },
-  SOLAR_TYRANT:{ hp: 6000, speed: 1.3, damage: 45, xp: 100, score: 60000, scale: 4.0, name: 'SOLAR TYRANT', pattern: 'cubestorm' },
+  BLAZE_WARDEN:    { hp: 1500, speed: 1.1, damage: 30, xp: 40,  score: 15000, scale: 3.2, name: 'BLAZE WARDEN',    pattern: 'summoner'  },
+  SCARLET_REAPER:  { hp: 2800, speed: 1.3, damage: 40, xp: 60,  score: 25000, scale: 3.5, name: 'SCARLET REAPER',  pattern: 'cubestorm' },
+  SOLAR_TYRANT:    { hp: 4000, speed: 1.2, damage: 35, xp: 80,  score: 40000, scale: 3.6, name: 'SOLAR TYRANT',    pattern: 'summoner'  },
+  TOXIC_MAW:       { hp: 5500, speed: 0.9, damage: 45, xp: 100, score: 55000, scale: 3.8, name: 'TOXIC MAW',       pattern: 'cubestorm' },
+  GLACIER_WRAITH:  { hp: 7500, speed: 1.4, damage: 50, xp: 130, score: 75000, scale: 3.7, name: 'GLACIER WRAITH',  pattern: 'summoner'  },
+  NIGHT_HERALD:    { hp: 10000, speed: 1.3, damage: 55, xp: 160, score: 100000, scale: 4.0, name: 'NIGHT HERALD',  pattern: 'cubestorm' },
+  // VESSEL ZERO: BROODMOTHER — ch.7 final boss.
+  // 50,000 HP wall. Slow (0.7) because she doesn't chase — she spawns
+  // the flood and lets it reach the player. Custom mesh built in
+  // enemies.js::makeVesselZero (not makeHumanoid). Scale 6.0 makes her
+  // visibly enormous — biggest entity in the game.
+  VESSEL_ZERO:     { hp: 50000, speed: 0.7, damage: 60, xp: 500, score: 500000, scale: 6.0, name: 'VESSEL ZERO: BROODMOTHER', pattern: 'broodmother' },
 };
 
 // -------- PLAYER --------
