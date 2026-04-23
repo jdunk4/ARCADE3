@@ -34,7 +34,7 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { clone as skeletonClone } from 'three/addons/utils/SkeletonUtils.js';
 import { scene } from './scene.js';
-import { ARENA } from './config.js';
+import { ARENA, CHAPTERS, PARADISE_FALLEN_CHAPTER_IDX } from './config.js';
 import { hitBurst } from './effects.js';
 import { enemies } from './enemies.js';
 import { Audio } from './audio.js';
@@ -67,13 +67,14 @@ const FLINGER_TINTS = {
 };
 
 // Per-chapter flinger assignment (chapter index → GLB name).
-//   Ch.0 INFERNO   → ORANGE
-//   Ch.1 CRIMSON   → RED
-//   Ch.2 SOLAR     → YELLOW
-//   Ch.3 TOXIC     → GREEN
-//   Ch.4 ARCTIC    → BLUE
-//   Ch.5 PARADISE  → PURPLE
-//   Ch.6 PARADISE FALLEN → fallback (no flinger arrives; ch.7 uses infectors)
+//   Ch.0 INFERNO         → ORANGE
+//   Ch.1 CRIMSON         → RED
+//   Ch.2 SOLAR           → YELLOW
+//   Ch.3 TOXIC           → GREEN
+//   Ch.4 ARCTIC          → BLUE
+//   Ch.5 PARADISE        → PURPLE
+//   Ch.6 PARADISE FALLEN → PURPLE (final chapter — re-uses PURPLE; pals
+//                                 and flingers spawn together here)
 const FLINGER_BY_CHAPTER = [
   'FlingerORANGE',  // 0 INFERNO
   'FlingerRED',     // 1 CRIMSON
@@ -81,6 +82,7 @@ const FLINGER_BY_CHAPTER = [
   'FlingerGREEN',   // 3 TOXIC
   'FlingerBLUE',    // 4 ARCTIC
   'FlingerPURPLE',  // 5 PARADISE
+  'FlingerPURPLE',  // 6 PARADISE FALLEN — monochrome ally
 ];
 
 // WAVE SCHEDULE — flingers arrive on these waves. Stays staggered with
@@ -88,7 +90,12 @@ const FLINGER_BY_CHAPTER = [
 // They don't deploy the moment the wave starts — they wait until the
 // POWER zone is cleared (S.powerplantLit = true), see the pending-grant
 // path in onWaveStartedForFlingers + updateFlingers.
-const FLINGER_WAVE_SCHEDULE = new Set([2, 7, 12, 17, 22, 27]);
+//
+// Chapter 7 (PARADISE FALLEN) has no powerup zone since ch7 only has
+// 3 waves (mining / hive / finale). Wave 31 is the ch7 opener; a flinger
+// deploys at the start of it alongside a co-deployed pixl pal. See
+// onWaveStartedForFlingers for the ch7 special-case.
+const FLINGER_WAVE_SCHEDULE = new Set([2, 7, 12, 17, 22, 27, 31]);
 
 // Maximum flingers active on the field at once.
 const MAX_CONCURRENT = 3;
@@ -304,10 +311,15 @@ function _releaseFlingerPoolMesh(mesh, mixer) {
 
 /**
  * Called by main.js when a new wave starts. Grants a charge whenever the
- * wave number is in the FLINGER_WAVE_SCHEDULE. Instead of auto-deploying
- * immediately, we stash the intent as a "pending" flag — actual deploy
- * waits until S.powerplantLit is true (set by waves.js when the POWER
- * zone is cleared in the wave-2 powerup sequence).
+ * wave number is in the FLINGER_WAVE_SCHEDULE.
+ *
+ *   - Normal chapters (waves 2/7/12/17/22/27): charge is queued as
+ *     _pendingDeploy and deployed only after S.powerplantLit flips true
+ *     (power-zone cleared in the wave-2 powerup sequence).
+ *   - Chapter 7 (wave 31): there's no powerup wave, so the flinger
+ *     deploys IMMEDIATELY. Pairs with a pixl pal that's also force-
+ *     deployed at ch7 start — both allies escort the player through the
+ *     finale.
  *
  * Safe to call multiple times for the same wave.
  */
@@ -315,9 +327,16 @@ export function onWaveStartedForFlingers(waveNum) {
   if (waveNum <= lastWaveAwarded) return;
   if (FLINGER_WAVE_SCHEDULE.has(waveNum)) {
     S.flingerCharges = Math.min(MAX_CHARGES, (S.flingerCharges || 0) + 1);
-    _pendingDeploy = true;
-    _pendingDeployWave = waveNum;
-    UI.toast && UI.toast('FLINGER STANDING BY · POWER THE PLANT', '#ff8800', 2600);
+    const ch7Wave = (S.chapter === PARADISE_FALLEN_CHAPTER_IDX);
+    if (ch7Wave) {
+      // Ch 7 — skip the power-plant gate; deploy right away.
+      UI.toast && UI.toast('FLINGER DEPLOYED', '#ff8800', 2200);
+      _tryAutoSummon();
+    } else {
+      _pendingDeploy = true;
+      _pendingDeployWave = waveNum;
+      UI.toast && UI.toast('FLINGER STANDING BY · POWER THE PLANT', '#ff8800', 2600);
+    }
     _syncHUD();
   }
   lastWaveAwarded = waveNum;
@@ -391,8 +410,10 @@ export function updateFlingers(dt, playerPos) {
 
     f.life += dt;
 
-    // Despawn conditions.
-    if (!f.despawning && (
+    // Despawn conditions — skipped in chapter 7 (PARADISE FALLEN) where
+    // flingers + pals are summoned together and stay to the end of the run.
+    const isCh7 = S.chapter === PARADISE_FALLEN_CHAPTER_IDX;
+    if (!f.despawning && !isCh7 && (
         f.life >= f.maxLife ||
         f.killsSinceSummon >= KILLS_TO_DESPAWN
     )) {
@@ -831,8 +852,11 @@ function _loadFlingerMesh(glbName) {
     const box = new THREE.Box3().setFromObject(clone);
     const size = new THREE.Vector3();
     box.getSize(size);
+    // Normalize to ~2.9 units tall — matches the pixl pal size so pals
+    // and flingers read as peers on-screen. Slightly smaller than the
+    // player (who's ~4 units after PLAYER.scale).
     if (size.y > 0.01 && isFinite(size.y)) {
-      const s = 2.2 / size.y;
+      const s = 2.9 / size.y;
       clone.scale.setScalar(s);
       clone.updateMatrixWorld(true);
     }
