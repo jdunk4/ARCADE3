@@ -479,4 +479,16 @@ export const GOO_CONFIG = {
 };
 
 // -------- GUEST AVATAR --------
-export const GUEST_AVATAR_URL = 'assets/16801_larvalabs.glb';
+// Guest avatar — played by users who haven't linked a wallet. Points at the
+// bundled #16801 VRM exported from Meebits.app, which uses the standard
+// VRM skeleton (HipsBone / LeftUpperLegBone / ...) with identity rest
+// rotations. That matches what the Mixamo retargeting in animation.js
+// expects, so the rifle-run cycle applies cleanly.
+//
+// #16801 is also the Meebit the game already credits in the HUD
+// ("GUEST · MEEBIT #16801"), so the default avatar and the UI copy line up.
+//
+// Previously this pointed at 16801_larvalabs.glb — a Larva-Labs-exported
+// GLB with a non-identity bind pose that required rest-pose compensation
+// just to keep the character from folding into a ball.
+export const GUEST_AVATAR_URL = 'assets/16801_original.vrm';
