@@ -65,6 +65,7 @@ import { updateChargeCubes, clearChargeCubes } from './chargeCubes.js';
 import { clearEscortTruck, getTruckPos } from './escortTruck.js';
 import { updateServerWarehouse, clearServerWarehouse } from './serverWarehouse.js';
 import { updateSafetyPod, clearSafetyPod } from './safetyPod.js';
+import { updateCockroach, clearCockroachBoss } from './cockroachBoss.js';
 import { spawners, damageSpawner, updateSpawners } from './spawners.js';
 import { getShieldedHiveAt, shieldHitVisual, hiveShieldsIter } from './dormantProps.js';
 import { Save } from './save.js';
@@ -1868,6 +1869,7 @@ function startGame() {
   clearEscortTruck();
   clearServerWarehouse();
   clearSafetyPod();
+  clearCockroachBoss();
   clearGooSplats();
   clearHazards();
   clearAllPickups();
@@ -2292,6 +2294,7 @@ function animate() {
     updateChargeCubes(dt, player.pos);
     updateServerWarehouse(dt);
     updateSafetyPod(dt);
+    updateCockroach(dt);
     updateBossCubes(dt);
     updateCivilians(dt, enemies, player, onCivilianKilled, onCivilianRescued);
     updateWaves(dt);

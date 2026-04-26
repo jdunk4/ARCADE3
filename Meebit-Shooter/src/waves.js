@@ -47,6 +47,9 @@ import {
   isPlayerInPod, getPodPos, hasSafetyPod, clearSafetyPod,
 } from './safetyPod.js';
 import {
+  spawnCockroachBoss, isCockroachDeadAndDone, hasCockroach, clearCockroachBoss,
+} from './cockroachBoss.js';
+import {
   getQueen, popQueenShield, queenShieldsRemaining,
   getNextDomePos, spawnCannonBeam,
 } from './queenHive.js';
@@ -502,6 +505,25 @@ export function startWave(waveNum) {
       'Shields down. Empty your gun — the swarms won\'t stop.'
     );
     UI.toast('QUEEN EXPOSED', '#ff3cac', 2500);
+  } else if (waveDef.type === 'twinhive') {
+    // CHAPTER 2 WAVE 3 — twin hives on giant cockroach. 4 hives
+    // unshielded (laser fried them). Roach is a floor decal — no
+    // collision, no damage to player. Roach moves only after all
+    // 4 hives die.
+    deactivateAllTurrets();
+    S.spawnerWaveActive = true;
+    S.hiveWaveActive = true;
+    spawnCockroachBoss(S.chapter || 0);
+    // Count live spawners (the 4 newly-spawned roach hives)
+    S.spawnersLive = 0;
+    for (const s of spawners) {
+      if (!s.destroyed) S.spawnersLive++;
+    }
+    UI.showObjective(
+      'DESTROY THE TWIN HIVES',
+      '4 hives on the roach. Shields down. Take them out.'
+    );
+    UI.toast('ROACH SIGHTED', '#ff8826', 2500);
   }
 
   UI.showWaveStart(waveNum);
@@ -696,7 +718,7 @@ export function updateWaves(dt) {
     }
   }
 
-  if (waveDef.type === 'hive' || waveDef.type === 'spawners' || waveDef.type === 'queen-cleanup') {
+  if (waveDef.type === 'hive' || waveDef.type === 'spawners' || waveDef.type === 'queen-cleanup' || waveDef.type === 'twinhive') {
     // updateSpawners is now ticked unconditionally from main.js — no call here.
     // F8 debug pause — drain cooldowns but skip actual spawn calls.
     if (S._debugSpawnsPaused || S.cinematicSpawnHold) {
@@ -726,6 +748,19 @@ export function updateWaves(dt) {
       }
     }
     if (livePortalCount() === 0) {
+      // CHAPTER 2 WAVE 3 — twin hives on cockroach. Don't trigger
+      // standard hive retraction (those animate the sunken hives,
+      // unrelated to roach hives). Cockroach update drives the
+      // post-death crawl + fade animation; we wait until it finishes
+      // before calling endWave.
+      if (waveDef.type === 'twinhive') {
+        if (isCockroachDeadAndDone()) {
+          endWave();
+          return;
+        }
+        // Cockroach still in crawl/fade phase — skip standard wave-end
+        return;
+      }
       // Wave 3 victory beat:
       //   All hives sink into the ground before wave 4 begins. The
       //   enemies that were spawned from them still need to die for

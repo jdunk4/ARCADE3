@@ -48,6 +48,7 @@ import { hitBurst } from './effects.js';
 import { spawnCannon, clearCannon, aimCannonAt } from './cannon.js';
 import { spawnQueenHive, clearQueenHive, getQueen } from './queenHive.js';
 import { spawnServerWarehouse, clearServerWarehouse } from './serverWarehouse.js';
+import { clearCockroachBoss } from './cockroachBoss.js';
 import { getCompound } from './waveProps.js';
 
 // Which chapter the current dormant-prop set belongs to. -1 means no set
@@ -279,6 +280,7 @@ export function teardownChapter() {
   clearCrusher();
   // Chapter 2 reflow props
   clearServerWarehouse();
+  clearCockroachBoss();
   _preparedChapter = -1;
 }
 

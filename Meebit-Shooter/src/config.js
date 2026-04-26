@@ -503,7 +503,21 @@ export function getWaveDef(wave) {
         localWave, chapterIdx,
       };
     }
-    // Wave 3 — HIVES (chapters 2-7). Shields were up in waves 1-2; EMP
+    if (chapterIdx === 1) {
+      // CHAPTER 2 REFLOW — twin hives on a giant cockroach. 4 hives
+      // arranged as 2 wing-clusters on the back of a roach silhouette
+      // rendered as a floor decal. Hives unshielded from start (laser
+      // fried them). Slightly less swarm pressure than chapter 1
+      // because chapter 2 enemies are tougher.
+      return {
+        type: 'twinhive',
+        enemies: waveEnemyMix(wave, chapterIdx),
+        spawnRate: 3.5,           // pulled back from chapter 1's 4.5
+        hiveCount: 4,
+        localWave, chapterIdx,
+      };
+    }
+    // Wave 3 — HIVES (chapters 3-7). Shields were up in waves 1-2; EMP
     // just enraged them. Now destroyable. Secondary enemy flow continues
     // from offscreen spawns.
     return {
