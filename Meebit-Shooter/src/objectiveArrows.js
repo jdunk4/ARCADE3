@@ -297,12 +297,13 @@ function _collectTargets(S, waveDef, playerPos) {
       break;
     }
     case 'datacenter': {
-      // Chapter 2 wave 2 — phase-aware arrow.
-      //   charging → point at charging zone
-      //   onslaught → arrow flips to pod once it's descending (last 10s)
-      //   telegraph/blast → point at safety pod (RUN!)
-      const phase = S.dcPhase || 'charging';
-      if (phase === 'charging') {
+      // Chapter 2 wave 2 — phase-aware arrow (Turn 7 phase names).
+      //   warehouse-charging → point at warehouse charging zone
+      //   pod-descending → point at incoming pod (orange "INCOMING")
+      //   pod-charging → point at landed pod ("CHARGE POD")
+      //   hive-lasers / finale-laser → point at pod with panic (red, "POD")
+      const phase = S.dcPhase || 'warehouse-charging';
+      if (phase === 'warehouse-charging') {
         const cz = getChargingZonePos();
         if (cz) {
           _targets.push({
@@ -310,18 +311,23 @@ function _collectTargets(S, waveDef, playerPos) {
             label: 'CHARGE', panic: false,
           });
         }
-      } else if (phase === 'onslaught' && S._dcPodDescentTriggered) {
-        // Pod has started descending — point at it so player can find it.
-        // Panic mode kicks in once it actually opens (last 5s).
+      } else if (phase === 'pod-descending') {
         const pp = getPodPos();
         if (pp) {
           _targets.push({
             x: pp.x, z: pp.z,
-            label: S._dcPodOpenTriggered ? 'POD' : 'INCOMING',
-            panic: !!S._dcPodOpenTriggered,
+            label: 'INCOMING', panic: false,
           });
         }
-      } else if (phase === 'telegraph' || phase === 'blast') {
+      } else if (phase === 'pod-charging') {
+        const pp = getPodPos();
+        if (pp) {
+          _targets.push({
+            x: pp.x, z: pp.z,
+            label: 'CHARGE POD', panic: false,
+          });
+        }
+      } else if (phase === 'hive-lasers' || phase === 'finale-laser') {
         const pp = getPodPos();
         if (pp) {
           _targets.push({

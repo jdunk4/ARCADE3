@@ -129,19 +129,28 @@ const GRID_COLS = 8;
 const GRID_ROWS = 4;
 const GRID_TOTAL = GRID_COLS * GRID_ROWS;
 
-/** Build the warehouse at LAYOUT.silo position. Returns the warehouse
- *  state object. */
+/** Build the warehouse at LAYOUT.powerplant position (Turn 9 reposition).
+ *  Previously was at LAYOUT.silo, but turrets cluster around silo at
+ *  6u radius — warehouse spawned on top of the turret triangle. Moving
+ *  to powerplant (10u perpendicular + 4u outward from silo) clears the
+ *  turret ring AND aligns with the existing silo↔powerplant wire so
+ *  the wires now connect to the warehouse end. Scaled 0.8x to better
+ *  fit the powerplant footprint. */
 export function spawnServerWarehouse(chapterIdx) {
   if (_warehouse) clearServerWarehouse();
   const tint = CHAPTERS[chapterIdx % CHAPTERS.length].full.grid1;
   const group = new THREE.Group();
-  group.position.set(LAYOUT.silo.x, 0, LAYOUT.silo.z);
+  // Position at powerplant location
+  const px = LAYOUT.powerplant.x;
+  const pz = LAYOUT.powerplant.z;
+  group.position.set(px, 0, pz);
+  // Scale 0.8x — tighter footprint matching powerplant base.
+  group.scale.set(0.8, 0.8, 0.8);
 
   // Orient so the front face points toward the arena origin (back of
   // arena). We want the front grid visible to the player who walks up.
-  // Calculate yaw to face origin.
-  const dx = -LAYOUT.silo.x;
-  const dz = -LAYOUT.silo.z;
+  const dx = -px;
+  const dz = -pz;
   if (Math.abs(dx) + Math.abs(dz) > 0.001) {
     group.rotation.y = Math.atan2(dx, dz);
   }
@@ -325,11 +334,11 @@ export function spawnServerWarehouse(chapterIdx) {
 
   scene.add(group);
 
-  // Charging zone position — in the same wedge as the warehouse, but
-  // offset slightly toward the arena center so the player approaches
-  // the warehouse face naturally.
-  const chargeZoneX = LAYOUT.silo.x * 0.6;
-  const chargeZoneZ = LAYOUT.silo.z * 0.6;
+  // Charging zone position — in front of the warehouse (now at
+  // powerplant position), offset slightly toward the arena center so
+  // the player approaches the warehouse face naturally.
+  const chargeZoneX = LAYOUT.powerplant.x * 0.6;
+  const chargeZoneZ = LAYOUT.powerplant.z * 0.6;
 
   // --- VISIBLE CHARGING ZONE DISC (scene-level, separate group) ---
   // Outer ring + inner fill disc that grows with charge progress.
@@ -486,10 +495,11 @@ export function getServerCollisionCircles() {
   const sinY = Math.sin(yaw);
   // Two circles — one toward the front (+Z local), one toward the back
   // (-Z local). Each ~3u radius. Together they cover ~7u along the
-  // body axis with overlap in the middle.
-  const FRONT_OFFSET = 1.6;
-  const BACK_OFFSET = -1.6;
-  const R = 3.2;
+  // body axis with overlap in the middle. Scaled 0.8x to match the
+  // warehouse's 0.8x mesh scale (Turn 9).
+  const FRONT_OFFSET = 1.6 * 0.8;
+  const BACK_OFFSET = -1.6 * 0.8;
+  const R = 3.2 * 0.8;
   // World position of front circle
   const fwx = cx + 0 * cosY + FRONT_OFFSET * sinY;
   const fwz = cz - 0 * sinY + FRONT_OFFSET * cosY;

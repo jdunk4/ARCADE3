@@ -209,12 +209,18 @@ function _buildPacmanVisuals() {
   mouthMesh.position.x = PACMAN_RADIUS * 0.04;        // tiny push outward to avoid z-fight
   ballMesh.add(mouthMesh);
   ballMesh.userData.mouth = mouthMesh;
-  // Eye — small black sphere on the upper-front
-  const eyeGeo = new THREE.SphereGeometry(PACMAN_RADIUS * 0.11, 10, 8);
-  const eyeMesh = new THREE.Mesh(eyeGeo, _faceBlackMat);
-  eyeMesh.position.set(PACMAN_RADIUS * 0.30, PACMAN_RADIUS * 0.55, PACMAN_RADIUS * 0.55);
-  ballMesh.add(eyeMesh);
-  ballMesh.userData.eye = eyeMesh;
+  // Eyes — TWO large black spheres on the upper-front face, left + right.
+  // Bigger and paired so they read clearly at distance and through the
+  // chapter tint. Positioned above the mouth wedge.
+  const eyeGeo = new THREE.SphereGeometry(PACMAN_RADIUS * 0.16, 12, 10);
+  const eyeRight = new THREE.Mesh(eyeGeo, _faceBlackMat);
+  eyeRight.position.set(PACMAN_RADIUS * 0.42, PACMAN_RADIUS * 0.58,  PACMAN_RADIUS * 0.30);
+  ballMesh.add(eyeRight);
+  ballMesh.userData.eye = eyeRight;
+  const eyeLeft = new THREE.Mesh(eyeGeo, _faceBlackMat);
+  eyeLeft.position.set( PACMAN_RADIUS * 0.42, PACMAN_RADIUS * 0.58, -PACMAN_RADIUS * 0.30);
+  ballMesh.add(eyeLeft);
+  ballMesh.userData.eyeLeft = eyeLeft;
 
   // Sprite — canvas-textured plane oriented flat on floor.
   const spriteCanvas = _buildSpriteCanvas();

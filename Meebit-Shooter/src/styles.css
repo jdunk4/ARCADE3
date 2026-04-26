@@ -67,23 +67,25 @@ canvas { display: block; cursor: var(--matrix-cursor); }
 }
 #avatar {
   width: 72px; height: 72px;
-  background: linear-gradient(135deg, #0a0612, #1a0a2e);
+  /* Meebit Matrix Mode portrait — replaces the old CSS gradient + fake
+     glasses. The PNG ships in assets/ and shows the full character with
+     glasses, hair, chain, and skull shirt baked in. */
+  background-color: #0a0612;
+  background-image: url(../assets/Meebit_Matrix_Mode.png);
+  background-size: cover;
+  background-position: center 18%;     /* show face + chest, hair tip cropped */
+  background-repeat: no-repeat;
   border: 2px solid var(--neon-pink);
   box-shadow: 0 0 0 2px #000, 0 0 14px rgba(255,60,172,0.5),
     inset 0 0 20px rgba(255,60,172,0.2);
   display: grid; place-items: center;
 }
 #avatar .glasses {
-  width: 44px; height: 12px;
-  background: linear-gradient(90deg, #ff3cac, #e63aff, #4ff7ff);
-  border: 2px solid #fff;
-  position: relative;
+  /* Hidden — the Matrix Mode portrait already has glasses baked in. */
+  display: none;
 }
 #avatar .glasses::after {
-  content: ""; position: absolute; top: -10px; left: 50%;
-  transform: translateX(-50%);
-  width: 16px; height: 4px;
-  background: linear-gradient(90deg, #ff3cac, #ffd93d, #00ff66);
+  display: none;
 }
 #player-info { display: flex; flex-direction: column; gap: 4px; min-width: 280px; }
 #player-name {
