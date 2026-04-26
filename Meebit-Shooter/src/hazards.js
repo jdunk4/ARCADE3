@@ -28,8 +28,13 @@ const POWERUP_ZONE_CLEAR_RADIUS = 5.5;
 const PLAYER_CLEAR_RADIUS = 3.0;
 const EXISTING_OVERLAP_PAD = 0.6;
 const DROP_INTERVAL_SEC = 2.2;
+const DROP_INTERVAL_RUSH_SEC = 0.55;     // 4x faster when rush mode on
 const DROP_BATCH_SIZE = 1;
 const RING_SATURATION_THRESHOLD = 4;
+// Rush-mode auto ring-shrink: every N seconds the inner ring boundary
+// marches one cell-width inward (toward the player). Combined with the
+// 4x drop rate this creates a "walls closing in" feel.
+const RUSH_AUTO_SHRINK_SEC = 1.5;
 
 const hazards = [];
 let _dropTimer = 0;
@@ -38,6 +43,16 @@ let _activeRingInner = 0;
 let _ringFailures = 0;
 let _blockedZones = [];
 let _style = tetrisStyle;
+let _rushMode = false;
+let _rushAutoShrinkT = 0;
+
+/** Toggle rush mode — drops 4x faster + active ring auto-shrinks
+ *  inward over time. Used in chapter 2 wave 3 (and other intense
+ *  moments) to give the player a "walls closing in" feel. */
+export function setHazardRushMode(v) {
+  _rushMode = !!v;
+  _rushAutoShrinkT = 0;
+}
 
 function getRingWidth() { return _style.getCellSize ? _style.getCellSize() : 2.5; }
 function getOuterMax() { return ARENA - MIN_EDGE_PADDING; }
@@ -499,11 +514,23 @@ export function tickHazardSpawning(dt, chapterIdx, playerPos, activeZones) {
     _style.tickSpawning(dt, ctx);
   }
   if (!_spawningEnabled) return;
+  // Rush mode: auto-shrink the inner ring inward on a timer. The
+  // active ring marches toward the player even before the style
+  // saturates and calls onRingSaturated. Combined with the 4x drop
+  // rate this creates the "walls closing in" feel.
+  if (_rushMode) {
+    _rushAutoShrinkT += dt;
+    if (_rushAutoShrinkT >= RUSH_AUTO_SHRINK_SEC) {
+      _rushAutoShrinkT = 0;
+      const next = _activeRingInner - getRingWidth();
+      if (next >= SAFE_RADIUS_FROM_CENTER) _activeRingInner = next;
+    }
+  }
   // Legacy drop loop — only for styles that don't manage their own spawns.
   if (_style && _style.managesOwnSpawns) return;
   _dropTimer -= dt;
   if (_dropTimer <= 0) {
-    _dropTimer = DROP_INTERVAL_SEC;
+    _dropTimer = _rushMode ? DROP_INTERVAL_RUSH_SEC : DROP_INTERVAL_SEC;
     _tryDropBatch(chapterIdx, playerPos);
   }
 }
