@@ -637,6 +637,39 @@ class AudioEngine {
     this._beep({ type: 'square', freqStart: 1400, freqEnd: 800, dur: 0.08, gainStart: 0.12, delay: 0.20 });
   }
 
+  // Server online — cluster of soft beeps as system squares light up.
+  // Triggered when the player completes the charge zone in chapter 2 wave 2.
+  serverOnline() {
+    // Layered ascending beeps — reads as "system booting"
+    this._beep({ type: 'square', freqStart: 660, dur: 0.06, gainStart: 0.12 });
+    this._beep({ type: 'square', freqStart: 880, dur: 0.06, gainStart: 0.12, delay: 0.08 });
+    this._beep({ type: 'square', freqStart: 1320, dur: 0.06, gainStart: 0.12, delay: 0.16 });
+    this._beep({ type: 'triangle', freqStart: 1760, dur: 0.10, gainStart: 0.14, delay: 0.24 });
+  }
+
+  // Laser charging — long ominous rising hum that builds during the
+  // 3s telegraph. Tells the player "something big is about to fire."
+  laserCharging() {
+    // Single long rising tone, quiet at start escalating to bright
+    this._beep({ type: 'sawtooth', freqStart: 60, freqEnd: 220, dur: 2.8, gainStart: 0.12 });
+    this._beep({ type: 'square', freqStart: 90, freqEnd: 320, dur: 2.8, gainStart: 0.10, delay: 0.05 });
+    // Subtle noise crackle for "energy build-up" feel
+    this._noise(2.6, 1800, 0.06);
+  }
+
+  // Laser blast — huge electric crackle when the beam fires.
+  // Loud, percussive, distinct from regular bigBoom.
+  laserBlast() {
+    // Massive noise burst — the column-of-light arriving
+    this._noise(0.7, 800, 0.55);
+    // High-pitched zap on top
+    this._beep({ type: 'sawtooth', freqStart: 1800, freqEnd: 600, dur: 0.18, gainStart: 0.40 });
+    // Mid-range body
+    this._beep({ type: 'square', freqStart: 600, freqEnd: 200, dur: 0.40, gainStart: 0.32, delay: 0.04 });
+    // Low rumbling tail
+    this._beep({ type: 'sawtooth', freqStart: 120, freqEnd: 35, dur: 0.80, gainStart: 0.30, delay: 0.10 });
+  }
+
   countdown() { this._beep({ type: 'square', freqStart: 440, dur: 0.12, gainStart: 0.18 }); }
   waveStart() {
     [523, 659, 784, 1047, 1319].forEach((f, i) =>

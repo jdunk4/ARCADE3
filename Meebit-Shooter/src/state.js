@@ -238,6 +238,14 @@ export function resetGame() {
   // Chapter 1 reflow state
   S.isEggWave = false;
   S.isEscortWave = false;       // chapter 2 wave 1
+  // Chapter 2 wave 2 datacenter state
+  S.dcActive = false;
+  S.dcPhase = 'charging';
+  S.dcChargeT = 0;
+  S.dcOnslaughtT = 0;
+  S.dcSystemOnline = 0;
+  S.dcLaserTriggered = false;
+  S.dcShieldsDropped = false;
   S.cannonLoadActive = false;
   S.cannonLoadStubT = 0;
   S.cannonLoadStubMax = 0;

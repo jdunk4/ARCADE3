@@ -457,7 +457,23 @@ export function getWaveDef(wave) {
         localWave, chapterIdx,
       };
     }
-    // Wave 2 — POWER-UP (chapters 2-7). 5 sequential zones: power → turrets A → turrets B
+    if (chapterIdx === 1) {
+      // CHAPTER 2 REFLOW — datacenter onslaught. Player charges the
+      // server warehouse → 30s defense → laser fires + safety pod.
+      return {
+        type: 'datacenter',
+        enemies: waveEnemyMix(wave, chapterIdx),
+        spawnRate: 14,
+        chargeDuration: 3.0,
+        onslaughtDuration: 30.0,
+        laserTelegraph: 3.0,
+        laserBlast: 1.0,
+        targetEnemyCount: 14,
+        turretCount: 3,
+        localWave, chapterIdx,
+      };
+    }
+    // Wave 2 — POWER-UP (chapters 3-7). 5 sequential zones: power → turrets A → turrets B
     // → radio → EMP missile launch. Turrets come online at each step and
     // auto-fire at enemies. EMP at the end ends the wave + drops hive shields.
     return {

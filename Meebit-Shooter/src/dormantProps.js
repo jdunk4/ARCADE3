@@ -47,6 +47,8 @@ import { buildWires, clearWires } from './empWires.js';
 import { hitBurst } from './effects.js';
 import { spawnCannon, clearCannon, aimCannonAt } from './cannon.js';
 import { spawnQueenHive, clearQueenHive, getQueen } from './queenHive.js';
+import { spawnServerWarehouse, clearServerWarehouse } from './serverWarehouse.js';
+import { getCompound } from './waveProps.js';
 
 // Which chapter the current dormant-prop set belongs to. -1 means no set
 // is live; when the current chapter changes, the owning props are torn
@@ -226,6 +228,17 @@ export function prepareChapter(chapterIdx) {
   //     power-up zones below sit INSIDE this compound.
   buildCentralCompound(chapterIdx);
 
+  // CHAPTER 2 REFLOW — replace silo with server warehouse. Hide silo
+  // mesh; the warehouse takes its place at LAYOUT.silo position. The
+  // turrets stay (the warehouse uses them for its onslaught defense).
+  if (chapterIdx === 1) {
+    const compound = getCompound();
+    if (compound && compound.silo && compound.silo.obj) {
+      compound.silo.obj.visible = false;
+    }
+    spawnServerWarehouse(chapterIdx);
+  }
+
   // --- Turrets (wave 2 target; positions come from LAYOUT.turrets
   //     which buildCentralCompound just recomputed) ---
   spawnAllTurrets(chapterIdx);
@@ -264,6 +277,8 @@ export function teardownChapter() {
   clearCannon();
   clearQueenHive();
   clearCrusher();
+  // Chapter 2 reflow props
+  clearServerWarehouse();
   _preparedChapter = -1;
 }
 

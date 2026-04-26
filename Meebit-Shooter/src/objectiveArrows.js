@@ -30,6 +30,8 @@ import { CHAPTERS } from './config.js';
 import { getActiveZone } from './powerupZones.js';
 import { LAYOUT } from './waveProps.js';
 import { getTruckPos } from './escortTruck.js';
+import { getChargingZonePos } from './serverWarehouse.js';
+import { getPodPos } from './safetyPod.js';
 
 const POOL_SIZE = 8;
 const PANIC_COLOR = '#ff2e4d';   // always-red override for dangerous targets
@@ -292,6 +294,31 @@ function _collectTargets(S, waveDef, playerPos) {
         x: LAYOUT.silo.x, z: LAYOUT.silo.z,
         label: 'CANNON', panic: false,
       });
+      break;
+    }
+    case 'datacenter': {
+      // Chapter 2 wave 2 — phase-aware arrow.
+      //   charging → point at charging zone
+      //   onslaught → no arrow (player just defends; turrets help)
+      //   telegraph/blast → point at safety pod (RUN!)
+      const phase = S.dcPhase || 'charging';
+      if (phase === 'charging') {
+        const cz = getChargingZonePos();
+        if (cz) {
+          _targets.push({
+            x: cz.x, z: cz.z,
+            label: 'CHARGE', panic: false,
+          });
+        }
+      } else if (phase === 'telegraph' || phase === 'blast') {
+        const pp = getPodPos();
+        if (pp) {
+          _targets.push({
+            x: pp.x, z: pp.z,
+            label: 'POD', panic: true,         // panic = red flashing
+          });
+        }
+      }
       break;
     }
     case 'queen-cleanup': {

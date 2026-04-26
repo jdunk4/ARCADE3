@@ -63,6 +63,8 @@ import { updateQueenHive, clearQueenHive, tickQueenShieldCollision, tryHitQueenS
 import { updateCrusher, clearCrusher } from './crusher.js';
 import { updateChargeCubes, clearChargeCubes } from './chargeCubes.js';
 import { clearEscortTruck, getTruckPos } from './escortTruck.js';
+import { updateServerWarehouse, clearServerWarehouse } from './serverWarehouse.js';
+import { updateSafetyPod, clearSafetyPod } from './safetyPod.js';
 import { spawners, damageSpawner, updateSpawners } from './spawners.js';
 import { getShieldedHiveAt, shieldHitVisual, hiveShieldsIter } from './dormantProps.js';
 import { Save } from './save.js';
@@ -1864,6 +1866,8 @@ function startGame() {
   clearCrusher();
   clearChargeCubes();
   clearEscortTruck();
+  clearServerWarehouse();
+  clearSafetyPod();
   clearGooSplats();
   clearHazards();
   clearAllPickups();
@@ -2286,6 +2290,8 @@ function animate() {
     tickQueenShieldCollision(player.pos);
     updateCrusher(dt);
     updateChargeCubes(dt, player.pos);
+    updateServerWarehouse(dt);
+    updateSafetyPod(dt);
     updateBossCubes(dt);
     updateCivilians(dt, enemies, player, onCivilianKilled, onCivilianRescued);
     updateWaves(dt);

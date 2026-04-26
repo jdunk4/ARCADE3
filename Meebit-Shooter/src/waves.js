@@ -38,6 +38,15 @@ import {
   isTruckBlocked, isPlayerInEscortRadius, hasTruck, clearEscortTruck,
 } from './escortTruck.js';
 import {
+  spawnServerWarehouse, setSystemOnline, triggerLaserBlast,
+  isLaserBlasting, isLaserActive, getChargingZonePos,
+  hasServerWarehouse, clearServerWarehouse,
+} from './serverWarehouse.js';
+import {
+  spawnSafetyPod, setVisible as setPodVisible, setLaserActive as setPodLaserActive,
+  isPlayerInPod, getPodPos, hasSafetyPod, clearSafetyPod,
+} from './safetyPod.js';
+import {
   getQueen, popQueenShield, queenShieldsRemaining,
   getNextDomePos, spawnCannonBeam,
 } from './queenHive.js';
@@ -435,6 +444,45 @@ export function startWave(waveNum) {
       'You have all 4 charges. Walk to the cannon to load them.'
     );
     UI.toast('TURRETS ONLINE', '#ffd93d', 1800);
+  } else if (waveDef.type === 'datacenter') {
+    // CHAPTER 2 WAVE 2 — datacenter onslaught.
+    //   Phase A: charging — player walks to charging zone, 3s auto-charge
+    //   Phase B: onslaught — turrets activate + flinger arrives, 30s defense at 14 enemies
+    //   Phase C: laser telegraph — 3s warning, pod becomes safe haven
+    //   Phase D: laser blast — 1s lethal beam, anything outside pod takes massive damage,
+    //                          all enemies die, all hive shields drop
+    //   Phase E: end → wave 3
+    S.dcActive = true;
+    S.dcPhase = 'charging';            // 'charging' | 'onslaught' | 'telegraph' | 'blast' | 'done'
+    S.dcChargeT = 0;
+    S.dcOnslaughtT = 0;
+    S.dcSystemOnline = 0;
+    S.dcLaserTriggered = false;
+    S.dcShieldsDropped = false;
+    // Ensure system online is at 0 so the grid starts dark
+    setSystemOnline(0);
+    // Spawn safety pod in same wedge as the warehouse, but offset
+    // perpendicular to the warehouse-to-origin axis so it sits to one
+    // side. Player must actively run for it during the telegraph.
+    const wp = getChargingZonePos();
+    if (wp) {
+      // Pod offset: perpendicular to (warehouse → origin) by ~9u
+      const wx = LAYOUT.silo.x;
+      const wz = LAYOUT.silo.z;
+      const len = Math.sqrt(wx * wx + wz * wz) || 1;
+      // Perpendicular unit vector (rotate 90° CCW)
+      const px = -wz / len;
+      const pz =  wx / len;
+      const podOffset = 9.0;
+      const podX = wx + px * podOffset;
+      const podZ = wz + pz * podOffset;
+      spawnSafetyPod(S.chapter || 0, podX, podZ);
+    }
+    UI.showObjective(
+      'CHARGE THE DATACENTER',
+      'Walk to the charging zone and stand for 3 seconds.',
+    );
+    UI.toast('SYSTEM OFFLINE', '#ffd93d', 1800);
   } else if (waveDef.type === 'queen-cleanup') {
     // WAVE 3 (chapter 1 reflow) — queen hive is shieldless from the
     // wave-2 cannon barrage. Player must destroy it with their gun.
@@ -1318,6 +1366,157 @@ export function updateWaves(dt) {
           ? 'Next shot in ' + Math.ceil(cd) + 's · defend yourself'
           : 'Firing...',
       );
+    }
+  }
+
+  // CHAPTER 2 WAVE 2 — datacenter onslaught state machine.
+  if (waveDef.type === 'datacenter' && S.dcActive) {
+    const chargeZone = getChargingZonePos();
+    const podPos = getPodPos();
+
+    // PHASE A — CHARGING
+    if (S.dcPhase === 'charging') {
+      // Suppress enemy spawns during the calm walk-to-zone
+      waveDef.spawnRate = 0;
+      // Proximity check
+      if (chargeZone) {
+        const dx = player.pos.x - chargeZone.x;
+        const dz = player.pos.z - chargeZone.z;
+        const inZone = (dx * dx + dz * dz) < (3.5 * 3.5);
+        if (inZone) {
+          S.dcChargeT = Math.min(waveDef.chargeDuration, (S.dcChargeT || 0) + dt);
+          // Update grid fill — drives the warehouse front-face squares
+          setSystemOnline(S.dcChargeT / waveDef.chargeDuration);
+          // Charging tick SFX (reuse existing cannon charging sound)
+          S._dcChargeTickT = (S._dcChargeTickT || 0) - dt;
+          if (S._dcChargeTickT <= 0) {
+            S._dcChargeTickT = 0.4;
+            try { Audio.cannonChargingTick && Audio.cannonChargingTick(S.dcChargeT / waveDef.chargeDuration); } catch (e) {}
+          }
+        } else {
+          // Slow drain when off zone
+          S.dcChargeT = Math.max(0, (S.dcChargeT || 0) - dt * 0.5);
+          setSystemOnline(S.dcChargeT / waveDef.chargeDuration);
+        }
+      }
+      // Charge complete?
+      if (S.dcChargeT >= waveDef.chargeDuration) {
+        S.dcPhase = 'onslaught';
+        S.dcOnslaughtT = 0;
+        // Activate turrets, summon flinger
+        activateTurretsUpTo(waveDef.turretCount || 3);
+        try {
+          S.powerplantLit = true;
+          addFlingerCharge(0);
+        } catch (e) {}
+        try { Audio.serverOnline && Audio.serverOnline(); } catch (e) {}
+        UI.toast('SYSTEM ONLINE — DEFEND', '#a8ff8c', 2400);
+      } else {
+        // Objective text during charge
+        const pct = Math.round((S.dcChargeT / waveDef.chargeDuration) * 100);
+        if (S.dcChargeT > 0) {
+          UI.showObjective(
+            'CHARGING DATACENTER · ' + pct + '%',
+            'Stay in the charging zone.',
+          );
+        } else {
+          UI.showObjective(
+            'CHARGE THE DATACENTER',
+            'Walk to the charging zone and stand for 3 seconds.',
+          );
+        }
+      }
+    }
+    // PHASE B — ONSLAUGHT
+    else if (S.dcPhase === 'onslaught') {
+      S.dcOnslaughtT += dt;
+      // Constant 14 spawn rate (no escalation)
+      waveDef.spawnRate = 14;
+      const remaining = Math.max(0, waveDef.onslaughtDuration - S.dcOnslaughtT);
+      UI.showObjective(
+        'DEFEND · ' + Math.ceil(remaining) + 's',
+        'Stay alive. The system is finalizing.',
+      );
+      // Reveal pod 5s before blast (during last 5s of onslaught)
+      if (remaining < 5 && hasSafetyPod()) {
+        setPodVisible(true);
+      }
+      // Onslaught complete → trigger laser
+      if (S.dcOnslaughtT >= waveDef.onslaughtDuration && !S.dcLaserTriggered) {
+        S.dcLaserTriggered = true;
+        S.dcPhase = 'telegraph';
+        triggerLaserBlast();
+        try { Audio.laserCharging && Audio.laserCharging(); } catch (e) {}
+        // Reveal pod if not already
+        if (hasSafetyPod()) setPodVisible(true);
+      }
+    }
+    // PHASE C — TELEGRAPH (laser charging up)
+    else if (S.dcPhase === 'telegraph') {
+      // Spawn rate stays high during telegraph — chaos until the kill
+      waveDef.spawnRate = 14;
+      // Track whether laser has switched to blast
+      if (isLaserBlasting()) {
+        S.dcPhase = 'blast';
+        try { Audio.laserBlast && Audio.laserBlast(); } catch (e) {}
+        // Set pod laser-active state
+        if (hasSafetyPod()) setPodLaserActive(true);
+      }
+      const safe = isPlayerInPod(player.pos);
+      UI.showObjective(
+        'LASER CHARGING — GET TO THE POD',
+        safe ? 'Safe inside the pod.' : 'You will not survive outside the pod.',
+      );
+    }
+    // PHASE D — BLAST (lethal beam)
+    else if (S.dcPhase === 'blast') {
+      // No new spawns during the kill
+      waveDef.spawnRate = 0;
+      const safe = isPlayerInPod(player.pos);
+      // Blast applies massive damage to player if outside pod
+      if (!safe) {
+        S.health = Math.max(0, S.health - dt * 200);   // ~200/s — instakill in fraction of second
+        try {
+          S._dcBlastDamageTick = (S._dcBlastDamageTick || 0) - dt;
+          if (S._dcBlastDamageTick <= 0) {
+            S._dcBlastDamageTick = 0.05;
+            UI.damageFlash && UI.damageFlash();
+          }
+        } catch (e) {}
+      }
+      // Kill all enemies in arena (the laser is wide)
+      for (const e of enemies) {
+        if (!e || e.dead || e.destroyed) continue;
+        e.hp = 0;
+      }
+      // Drop hive shields
+      if (!S.dcShieldsDropped) {
+        S.dcShieldsDropped = true;
+        for (const s of spawners) {
+          if (s) s.shielded = false;
+        }
+      }
+      UI.showObjective(
+        'LASER FIRING',
+        safe ? 'Hold inside the pod.' : 'Move to the pod NOW.',
+      );
+      // When the laser system reports done (no longer active), end wave
+      if (!isLaserActive()) {
+        S.dcPhase = 'done';
+        if (hasSafetyPod()) setPodLaserActive(false);
+      }
+    }
+    // PHASE E — DONE → end wave
+    else if (S.dcPhase === 'done') {
+      S.dcActive = false;
+      // Cleanup: deactivate turrets so wave 3 is the player's fight
+      deactivateAllTurrets();
+      clearAllTurrets();
+      // Clear safety pod — wave 3 doesn't need it
+      clearSafetyPod();
+      UI.toast('GRID FRIED — HIVES EXPOSED', '#ff3cac', 2400);
+      endWave();
+      return;
     }
   }
 
