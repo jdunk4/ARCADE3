@@ -393,11 +393,12 @@ export function getWaveDef(wave) {
 
   // -------- NORMAL CHAPTER FLOW (chapters 1-6) --------
   if (localWave === 1) {
-    // CHAPTER 1 REFLOW: chapterIdx===0 wave 1 uses the EGG HUNT
-    // variant — 4 green gobstopper eggs in the depot wedge, each
-    // shatters into a charge ore, deliver all 4 to the depot beacon
-    // to advance. Other chapters keep the original mining flow.
-    if (chapterIdx === 0) {
+    // CHAPTER 1 + CHAPTER 4 REFLOW: chapterIdx 0 (Inferno) and 3
+    // (Toxic) wave 1 use the EGG HUNT variant — 4 gobstopper eggs
+    // in the depot wedge, each shatters into a charge ore, deliver
+    // all 4 to the depot beacon to advance. Other chapters keep the
+    // original mining flow.
+    if (chapterIdx === 0 || chapterIdx === 3) {
       return {
         type: 'mining',
         isEggWave: true,         // signals waves.js + main.js to spawn eggs
@@ -438,12 +439,13 @@ export function getWaveDef(wave) {
     };
   }
   if (localWave === 2) {
-    // CHAPTER 1 REFLOW: chapter-1 wave 2 is a logistics + cannon
+    // CHAPTER 1 + CHAPTER 4 REFLOW: chapter-1 (idx 0, Inferno) and
+    // chapter-4 (idx 3, Toxic) wave 2 share a logistics + cannon
     // barrage phase. Player carries 4 charges from depot → cannon →
     // cannon auto-fires every 15s, popping queen hive shield domes
     // one per shot. Light ambient enemy trickle. Other chapters keep
     // the 5-zone powerup flow.
-    if (chapterIdx === 0) {
+    if (chapterIdx === 0 || chapterIdx === 3) {
       return {
         type: 'cannon-load',
         enemies: waveEnemyMix(wave, chapterIdx),
@@ -491,11 +493,11 @@ export function getWaveDef(wave) {
     };
   }
   if (localWave === 3) {
-    // CHAPTER 1 REFLOW: chapter-1 wave 3 is heavy swarm + queen hive
-    // cleanup. Queen is shieldless from wave 2's cannon barrage.
-    // Player must destroy the queen with their gun while heavy enemy
-    // swarms pour in.
-    if (chapterIdx === 0) {
+    // CHAPTER 1 + CHAPTER 4 REFLOW: chapter-1 (idx 0) + chapter-4
+    // (idx 3) wave 3 is heavy swarm + queen hive cleanup. Queen is
+    // shieldless from wave 2's cannon barrage. Player must destroy
+    // the queen with their gun while heavy enemy swarms pour in.
+    if (chapterIdx === 0 || chapterIdx === 3) {
       return {
         type: 'queen-cleanup',
         enemies: waveEnemyMix(wave, chapterIdx),

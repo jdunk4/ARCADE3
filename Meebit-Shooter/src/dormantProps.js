@@ -52,6 +52,7 @@ import { clearCockroachBoss } from './cockroachBoss.js';
 import { clearHiveLasers } from './hiveLasers.js';
 import { setCh2WarehouseSwap } from './waveProps.js';
 import { resetGalagaTargetCount, setGalagaOverdrive } from './hazardsGalaga.js';
+import { setHazardRushMode } from './hazards.js';
 import { getCompound } from './waveProps.js';
 
 // Which chapter the current dormant-prop set belongs to. -1 means no set
@@ -188,7 +189,17 @@ export function prepareChapter(chapterIdx) {
   //     LAYOUT, just gets a different mesh on top of it)
   //   - 3 turrets ringed around the cannon (auto-fire defense during
   //     wave 2's barrage). Activated by waves.js when wave 2 begins.
-  if (chapterIdx === 0) {
+  // CHAPTER 1 + CHAPTER 4 REFLOW (chapterIdx 0 = Inferno, 3 = Toxic):
+  // Skip the silo/powerplant/radio compound (no powerup zones in
+  // wave 2 for these chapters), and instead spawn:
+  //   - A queen hive at the hive-triangle centroid with 4 shield domes
+  //   - A cannon prop at the silo position (which still anchors the
+  //     LAYOUT, just gets a different mesh on top of it)
+  //   - 3 turrets ringed around the cannon (auto-fire defense during
+  //     wave 2's barrage). Activated by waves.js when wave 2 begins.
+  //   - A crusher prop on top of the depot for wave 1's egg-shatter
+  //     finisher.
+  if (chapterIdx === 0 || chapterIdx === 3) {
     buildCentralCompound(chapterIdx);
     if (typeof hideCentralCompound === 'function') {
       try { hideCentralCompound(); } catch (e) { /* defensive */ }
@@ -196,7 +207,7 @@ export function prepareChapter(chapterIdx) {
     // Spawn the queen hive (replaces the 4-hive cluster) + cannon
     spawnQueenHive(chapterIdx);
     spawnCannon(chapterIdx);
-    // Aim the cannon at the queen from the moment chapter 1 begins.
+    // Aim the cannon at the queen from the moment the chapter begins.
     // updateCannon re-applies this every frame so it stays locked on.
     try {
       const q = getQueen && getQueen();
@@ -206,18 +217,18 @@ export function prepareChapter(chapterIdx) {
     // ring around the cannon. Stay dormant until wave 2 starts;
     // waves.js calls activateTurretsUpTo(3) in the cannon-load init.
     spawnAllTurrets(chapterIdx);
-    // CRUSHER — replaces the depot's visual for chapter 1. The depot
-    // game logic still runs (deposit tracking, beacon proximity); we
-    // just hide the depot mesh so the crusher takes its place. Crusher
-    // sits at the depot's world position. Ores still fly to the depot
-    // beacon and crusher slams trigger from waves.js when deposits land.
+    // CRUSHER — replaces the depot's visual. Depot game logic still
+    // runs (deposit tracking, beacon proximity); we just hide the
+    // depot mesh so the crusher takes its place. Crusher sits at the
+    // depot's world position. Ores still fly to the depot beacon and
+    // crusher slams trigger from waves.js when deposits land.
     const depotObj = OresModule.depot;
     if (depotObj && depotObj.pos) {
       spawnCrusher(chapterIdx, depotObj.pos.x, depotObj.pos.z);
       if (depotObj.obj) depotObj.obj.visible = false;
     }
     _preparedChapter = chapterIdx;
-    console.info('[dormantProps] prepared chapter 0 (egg/cannon/queen/crusher reflow)');
+    console.info('[dormantProps] prepared chapter', chapterIdx, '(egg/cannon/queen/crusher reflow)');
     return;
   }
 
@@ -308,6 +319,9 @@ export function teardownChapter() {
   // Also reset wave-3 overdrive bias — back to default 70% targeting
   // so other chapters/waves get standard galaga behavior.
   setGalagaOverdrive(false);
+  // Reset hazard rush mode (Turn 9) — ensures next chapter gets
+  // default drop rate + no auto-shrink.
+  setHazardRushMode(false);
   _preparedChapter = -1;
 }
 

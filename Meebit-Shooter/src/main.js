@@ -64,7 +64,7 @@ import { updateCrusher, clearCrusher } from './crusher.js';
 import { updateChargeCubes, clearChargeCubes } from './chargeCubes.js';
 import { clearEscortTruck, getTruckPos, getTruckCollisionCircles, updateEscortTruck } from './escortTruck.js';
 import { updateServerWarehouse, clearServerWarehouse, getServerCollisionCircles } from './serverWarehouse.js';
-import { updateSafetyPod, clearSafetyPod, getPodCollisionCircles } from './safetyPod.js';
+import { updateSafetyPod, clearSafetyPod, getPodCollisionCircles, getPodPos, getPodRadius } from './safetyPod.js';
 import { updateHiveLasers, clearHiveLasers } from './hiveLasers.js';
 import { updateCockroach, clearCockroachBoss } from './cockroachBoss.js';
 import { initFogRing, updateFogRing, clearFogRing } from './fogRing.js';
@@ -167,7 +167,9 @@ import { initGamepad, updateGamepad, setTitleMode, rumble } from './gamepad.js';
 function _pickHazardStyleForChapter(chapterIdx) {
   if (chapterIdx === 1) return galagaStyle;
   if (chapterIdx === 2) return minesweeperStyle;
-  if (chapterIdx === 3) return pacmanStyle;
+  // chapterIdx === 3 (Toxic) — was pac-man, now uses tetris to match
+  // its egg/cannon/queen reflow (mirrors chapter 0 which is also tetris).
+  if (chapterIdx === 3) return tetrisStyle;
   if (chapterIdx === 4) return pongStyle;       // ARCTIC — pong/ice tiles
   if (chapterIdx === 5) return donkeyKongStyle; // PARADISE — DK barrels + fires
   return tetrisStyle;
@@ -190,24 +192,15 @@ function _applyChapterAlly(chapterIdx, playerPos) {
       despawnGalagaShip();
     }
   }
-  // Pac-Man character — spawn on chapter 4 (zero-indexed = 3), despawn
-  // elsewhere. Idempotent: spawnPacman is a no-op if already active,
-  // so calling this every wave-start in chapter 4 doesn't re-summon him.
-  if (chapterIdx === 3) {
-    if (!isPacmanActive()) {
-      // Pass the player's position so pacman does the cinematic intro
-      // — appears above the player and dives, instead of dropping in
-      // a random corner the player might never visit.
-      spawnPacman(playerPos);
-    }
-    // Power pellets — also chapter-4 only. spawnPellets is idempotent.
-    spawnPellets();
-  } else {
-    if (isPacmanActive()) {
-      despawnPacman();
-    }
-    despawnPellets();
+  // Pac-Man character — was spawned on chapter 4 (idx 3) when that
+  // chapter used the pacman hazard style. Since chapter 4 now uses
+  // the egg/cannon/queen reflow (matching chapter 0), pacman is no
+  // longer wanted there. Always despawn — the standalone pacman ally
+  // never had a place outside its dedicated chapter.
+  if (isPacmanActive()) {
+    despawnPacman();
   }
+  despawnPellets();
 }
 
 // ---- ATTACH RENDERER ----
@@ -2659,6 +2652,26 @@ function updatePlayer(dt) {
   // Silo + turrets act as solid obstacles — push the player out if they'd
   // overlap either. No-ops when the compound isn't built or has retracted.
   resolveCompoundCollision(player.pos, 0.8);
+  // Turn 9: pod lock-in. While S._dcPlayerInPod is true, clamp the
+  // player's position to within pod radius. Active during chapter 2
+  // wave 2 from the moment the player first enters the pod through
+  // hive-lasers + finale-laser. Released when wave 2 ends (done phase
+  // clears the flag). This commits the player to the pod once they
+  // start the laser chain — they can't bail mid-deployment.
+  if (S._dcPlayerInPod) {
+    const pp = getPodPos();
+    if (pp) {
+      const dx = player.pos.x - pp.x;
+      const dz = player.pos.z - pp.z;
+      const dist = Math.sqrt(dx * dx + dz * dz);
+      const lockR = (getPodRadius && getPodRadius()) || 1.4;
+      if (dist > lockR && dist > 0.0001) {
+        const inv = lockR / dist;
+        player.pos.x = pp.x + dx * inv;
+        player.pos.z = pp.z + dz * inv;
+      }
+    }
+  }
   player.obj.position.copy(player.pos);
 
   // Floor hazards (lava tetrominoes) damage the player continuously while
