@@ -66,6 +66,7 @@ import { clearEscortTruck, getTruckPos } from './escortTruck.js';
 import { updateServerWarehouse, clearServerWarehouse } from './serverWarehouse.js';
 import { updateSafetyPod, clearSafetyPod } from './safetyPod.js';
 import { updateCockroach, clearCockroachBoss } from './cockroachBoss.js';
+import { initFogRing, updateFogRing, clearFogRing } from './fogRing.js';
 import { spawners, damageSpawner, updateSpawners } from './spawners.js';
 import { getShieldedHiveAt, shieldHitVisual, hiveShieldsIter } from './dormantProps.js';
 import { Save } from './save.js';
@@ -1535,6 +1536,12 @@ function startGame() {
   Audio.stopPhoneRing && Audio.stopPhoneRing();
   Audio.stopCDrone && Audio.stopCDrone();
 
+  // Build the player-centered fog ring. Idempotent — safe to call on
+  // replay. Restricts visibility to a uniform ~22u radius around the
+  // player so distant projectiles + enemies don't sneak shots from
+  // beyond visibility.
+  initFogRing();
+
   // Exit title-screen gamepad mode — stick/d-pad input stops moving focus
   // between buttons and resumes driving the player.
   setTitleMode(false);
@@ -2295,6 +2302,7 @@ function animate() {
     updateServerWarehouse(dt);
     updateSafetyPod(dt);
     updateCockroach(dt);
+    updateFogRing(player.pos);
     updateBossCubes(dt);
     updateCivilians(dt, enemies, player, onCivilianKilled, onCivilianRescued);
     updateWaves(dt);

@@ -202,7 +202,9 @@ export function startWave(waveNum) {
   if (S.localWave === 1) clearHazards();
   const isHazardWave = waveDef.type === 'mining' || waveDef.type === 'powerup'
     || waveDef.type === 'hive' || waveDef.type === 'spawners'
-    || waveDef.type === 'cannon-load' || waveDef.type === 'queen-cleanup';
+    || waveDef.type === 'cannon-load' || waveDef.type === 'queen-cleanup'
+    || waveDef.type === 'datacenter' || waveDef.type === 'twinhive'
+    || waveDef.isEscortWave;
   if (isHazardWave && !S.hyperdriveActive) {
     // Gated by S.hyperdriveActive: during the 8s ATTACK-THE-AI prelude
     // the arena is fog-hidden. main.js re-enables hazard spawning at

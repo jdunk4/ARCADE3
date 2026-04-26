@@ -64,26 +64,27 @@ const BEACON_GEO      = new THREE.SphereGeometry(0.18, 10, 8);
 const LASER_GEO = new THREE.CylinderGeometry(ARENA_HALF * 1.5, ARENA_HALF * 1.5, LASER_HEIGHT, 32, 1, true);
 
 // ---- Materials ----
-function _bodyMat() {
+function _bodyMat(tint) {
   return new THREE.MeshStandardMaterial({
-    color: 0x252830, roughness: 0.85, metalness: 0.2,
-    emissive: 0x0a0c10, emissiveIntensity: 0.1,
+    color: 0x4a4f58, roughness: 0.55, metalness: 0.6,
+    emissive: tint, emissiveIntensity: 0.35,
   });
 }
-function _roofMat() {
+function _roofMat(tint) {
   return new THREE.MeshStandardMaterial({
-    color: 0x1a1c22, roughness: 0.95, metalness: 0.05,
+    color: 0x383c44, roughness: 0.7, metalness: 0.3,
+    emissive: tint, emissiveIntensity: 0.18,
   });
 }
-function _frontPanelMat() {
+function _frontPanelMat(tint) {
   return new THREE.MeshStandardMaterial({
-    color: 0x0a0d12, roughness: 0.6, metalness: 0.3,
-    emissive: 0x000000, emissiveIntensity: 0,
+    color: 0x1a2030, roughness: 0.5, metalness: 0.4,
+    emissive: tint, emissiveIntensity: 0.35,
   });
 }
 function _squareDimMat() {
   return new THREE.MeshBasicMaterial({
-    color: 0x222831, transparent: true, opacity: 0.4,
+    color: 0x444a58, transparent: true, opacity: 0.6,
     side: THREE.DoubleSide, depthWrite: false,
   });
 }
@@ -146,20 +147,20 @@ export function spawnServerWarehouse(chapterIdx) {
   }
 
   // --- Body ---
-  const body = new THREE.Mesh(BODY_GEO, _bodyMat());
+  const body = new THREE.Mesh(BODY_GEO, _bodyMat(tint));
   body.position.y = 2.0;
   body.castShadow = true;
   body.receiveShadow = true;
   group.add(body);
 
   // --- Roof slab ---
-  const roof = new THREE.Mesh(ROOF_GEO, _roofMat());
+  const roof = new THREE.Mesh(ROOF_GEO, _roofMat(tint));
   roof.position.y = 4.2;
   roof.castShadow = true;
   group.add(roof);
 
   // --- Front recessed panel (where the grid lights live) ---
-  const frontPanel = new THREE.Mesh(FRONT_PANEL_GEO, _frontPanelMat());
+  const frontPanel = new THREE.Mesh(FRONT_PANEL_GEO, _frontPanelMat(tint));
   frontPanel.position.set(0, 2.2, 3.005);    // just in front of body's +Z face
   group.add(frontPanel);
 
@@ -205,6 +206,51 @@ export function spawnServerWarehouse(chapterIdx) {
   winR2.position.set(-4.005, 1.4, 0);
   winR2.rotation.y = -Math.PI / 2;
   group.add(winR2);
+
+  // Chapter-tinted ROOF-LINE accent strip running around the body just
+  // beneath the roof. Bright additive ring so the warehouse silhouette
+  // pops at any angle.
+  const trimMat = new THREE.MeshBasicMaterial({
+    color: tint, transparent: true, opacity: 0.95,
+    side: THREE.DoubleSide, depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    toneMapped: false,
+  });
+  // Front edge of body (along Z = 3, height = 3.85)
+  const trimFront = new THREE.Mesh(new THREE.BoxGeometry(8.05, 0.18, 0.05), trimMat);
+  trimFront.position.set(0, 3.85, 3.005);
+  group.add(trimFront);
+  // Back edge of body
+  const trimBack = new THREE.Mesh(new THREE.BoxGeometry(8.05, 0.18, 0.05), trimMat);
+  trimBack.position.set(0, 3.85, -3.005);
+  group.add(trimBack);
+  // Left edge
+  const trimLeft = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.18, 6.05), trimMat);
+  trimLeft.position.set(-4.005, 3.85, 0);
+  group.add(trimLeft);
+  // Right edge
+  const trimRight = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.18, 6.05), trimMat);
+  trimRight.position.set(4.005, 3.85, 0);
+  group.add(trimRight);
+
+  // Bottom edge accent — short tinted skirt around the base of the body
+  const skirtMat = new THREE.MeshBasicMaterial({
+    color: tint, transparent: true, opacity: 0.55,
+    side: THREE.DoubleSide, depthWrite: false,
+    blending: THREE.AdditiveBlending,
+  });
+  const skirtFront = new THREE.Mesh(new THREE.BoxGeometry(8.05, 0.10, 0.04), skirtMat);
+  skirtFront.position.set(0, 0.15, 3.005);
+  group.add(skirtFront);
+  const skirtBack = new THREE.Mesh(new THREE.BoxGeometry(8.05, 0.10, 0.04), skirtMat);
+  skirtBack.position.set(0, 0.15, -3.005);
+  group.add(skirtBack);
+  const skirtLeft = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.10, 6.05), skirtMat);
+  skirtLeft.position.set(-4.005, 0.15, 0);
+  group.add(skirtLeft);
+  const skirtRight = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.10, 6.05), skirtMat);
+  skirtRight.position.set(4.005, 0.15, 0);
+  group.add(skirtRight);
 
   // --- Antennae + beacon on roof ---
   const ant1 = new THREE.Mesh(ANTENNA_GEO, _antennaMat());
