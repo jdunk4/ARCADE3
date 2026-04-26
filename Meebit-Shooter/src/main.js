@@ -62,7 +62,7 @@ import { updateCannon, clearCannon } from './cannon.js';
 import { updateQueenHive, clearQueenHive, tickQueenShieldCollision, tryHitQueenShield } from './queenHive.js';
 import { updateCrusher, clearCrusher } from './crusher.js';
 import { updateChargeCubes, clearChargeCubes } from './chargeCubes.js';
-import { clearEscortTruck, getTruckPos, getTruckCollisionCircles } from './escortTruck.js';
+import { clearEscortTruck, getTruckPos, getTruckCollisionCircles, updateEscortTruck } from './escortTruck.js';
 import { updateServerWarehouse, clearServerWarehouse, getServerCollisionCircles } from './serverWarehouse.js';
 import { updateSafetyPod, clearSafetyPod, getPodCollisionCircles } from './safetyPod.js';
 import { updateCockroach, clearCockroachBoss } from './cockroachBoss.js';
@@ -2313,6 +2313,12 @@ function animate() {
     tickQueenShieldCollision(player.pos);
     updateCrusher(dt);
     updateChargeCubes(dt, player.pos);
+    // Tick the escort truck unconditionally — the wave-internal call
+    // in waves.js handles movement/block logic for wave 1, but the
+    // sink animation needs to keep ticking AFTER wave 1 ends so the
+    // truck actually vanishes for wave 2. Calling with null playerPos
+    // skips movement; only beacon + sink animations run.
+    updateEscortTruck(dt, null, null);
     updateServerWarehouse(dt);
     updateSafetyPod(dt);
     updateCockroach(dt);

@@ -31,7 +31,7 @@ import { shake } from './state.js';
 
 // ---- Tunables ----
 const ESCORT_RADIUS = 12.0;         // player must stay within this (u) — bumped from 8.5
-const FRONT_BUMPER_RADIUS = 4.0;    // any enemy within this in front blocks
+const FRONT_BUMPER_RADIUS = 2.5;    // any enemy within this in front blocks (smaller = more forgiving)
 const TRUCK_SPEED = 1.4;            // u/s base
 const ARRIVAL_RADIUS = 4.0;         // bumped from 2.0 — auto-completes when "close enough"
 const BEACON_SPIN_SPEED = 4.5;      // rad/s
@@ -381,6 +381,12 @@ export function updateEscortTruck(dt, playerPos, enemies) {
     }
     return false;
   }
+
+  // Below this point: movement + block detection. Skip if called with
+  // null playerPos (e.g. unconditional per-frame tick from main.js
+  // outside the escort wave). The early returns above still animate
+  // beacons + sink for arrived trucks — that's the goal of this path.
+  if (!playerPos) return false;
 
   // Compute distance from player to truck center
   const px = (playerPos && playerPos.x) || 0;

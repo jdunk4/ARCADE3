@@ -30,20 +30,22 @@ import { scene } from './scene.js';
 import { CHAPTERS } from './config.js';
 
 // ---- Tunables ----
-const VISIBLE_RADIUS = 18.0;     // clear inside this (tightened from 22)
-const FALLOFF_RADIUS = 24.0;     // ramps to opaque between visible and falloff
+const VISIBLE_RADIUS = 15.0;     // clear inside this (tightened from 18)
+const FALLOFF_RADIUS = 21.0;     // ramps to opaque between visible and falloff
 const OUTER_BLACK_RADIUS = 100;  // beyond this — pure cover
 
 // Tighten the existing distance fog so distant geometry actually
-// hides. Default is near=30, far=85. We drop far to ~30 so anything
-// past ~30u from the camera is heavily fogged. Matches the ring boundary.
-const FOG_NEAR = 10;
-const FOG_FAR  = 32;
+// hides. Default is near=30, far=85. Drop to match the ring boundary
+// so anything past ~28u from the camera is heavily fogged into black.
+const FOG_NEAR = 8;
+const FOG_FAR  = 28;
 
 let _ring = null;
 let _outerCover = null;
 let _origFogNear = null;
 let _origFogFar = null;
+let _origFogColor = null;
+let _origBgColor = null;
 
 /** Build the fog ring + tighten distance fog. Idempotent. */
 export function initFogRing() {
@@ -137,17 +139,31 @@ export function initFogRing() {
 
   // Tighten the existing scene fog so distant skybox / props also
   // disappear at the visibility boundary. Stash originals so we can
-  // restore on clearFogRing.
+  // restore on clearFogRing. Also override the fog COLOR to pure black
+  // — without this, distant areas fade to the chapter-tinted fog color
+  // (purplish for chapter 1, etc) instead of true black, leaving a
+  // visible "edge of map" tint past the ring's falloff.
   if (scene.fog) {
     _origFogNear = scene.fog.near;
     _origFogFar = scene.fog.far;
+    _origFogColor = scene.fog.color.getHex();
     scene.fog.near = FOG_NEAR;
     scene.fog.far = FOG_FAR;
+    scene.fog.color.setHex(0x000000);
+  }
+  // Same for scene.background — set to pure black so the sky doesn't
+  // bleed chapter-tint past the fog boundary.
+  if (scene.background) {
+    _origBgColor = scene.background.getHex ? scene.background.getHex() : null;
+    if (_origBgColor !== null) scene.background.setHex(0x000000);
   }
 }
 
 /** Per-frame: reposition the rings so they're centered on the player.
- *  Cheap — just two .position.set calls. */
+ *  Cheap — just two .position.set calls. Also re-asserts fog + bg
+ *  colors as black each frame; the scene's theme system tries to set
+ *  them to chapter tint on transitions, but the fog ring takes
+ *  precedence. */
 export function updateFogRing(playerPos) {
   if (!_ring || !playerPos) return;
   _ring.position.x = playerPos.x;
@@ -155,6 +171,15 @@ export function updateFogRing(playerPos) {
   if (_outerCover) {
     _outerCover.position.x = playerPos.x;
     _outerCover.position.z = playerPos.z;
+  }
+  // Re-assert fog params each frame — overrides theme transitions
+  if (scene.fog) {
+    scene.fog.near = FOG_NEAR;
+    scene.fog.far = FOG_FAR;
+    scene.fog.color.setHex(0x000000);
+  }
+  if (scene.background && scene.background.setHex) {
+    scene.background.setHex(0x000000);
   }
 }
 
@@ -172,7 +197,13 @@ export function clearFogRing() {
   if (scene.fog && _origFogNear !== null) {
     scene.fog.near = _origFogNear;
     scene.fog.far = _origFogFar;
+    if (_origFogColor !== null) scene.fog.color.setHex(_origFogColor);
     _origFogNear = null;
     _origFogFar = null;
+    _origFogColor = null;
+  }
+  if (scene.background && _origBgColor !== null) {
+    scene.background.setHex(_origBgColor);
+    _origBgColor = null;
   }
 }

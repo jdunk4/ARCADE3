@@ -25,6 +25,7 @@ import { spawnEggsInDepotWedge, clearAllEggs } from './eggs.js';
 import {
   hasCannon, getCannonOrigin, getCannonCooldown,
   loadChargeSlot, armCannon, aimCannonAt, tryFireCannon, setCannonChargeProgress,
+  setCannonChargeZoneVisible,
   triggerCannonSink,
 } from './cannon.js';
 import {
@@ -424,6 +425,9 @@ export function startWave(waveNum) {
     // cannon, loads them, then defends while the cannon auto-fires
     // 4 shots over 60s popping queen shield domes.
     S.cannonLoadActive = true;
+    // Reveal the cannon charging-zone ring on the floor immediately so
+    // the player can see where to go BEFORE approaching the cannon.
+    setCannonChargeZoneVisible(true);
     // Reset cannon-charge state for this wave run.
     S.cannonChargeT = 0;
     S.cannonChargeStarted = false;
@@ -1316,6 +1320,7 @@ export function updateWaves(dt) {
         S.cannonInserted = true;
         S.cannonLoadWaveT = 0;       // pandemonium ramp starts NOW
         setCannonChargeProgress(0);  // fade out the floor zone
+        setCannonChargeZoneVisible(false);   // hide ring fully — player done with charge zone
         const toLoad = S.chargesCarried;
         for (let i = 0; i < toLoad; i++) {
           loadChargeSlot();

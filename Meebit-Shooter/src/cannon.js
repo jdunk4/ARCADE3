@@ -357,6 +357,15 @@ export function setCannonChargeProgress(t) {
   _cannon.chargeProgress = Math.max(0, Math.min(1, t));
 }
 
+/** Always show the charging zone ring (independent of charge progress).
+ *  Used at wave 2 start so the player can see where to charge BEFORE
+ *  approaching. The fill disc still only appears when chargeProgress > 0.
+ *  Set false to return to "ring only when charging" behavior. */
+export function setCannonChargeZoneVisible(v) {
+  if (!_cannon) return;
+  _cannon.chargeZoneAlwaysVisible = !!v;
+}
+
 /** Sink the cannon into the ground. Called at wave 2 end so the
  *  cannon visually retreats from the arena before wave 3 begins.
  *  Lerps group Y from current → -12 over 1.5s. Cannon is taller than
@@ -432,10 +441,17 @@ export function updateCannon(dt) {
   _cannon.chargePulse = (_cannon.chargePulse || 0) + dt * 4.0;
   const cp = _cannon.chargeProgress || 0;
   const pulse = 0.5 + 0.5 * Math.sin(_cannon.chargePulse);
+  // The ring is visible when EITHER the always-visible flag is set
+  // (wave 2 active so player needs to find the zone) OR when actively
+  // charging. The fill disc only appears when actually charging.
+  const ringShouldShow = _cannon.chargeZoneAlwaysVisible || cp > 0;
   if (_cannon.chargeZoneRing && _cannon.chargeZoneRingMat) {
-    if (cp > 0) {
+    if (ringShouldShow) {
       _cannon.chargeZoneRing.visible = true;
-      _cannon.chargeZoneRingMat.opacity = 0.55 + pulse * 0.35;
+      // Brighter when actively charging, dimmer when just "available"
+      const baseOpacity = cp > 0 ? 0.55 : 0.35;
+      const pulseAmp = cp > 0 ? 0.35 : 0.20;
+      _cannon.chargeZoneRingMat.opacity = baseOpacity + pulse * pulseAmp;
     } else if (_cannon.chargeZoneRingMat.opacity > 0) {
       _cannon.chargeZoneRingMat.opacity = Math.max(0, _cannon.chargeZoneRingMat.opacity - dt * 1.6);
       if (_cannon.chargeZoneRingMat.opacity <= 0) _cannon.chargeZoneRing.visible = false;
