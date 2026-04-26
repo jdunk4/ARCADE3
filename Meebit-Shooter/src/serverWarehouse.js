@@ -263,15 +263,65 @@ export function spawnServerWarehouse(chapterIdx) {
   beacon.position.set(0, 4.4 + 0.4, 0);
   group.add(beacon);
 
-  // --- Laser pillar (separate group, scene-level, not parented to warehouse) ---
-  // Pillar covers the entire arena. We render it scene-wide (not as a
-  // child of the warehouse) so its position doesn't track the
-  // warehouse's local transform.
-  const laserMat = _laserMat();
-  const laser = new THREE.Mesh(LASER_GEO, laserMat);
-  laser.position.set(0, LASER_HEIGHT * 0.5, 0);     // centered at arena
-  laser.visible = false;
-  scene.add(laser);
+  // --- LASER GRID (scene-level, multi-beam, replaces old sky pillar) ---
+  // 4 emitter banks at arena edges (N/S/E/W). Each bank has multiple
+  // horizontal beams at varying Y heights. Beams sweep slowly during
+  // the blast so there's no static safe spot — only the safety pod is
+  // safe. Stored as an array of {mesh, mat, axis, baseOffset} so we
+  // can animate per-beam.
+  const laserGroup = new THREE.Group();
+  laserGroup.visible = false;             // hidden until triggerLaserBlast
+  scene.add(laserGroup);
+  const lasers = [];
+  // Each emitter bank fires beams across the arena along one axis.
+  // North bank (z = -ARENA_HALF) fires +Z direction along the arena.
+  // We use thin BoxGeometry beams stretched to span 2*ARENA_HALF u.
+  const BEAM_LENGTH = ARENA_HALF * 2.4;     // overshoot edges
+  const BEAM_THICK = 0.18;
+  // Build bank along an axis. axis=0 → beams oriented along Z (firing N→S),
+  // axis=1 → beams oriented along X (firing E→W).
+  function _buildLaserBank(axis, count, startOffset, spacing) {
+    for (let i = 0; i < count; i++) {
+      const beamMat = new THREE.MeshBasicMaterial({
+        color: 0xff2030, transparent: true, opacity: 0.0,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending,
+        toneMapped: false,
+      });
+      const geo = new THREE.BoxGeometry(BEAM_LENGTH, BEAM_THICK, BEAM_THICK);
+      const beam = new THREE.Mesh(geo, beamMat);
+      // Position the beam crossing the arena along the chosen axis
+      const baseOffset = startOffset + i * spacing;
+      const baseY = 1.2 + (i * 0.4);   // staggered heights so player has to deal with multiple
+      if (axis === 0) {
+        // Beam runs along X — perpendicular to N/S
+        beam.position.set(0, baseY, baseOffset);
+        // already aligned with X axis (BoxGeometry default)
+      } else {
+        // Beam runs along Z — rotate 90° to lie along Z
+        beam.rotation.y = Math.PI / 2;
+        beam.position.set(baseOffset, baseY, 0);
+      }
+      laserGroup.add(beam);
+      lasers.push({
+        mesh: beam, mat: beamMat,
+        axis,                            // 0 = X-aligned, 1 = Z-aligned
+        baseOffset,                      // baseline perpendicular position
+        baseY,                            // beam height
+        sweepPhase: Math.random() * Math.PI * 2,
+        sweepSpeed: 0.6 + Math.random() * 0.8,    // rad/s, varies per beam
+      });
+    }
+  }
+  // Two X-aligned bands (beams going E↔W) at varying Z offsets,
+  // and two Z-aligned bands (beams going N↔S) at varying X offsets.
+  // Together they form a criss-cross grid covering most of the arena.
+  _buildLaserBank(0, 4, -22, 12);   // 4 X-aligned beams at z=-22, -10, +2, +14
+  _buildLaserBank(1, 4, -22, 12);   // 4 Z-aligned beams at x=-22, -10, +2, +14
+  // Add a few diagonal-feel beams by offsetting starting positions
+  _buildLaserBank(0, 2, -16, 16);   // bonus X beams at z=-16, 0
+  _buildLaserBank(1, 2, -16, 16);   // bonus Z beams at x=-16, 0
 
   scene.add(group);
 
@@ -322,7 +372,7 @@ export function spawnServerWarehouse(chapterIdx) {
   _warehouse = {
     group, body, roof, frontPanel, beacon, tint,
     squares,
-    laser, laserMat,
+    laserGroup, lasers,             // multi-beam grid (replaces old single pillar)
     laserPhase: 'idle',          // 'idle' | 'telegraph' | 'blast' | 'cooldown'
     laserT: 0,
     systemOnline: 0,             // 0..1 - drives grid fill
@@ -377,7 +427,10 @@ export function triggerLaserBlast() {
   if (_warehouse.laserPhase !== 'idle') return TOTAL_LASER_DURATION;
   _warehouse.laserPhase = 'telegraph';
   _warehouse.laserT = 0;
-  _warehouse.laser.visible = true;
+  // Reveal the laser group + reset all beam materials to 0 opacity
+  // so the telegraph ramp is visible.
+  _warehouse.laserGroup.visible = true;
+  for (const l of _warehouse.lasers) l.mat.opacity = 0.0;
   return TOTAL_LASER_DURATION;
 }
 
@@ -465,24 +518,40 @@ export function updateServerWarehouse(dt) {
     }
   }
 
-  // Laser phase machine
+  // Laser phase machine — multi-beam grid
   if (_warehouse.laserPhase === 'telegraph') {
     _warehouse.laserT += dt;
     const f = Math.min(1, _warehouse.laserT / LASER_TELEGRAPH_DURATION);
-    // Pillar opacity ramps from 0 → 0.4 — visible warning
-    _warehouse.laserMat.opacity = f * 0.4;
-    // Slight pulse on top of the ramp for telegraph urgency
-    _warehouse.laserMat.opacity += Math.sin(_warehouse.laserT * 14) * 0.08;
+    // Beam opacity ramps from 0 → 0.5 with per-beam pulse for menace
+    for (const l of _warehouse.lasers) {
+      l.sweepPhase += l.sweepSpeed * dt;
+      const pulse = Math.sin(_warehouse.laserT * 14 + l.baseY * 2) * 0.10;
+      l.mat.opacity = f * 0.50 + pulse;
+      // Subtle pre-blast drift — beams creep toward their sweep positions
+      const drift = Math.sin(l.sweepPhase) * 0.5;
+      if (l.axis === 0) l.mesh.position.z = l.baseOffset + drift;
+      else l.mesh.position.x = l.baseOffset + drift;
+    }
     if (_warehouse.laserT >= LASER_TELEGRAPH_DURATION) {
       _warehouse.laserPhase = 'blast';
       _warehouse.laserT = 0;
-      _warehouse.laserMat.opacity = 0.95;
       shake(2.0, 1.0);
     }
   } else if (_warehouse.laserPhase === 'blast') {
     _warehouse.laserT += dt;
-    // Solid intense red for 1s
-    _warehouse.laserMat.opacity = 0.85 + 0.15 * Math.sin(_warehouse.laserT * 30);
+    // All beams at full opacity, sweeping across arena hard.
+    // Beam thickness pumps for "this is the kill" feel.
+    for (const l of _warehouse.lasers) {
+      l.sweepPhase += l.sweepSpeed * 2.5 * dt;     // sweep faster during blast
+      l.mat.opacity = 0.92 + 0.08 * Math.sin(_warehouse.laserT * 30 + l.baseY * 3);
+      const sweep = Math.sin(l.sweepPhase) * 6.0;
+      if (l.axis === 0) l.mesh.position.z = l.baseOffset + sweep;
+      else l.mesh.position.x = l.baseOffset + sweep;
+      // Pump thickness too — beams visibly thicken during blast
+      const thicken = 1.0 + Math.sin(_warehouse.laserT * 20) * 0.4;
+      l.mesh.scale.y = thicken;
+      l.mesh.scale.z = thicken;
+    }
     if (_warehouse.laserT >= LASER_BLAST_DURATION) {
       _warehouse.laserPhase = 'cooldown';
       _warehouse.laserT = 0;
@@ -490,11 +559,20 @@ export function updateServerWarehouse(dt) {
   } else if (_warehouse.laserPhase === 'cooldown') {
     _warehouse.laserT += dt;
     const f = Math.min(1, _warehouse.laserT / 0.6);
-    _warehouse.laserMat.opacity = 0.95 * (1 - f);
+    for (const l of _warehouse.lasers) {
+      l.mat.opacity = 0.92 * (1 - f);
+      l.mesh.scale.y = 1.0;
+      l.mesh.scale.z = 1.0;
+    }
     if (f >= 1) {
-      _warehouse.laser.visible = false;
+      _warehouse.laserGroup.visible = false;
       _warehouse.laserPhase = 'idle';
-      _warehouse.laserMat.opacity = 0;
+      for (const l of _warehouse.lasers) {
+        l.mat.opacity = 0;
+        // Reset positions to baseline so a re-trigger starts clean
+        if (l.axis === 0) l.mesh.position.z = l.baseOffset;
+        else l.mesh.position.x = l.baseOffset;
+      }
     }
   }
 }
@@ -503,8 +581,14 @@ export function clearServerWarehouse() {
   if (!_warehouse) return;
   if (_warehouse.group && _warehouse.group.parent) scene.remove(_warehouse.group);
   if (_warehouse.chargeZoneGroup && _warehouse.chargeZoneGroup.parent) scene.remove(_warehouse.chargeZoneGroup);
-  if (_warehouse.laser && _warehouse.laser.parent) scene.remove(_warehouse.laser);
-  if (_warehouse.laserMat && _warehouse.laserMat.dispose) _warehouse.laserMat.dispose();
+  if (_warehouse.laserGroup && _warehouse.laserGroup.parent) scene.remove(_warehouse.laserGroup);
+  // Dispose laser materials + geometries
+  if (_warehouse.lasers) {
+    for (const l of _warehouse.lasers) {
+      if (l.mat && l.mat.dispose) l.mat.dispose();
+      if (l.mesh && l.mesh.geometry && l.mesh.geometry.dispose) l.mesh.geometry.dispose();
+    }
+  }
   for (const sq of _warehouse.squares) {
     if (sq.dimMat && sq.dimMat.dispose) sq.dimMat.dispose();
     if (sq.litMat && sq.litMat.dispose) sq.litMat.dispose();

@@ -246,6 +246,8 @@ export function resetGame() {
   S.dcSystemOnline = 0;
   S.dcLaserTriggered = false;
   S.dcShieldsDropped = false;
+  S._dcPodDescentTriggered = false;
+  S._dcPodOpenTriggered = false;
   S.cannonLoadActive = false;
   S.cannonLoadStubT = 0;
   S.cannonLoadStubMax = 0;

@@ -46,6 +46,7 @@ import {
 import {
   spawnSafetyPod, setVisible as setPodVisible, setLaserActive as setPodLaserActive,
   isPlayerInPod, getPodPos, hasSafetyPod, clearSafetyPod,
+  triggerPodDescent, triggerPodOpen,
 } from './safetyPod.js';
 import {
   spawnCockroachBoss, isCockroachDeadAndDone, hasCockroach, clearCockroachBoss,
@@ -465,6 +466,8 @@ export function startWave(waveNum) {
     S.dcSystemOnline = 0;
     S.dcLaserTriggered = false;
     S.dcShieldsDropped = false;
+    S._dcPodDescentTriggered = false;
+    S._dcPodOpenTriggered = false;
     // Ensure system online is at 0 so the grid starts dark
     setSystemOnline(0);
     // Reveal the charging zone disc — player needs to see where to stand
@@ -1483,9 +1486,15 @@ export function updateWaves(dt) {
         'DEFEND · ' + Math.ceil(remaining) + 's',
         'Stay alive. The system is finalizing.',
       );
-      // Reveal pod 5s before blast (during last 5s of onslaught)
-      if (remaining < 5 && hasSafetyPod()) {
-        setPodVisible(true);
+      // Pod fly-down at 10s remaining (per spec)
+      if (remaining < 10 && hasSafetyPod() && !S._dcPodDescentTriggered) {
+        S._dcPodDescentTriggered = true;
+        triggerPodDescent();
+      }
+      // Pod opens at 5s remaining (per spec) — player can now enter
+      if (remaining < 5 && hasSafetyPod() && !S._dcPodOpenTriggered) {
+        S._dcPodOpenTriggered = true;
+        triggerPodOpen();
       }
       // Onslaught complete → trigger laser
       if (S.dcOnslaughtT >= waveDef.onslaughtDuration && !S.dcLaserTriggered) {
@@ -1493,8 +1502,6 @@ export function updateWaves(dt) {
         S.dcPhase = 'telegraph';
         triggerLaserBlast();
         try { Audio.laserCharging && Audio.laserCharging(); } catch (e) {}
-        // Reveal pod if not already
-        if (hasSafetyPod()) setPodVisible(true);
       }
     }
     // PHASE C — TELEGRAPH (laser charging up)
