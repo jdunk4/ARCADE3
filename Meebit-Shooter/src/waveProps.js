@@ -1310,6 +1310,9 @@ export function clearCentralCompound() {
   // Reset chapter-1 wave-2 collision flag so future chapter preps
   // (chapter 2 → chapter 7) start with normal silo/turret collision.
   _ch1Wave2PropsRemoved = false;
+  // Reset chapter-2 warehouse-swap flag so chapter 3-7 builds use the
+  // standard silo collision.
+  _ch2WarehouseSwap = false;
 }
 
 /** Handle lookup for future stages (3b will light up the powerplant, etc). */
@@ -1793,6 +1796,14 @@ let _ch1Wave2PropsRemoved = false;
 export function setCh1Wave2PropsRemoved(v) { _ch1Wave2PropsRemoved = !!v; }
 export function getCh1Wave2PropsRemoved() { return _ch1Wave2PropsRemoved; }
 
+// Chapter-2 warehouse-swap flag. Chapter 2 replaces the silo with a
+// server warehouse for the entire chapter. The warehouse provides its
+// own collision (via the dynamic-props getter), so the silo's collision
+// + powerplant + radio collision should ALL be disabled.
+let _ch2WarehouseSwap = false;
+export function setCh2WarehouseSwap(v) { _ch2WarehouseSwap = !!v; }
+export function getCh2WarehouseSwap() { return _ch2WarehouseSwap; }
+
 /**
  * Push `pos` out of the silo + turret + depot + powerplant + radio
  * obstacles. `entityRadius` is the caller's own radius (player ~0.8u,
@@ -1811,7 +1822,7 @@ export function resolveCompoundCollision(pos, entityRadius) {
   // EXCEPT: once chapter 1 wave 2 ends and the cannon has sunk, we
   // explicitly skip silo collision so the player/enemies aren't bumping
   // into invisible silo geometry where the cannon used to be.
-  if (_current.silo && _current.silo.obj && _current.silo.obj.parent && !_ch1Wave2PropsRemoved) {
+  if (_current.silo && _current.silo.obj && _current.silo.obj.parent && !_ch1Wave2PropsRemoved && !_ch2WarehouseSwap) {
     if (_current.silo.obj.position.y > -0.5) {
       _pushOutCircle(pos, entityRadius, LAYOUT.silo.x, LAYOUT.silo.z, _SILO_COLLIDE_R);
     }
@@ -1906,7 +1917,7 @@ export function segmentBlockedByProp(ax, az, bx, bz) {
   // position and uses this collision radius as its bullet-block.
   // Skipped once chapter 1 wave 2 ends and the cannon has sunk.
   if (_current.silo && _current.silo.obj && _current.silo.obj.parent
-      && _current.silo.obj.position.y > -0.5 && !_ch1Wave2PropsRemoved) {
+      && _current.silo.obj.position.y > -0.5 && !_ch1Wave2PropsRemoved && !_ch2WarehouseSwap) {
     if (_segCircleHit(LAYOUT.silo.x, LAYOUT.silo.z, _SILO_COLLIDE_R)) return true;
   }
   const liveTurrets = _turretsGetter ? _turretsGetter() : null;

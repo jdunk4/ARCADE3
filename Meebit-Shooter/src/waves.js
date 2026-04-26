@@ -40,6 +40,7 @@ import {
 import {
   spawnServerWarehouse, setSystemOnline, triggerLaserBlast,
   isLaserBlasting, isLaserActive, getChargingZonePos,
+  setChargeZoneVisible, setChargeZoneProgress,
   hasServerWarehouse, clearServerWarehouse,
 } from './serverWarehouse.js';
 import {
@@ -466,6 +467,9 @@ export function startWave(waveNum) {
     S.dcShieldsDropped = false;
     // Ensure system online is at 0 so the grid starts dark
     setSystemOnline(0);
+    // Reveal the charging zone disc — player needs to see where to stand
+    setChargeZoneVisible(true);
+    setChargeZoneProgress(0);
     // Spawn safety pod in same wedge as the warehouse, but offset
     // perpendicular to the warehouse-to-origin axis so it sits to one
     // side. Player must actively run for it during the telegraph.
@@ -1424,6 +1428,8 @@ export function updateWaves(dt) {
           S.dcChargeT = Math.min(waveDef.chargeDuration, (S.dcChargeT || 0) + dt);
           // Update grid fill — drives the warehouse front-face squares
           setSystemOnline(S.dcChargeT / waveDef.chargeDuration);
+          // Drive the floor charging-zone disc fill in lockstep
+          setChargeZoneProgress(S.dcChargeT / waveDef.chargeDuration);
           // Charging tick SFX (reuse existing cannon charging sound)
           S._dcChargeTickT = (S._dcChargeTickT || 0) - dt;
           if (S._dcChargeTickT <= 0) {
@@ -1434,12 +1440,15 @@ export function updateWaves(dt) {
           // Slow drain when off zone
           S.dcChargeT = Math.max(0, (S.dcChargeT || 0) - dt * 0.5);
           setSystemOnline(S.dcChargeT / waveDef.chargeDuration);
+          setChargeZoneProgress(S.dcChargeT / waveDef.chargeDuration);
         }
       }
       // Charge complete?
       if (S.dcChargeT >= waveDef.chargeDuration) {
         S.dcPhase = 'onslaught';
         S.dcOnslaughtT = 0;
+        // Hide the charging zone disc — done with that phase
+        setChargeZoneVisible(false);
         // Activate turrets, summon flinger
         activateTurretsUpTo(waveDef.turretCount || 3);
         try {

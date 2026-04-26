@@ -49,6 +49,7 @@ import { spawnCannon, clearCannon, aimCannonAt } from './cannon.js';
 import { spawnQueenHive, clearQueenHive, getQueen } from './queenHive.js';
 import { spawnServerWarehouse, clearServerWarehouse } from './serverWarehouse.js';
 import { clearCockroachBoss } from './cockroachBoss.js';
+import { setCh2WarehouseSwap } from './waveProps.js';
 import { getCompound } from './waveProps.js';
 
 // Which chapter the current dormant-prop set belongs to. -1 means no set
@@ -229,15 +230,32 @@ export function prepareChapter(chapterIdx) {
   //     power-up zones below sit INSIDE this compound.
   buildCentralCompound(chapterIdx);
 
-  // CHAPTER 2 REFLOW — replace silo with server warehouse. Hide silo
-  // mesh; the warehouse takes its place at LAYOUT.silo position. The
-  // turrets stay (the warehouse uses them for its onslaught defense).
+  // CHAPTER 2 REFLOW — replace silo with server warehouse + hide the
+  // rest of the compound props. Silo mesh hidden (warehouse takes its
+  // place at LAYOUT.silo). Powerplant + radio tower also hidden +
+  // collision-disabled — chapter 2's visual is the warehouse and the
+  // truck route, not the standard compound. Turrets stay (wave 2 uses
+  // them for the onslaught defense).
   if (chapterIdx === 1) {
     const compound = getCompound();
-    if (compound && compound.silo && compound.silo.obj) {
-      compound.silo.obj.visible = false;
+    if (compound) {
+      if (compound.silo && compound.silo.obj) {
+        compound.silo.obj.visible = false;
+        compound.silo._collideHidden = true;
+      }
+      if (compound.powerplant && compound.powerplant.obj) {
+        compound.powerplant.obj.visible = false;
+        compound.powerplant._collideHidden = true;
+      }
+      if (compound.radioTower && compound.radioTower.obj) {
+        compound.radioTower.obj.visible = false;
+        compound.radioTower._collideHidden = true;
+      }
     }
     spawnServerWarehouse(chapterIdx);
+    // Tell waveProps that the silo + powerplant + radio are gone for
+    // this chapter — disables their collision in the prop helpers.
+    setCh2WarehouseSwap(true);
   }
 
   // --- Turrets (wave 2 target; positions come from LAYOUT.turrets

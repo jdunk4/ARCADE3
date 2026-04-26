@@ -281,6 +281,44 @@ export function spawnServerWarehouse(chapterIdx) {
   const chargeZoneX = LAYOUT.silo.x * 0.6;
   const chargeZoneZ = LAYOUT.silo.z * 0.6;
 
+  // --- VISIBLE CHARGING ZONE DISC (scene-level, separate group) ---
+  // Outer ring + inner fill disc that grows with charge progress.
+  // Hidden by default. waves.js drives via setChargeZoneVisible +
+  // setChargeZoneProgress(t).
+  const chargeZoneGroup = new THREE.Group();
+  chargeZoneGroup.position.set(chargeZoneX, 0.05, chargeZoneZ);
+  chargeZoneGroup.visible = false;
+  // Outer ring — chapter-tinted, additive, pulses
+  const czRingGeo = new THREE.RingGeometry(3.2, 3.5, 48);
+  const czRingMat = new THREE.MeshBasicMaterial({
+    color: tint, transparent: true, opacity: 0.85,
+    side: THREE.DoubleSide, depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    toneMapped: false,
+  });
+  const czRing = new THREE.Mesh(czRingGeo, czRingMat);
+  czRing.rotation.x = -Math.PI / 2;
+  chargeZoneGroup.add(czRing);
+  // Inner fill disc — grows with progress
+  const czFillGeo = new THREE.CircleGeometry(3.0, 48);
+  const czFillMat = new THREE.MeshBasicMaterial({
+    color: tint, transparent: true, opacity: 0.35,
+    side: THREE.DoubleSide, depthWrite: false,
+    blending: THREE.AdditiveBlending,
+  });
+  const czFill = new THREE.Mesh(czFillGeo, czFillMat);
+  czFill.rotation.x = -Math.PI / 2;
+  czFill.position.y = 0.005;
+  czFill.scale.setScalar(0.0);             // start empty
+  chargeZoneGroup.add(czFill);
+  // Center "stand here" beacon — small bright dot that bobs vertically
+  const czBeaconGeo = new THREE.SphereGeometry(0.18, 12, 10);
+  const czBeaconMat = new THREE.MeshBasicMaterial({ color: tint, toneMapped: false });
+  const czBeacon = new THREE.Mesh(czBeaconGeo, czBeaconMat);
+  czBeacon.position.y = 0.6;
+  chargeZoneGroup.add(czBeacon);
+  scene.add(chargeZoneGroup);
+
   _warehouse = {
     group, body, roof, frontPanel, beacon, tint,
     squares,
@@ -289,9 +327,26 @@ export function spawnServerWarehouse(chapterIdx) {
     laserT: 0,
     systemOnline: 0,             // 0..1 - drives grid fill
     chargeZoneX, chargeZoneZ,
+    chargeZoneGroup, czRingMat, czFillMat, czFill, czBeacon,
+    chargeZoneT: 0,              // pulse timer
     pulseT: 0,
   };
   return _warehouse;
+}
+
+/** Show/hide the charging zone visual disc. */
+export function setChargeZoneVisible(v) {
+  if (!_warehouse) return;
+  _warehouse.chargeZoneGroup.visible = !!v;
+}
+
+/** Drive the charging zone fill (0..1). Inner disc scales with progress. */
+export function setChargeZoneProgress(t) {
+  if (!_warehouse) return;
+  const f = Math.max(0, Math.min(1, t));
+  if (_warehouse.czFill) {
+    _warehouse.czFill.scale.setScalar(f);
+  }
 }
 
 /** Set system-online progress (0..1). Drives the grid fill: as t
@@ -344,6 +399,37 @@ export function getChargingZonePos() {
   return { x: _warehouse.chargeZoneX, z: _warehouse.chargeZoneZ };
 }
 
+/** Returns the warehouse's collision circles for the dynamic-props
+ *  getter pattern. Warehouse body is ~8u wide × 6u deep, so a single
+ *  circle is a poor fit. We use 2 overlapping circles offset along
+ *  the warehouse's local front-back axis to approximate the rectangle.
+ *  The warehouse's group rotates to face origin; we apply that rotation
+ *  to put the circles at world positions matching the body. */
+export function getServerCollisionCircles() {
+  if (!_warehouse) return [];
+  const yaw = _warehouse.group.rotation.y;
+  const cx = _warehouse.group.position.x;
+  const cz = _warehouse.group.position.z;
+  const cosY = Math.cos(yaw);
+  const sinY = Math.sin(yaw);
+  // Two circles — one toward the front (+Z local), one toward the back
+  // (-Z local). Each ~3u radius. Together they cover ~7u along the
+  // body axis with overlap in the middle.
+  const FRONT_OFFSET = 1.6;
+  const BACK_OFFSET = -1.6;
+  const R = 3.2;
+  // World position of front circle
+  const fwx = cx + 0 * cosY + FRONT_OFFSET * sinY;
+  const fwz = cz - 0 * sinY + FRONT_OFFSET * cosY;
+  // World position of back circle
+  const bwx = cx + 0 * cosY + BACK_OFFSET * sinY;
+  const bwz = cz - 0 * sinY + BACK_OFFSET * cosY;
+  return [
+    { x: fwx, z: fwz, r: R },
+    { x: bwx, z: bwz, r: R },
+  ];
+}
+
 export function hasServerWarehouse() {
   return !!_warehouse;
 }
@@ -352,6 +438,15 @@ export function hasServerWarehouse() {
 export function updateServerWarehouse(dt) {
   if (!_warehouse) return;
   _warehouse.pulseT += dt * 2.0;
+  _warehouse.chargeZoneT = (_warehouse.chargeZoneT || 0) + dt * 3.0;
+
+  // Animate charging zone — pulse the ring + bob the beacon
+  if (_warehouse.chargeZoneGroup && _warehouse.chargeZoneGroup.visible) {
+    const pulse = 0.5 + 0.5 * Math.sin(_warehouse.chargeZoneT);
+    if (_warehouse.czRingMat) _warehouse.czRingMat.opacity = 0.65 + pulse * 0.30;
+    if (_warehouse.czBeacon) _warehouse.czBeacon.position.y = 0.6 + pulse * 0.25;
+    if (_warehouse.czFillMat) _warehouse.czFillMat.opacity = 0.30 + pulse * 0.25;
+  }
 
   // Beacon emissive pulse
   if (_warehouse.beacon && _warehouse.beacon.material) {
@@ -407,6 +502,7 @@ export function updateServerWarehouse(dt) {
 export function clearServerWarehouse() {
   if (!_warehouse) return;
   if (_warehouse.group && _warehouse.group.parent) scene.remove(_warehouse.group);
+  if (_warehouse.chargeZoneGroup && _warehouse.chargeZoneGroup.parent) scene.remove(_warehouse.chargeZoneGroup);
   if (_warehouse.laser && _warehouse.laser.parent) scene.remove(_warehouse.laser);
   if (_warehouse.laserMat && _warehouse.laserMat.dispose) _warehouse.laserMat.dispose();
   for (const sq of _warehouse.squares) {

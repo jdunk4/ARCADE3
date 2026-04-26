@@ -63,7 +63,7 @@ import { updateQueenHive, clearQueenHive, tickQueenShieldCollision, tryHitQueenS
 import { updateCrusher, clearCrusher } from './crusher.js';
 import { updateChargeCubes, clearChargeCubes } from './chargeCubes.js';
 import { clearEscortTruck, getTruckPos, getTruckCollisionCircles } from './escortTruck.js';
-import { updateServerWarehouse, clearServerWarehouse } from './serverWarehouse.js';
+import { updateServerWarehouse, clearServerWarehouse, getServerCollisionCircles } from './serverWarehouse.js';
 import { updateSafetyPod, clearSafetyPod } from './safetyPod.js';
 import { updateCockroach, clearCockroachBoss } from './cockroachBoss.js';
 import { initFogRing, updateFogRing, clearFogRing } from './fogRing.js';
@@ -129,9 +129,17 @@ import { updateCompound, resolveCompoundCollision, segmentBlockedByProp, registe
 // include the depot circle in their checks.
 import * as _oresMod from './ores.js';
 registerDepotGetter(() => _oresMod.depot);
-// Dynamic props — currently just the moving escort truck. Other future
-// moving collision sources (boss bodies, drones) can extend this.
-registerDynamicPropsGetter(() => getTruckCollisionCircles());
+// Dynamic props — moving collision circles for player/enemy push-out
+// + bullet block. Composed each frame from any module that exposes
+// collision (escort truck, server warehouse, future moving bosses).
+registerDynamicPropsGetter(() => {
+  const out = getTruckCollisionCircles();
+  const wh = getServerCollisionCircles();
+  if (wh && wh.length) {
+    for (const c of wh) out.push(c);
+  }
+  return out;
+});
 import { updateWires } from './empWires.js';
 import { updateLaunch } from './empLaunch.js';
 import { updateShockwaves } from './shockwave.js';
