@@ -62,6 +62,7 @@ import { updateCannon, clearCannon } from './cannon.js';
 import { updateQueenHive, clearQueenHive, tickQueenShieldCollision, tryHitQueenShield } from './queenHive.js';
 import { updateCrusher, clearCrusher } from './crusher.js';
 import { updateChargeCubes, clearChargeCubes } from './chargeCubes.js';
+import { clearEscortTruck, getTruckPos } from './escortTruck.js';
 import { spawners, damageSpawner, updateSpawners } from './spawners.js';
 import { getShieldedHiveAt, shieldHitVisual, hiveShieldsIter } from './dormantProps.js';
 import { Save } from './save.js';
@@ -1862,6 +1863,7 @@ function startGame() {
   clearQueenHive();
   clearCrusher();
   clearChargeCubes();
+  clearEscortTruck();
   clearGooSplats();
   clearHazards();
   clearAllPickups();
@@ -3514,6 +3516,26 @@ function updateEnemies(dt) {
       const cd2 = cdx * cdx + cdz * cdz;
       if (cd2 < dist * dist * 0.9) {
         moveTargetX = cx; moveTargetZ = cz;
+      }
+    }
+    // CHAPTER 2 ESCORT — enemies are split between targeting player
+    // and targeting the truck. Half-and-half feels right: some swarm
+    // the convoy (creating the bumper-blocking pressure), others
+    // chase the player (so you can't ignore them while you walk).
+    // Stable parity-based split using a hashed assignment that
+    // sticks to the enemy for its lifetime.
+    if (S.isEscortWave) {
+      const tp = getTruckPos();
+      if (tp) {
+        if (e._escortTarget === undefined) {
+          // Assign once. Use enemy y-pos byte + x-pos byte as a stable hash.
+          // ~50/50 split.
+          e._escortTarget = ((Math.floor(e.pos.x * 13) + Math.floor(e.pos.z * 7)) & 1) === 0 ? 'truck' : 'player';
+        }
+        if (e._escortTarget === 'truck') {
+          moveTargetX = tp.x;
+          moveTargetZ = tp.z;
+        }
       }
     }
     const mdx = moveTargetX - e.pos.x;

@@ -237,6 +237,7 @@ export function resetGame() {
   S.oresRequired = 5;
   // Chapter 1 reflow state
   S.isEggWave = false;
+  S.isEscortWave = false;       // chapter 2 wave 1
   S.cannonLoadActive = false;
   S.cannonLoadStubT = 0;
   S.cannonLoadStubMax = 0;

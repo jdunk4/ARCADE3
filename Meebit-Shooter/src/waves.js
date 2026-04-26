@@ -34,6 +34,10 @@ import {
   spawnChargeCubes, chargeCubesRemaining, clearChargeCubes,
 } from './chargeCubes.js';
 import {
+  spawnEscortTruck, updateEscortTruck, getTruckPos, isTruckArrived,
+  isTruckBlocked, isPlayerInEscortRadius, hasTruck, clearEscortTruck,
+} from './escortTruck.js';
+import {
   getQueen, popQueenShield, queenShieldsRemaining,
   getNextDomePos, spawnCannonBeam,
 } from './queenHive.js';
@@ -257,7 +261,35 @@ export function startWave(waveNum) {
     S.blocksToSpawn = waveDef.blockCount;
     S.oresCarried = 0;
     S.oresRequired = waveDef.oresRequired || 5;
-    if (waveDef.isEggWave) {
+    if (waveDef.isEscortWave) {
+      // CHAPTER 2 WAVE 1 — escort truck. Player walks alongside a
+      // truck with a generator from the depot wedge to the silo
+      // position. Truck moves only when (player in 8.5u radius) AND
+      // (no enemies in 4u front-bumper). Wave ends when truck arrives
+      // at silo with a decompression hiss.
+      S.isEscortWave = true;
+      S.isEggWave = false;
+      // Clean up any chapter-1 reflow flags
+      setSuppressMegaOre(false);
+      setOnAllOresConvergedHook(null);
+      // Spawn truck at depot position, oriented toward silo. Hide
+      // the depot mesh — the truck IS the depot for this wave.
+      const dPos = OresModule.depot && OresModule.depot.pos;
+      if (dPos && OresModule.depot.obj) {
+        OresModule.depot.obj.visible = false;
+      }
+      const fromPos = dPos ? { x: dPos.x, z: dPos.z } : { x: -15, z: 0 };
+      const toPos = { x: LAYOUT.silo.x, z: LAYOUT.silo.z };
+      spawnEscortTruck(S.chapter || 0, fromPos, toPos);
+      // Disable the depot's deposit logic — escort wave doesn't use
+      // the deposit-counted wave-end. We end on truck arrival.
+      setDepotActive(false);
+      UI.showObjective(
+        'ESCORT THE GENERATOR · stay close',
+        'Truck moves while you stay within range and the path is clear.',
+      );
+      UI.toast('ESCORT MISSION', '#ffd93d', 1800);
+    } else if (waveDef.isEggWave) {
       // Chapter 1 reflow — spawn 4 eggs in the depot wedge instead of
       // falling mining blocks. Eggs are placed (not falling) and use
       // the same blocks array so the existing bullet hit code targets
@@ -708,6 +740,52 @@ export function updateWaves(dt) {
   }
 
   if (waveDef.type === 'mining' && S.miningActive) {
+    // CHAPTER 2 WAVE 1 — escort branch. Intercepts the standard mining
+    // tick before the block-spawn / ore-deposit logic. Escort wave
+    // ends when the truck arrives at the silo position; no ores or
+    // blocks involved. Enemies still spawn via the standard spawn loop
+    // earlier in the tick.
+    if (waveDef.isEscortWave && S.isEscortWave) {
+      const justArrived = updateEscortTruck(dt, player.pos, enemies);
+
+      // Phase-aware objective text
+      const playerNear = isPlayerInEscortRadius(player.pos);
+      const blocked = isTruckBlocked();
+      if (justArrived || isTruckArrived()) {
+        UI.showObjective(
+          'GENERATOR DELIVERED',
+          'Securing the silo...',
+        );
+      } else if (!playerNear) {
+        UI.showObjective(
+          'STAY CLOSE TO THE GENERATOR',
+          'Move within range so the truck can advance.',
+        );
+      } else if (blocked) {
+        UI.showObjective(
+          'CLEAR THE PATH',
+          'Enemies are blocking the truck. Take them out.',
+        );
+      } else {
+        UI.showObjective(
+          'ESCORT THE GENERATOR',
+          'Stay close · keep the path clear · drive to the silo.',
+        );
+      }
+
+      if (justArrived) {
+        // Arrival beat — decompression hiss + chapter-tinted bursts
+        // already emitted by updateEscortTruck on this frame.
+        try { Audio.truckDecompression && Audio.truckDecompression(); } catch (e) {}
+        UI.toast('GENERATOR DOCKED', '#a8ff8c', 2400);
+        endWave();
+        return;
+      }
+      // Skip the normal mining + block-spawn flow. Standard spawn loop
+      // earlier in the tick still runs and feeds enemies.
+      return;
+    }
+
     // Keep feeding blocks as long as we still need more ore deposits
     const status = depotStatus();
     const deposited = status ? status.deposited : 0;

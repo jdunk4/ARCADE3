@@ -623,6 +623,20 @@ class AudioEngine {
     this._beep({ type: 'triangle', freqStart: f0 * 2, freqEnd: f1 * 2, dur: 0.10, gainStart: 0.05, delay: 0.04 });
   }
 
+  // Truck decompression — pneumatic hiss + heavy settle thud, played
+  // when the chapter 2 escort truck arrives at the silo. Reads as
+  // "industrial vehicle docking + air brakes releasing."
+  truckDecompression() {
+    // Long airy hiss (pneumatic release)
+    this._noise(0.55, 4200, 0.30);
+    // Mid-pitch settle whine descending
+    this._beep({ type: 'sawtooth', freqStart: 220, freqEnd: 80, dur: 0.50, gainStart: 0.18 });
+    // Heavy chassis thud landing
+    this._beep({ type: 'sawtooth', freqStart: 70, freqEnd: 30, dur: 0.40, gainStart: 0.30, delay: 0.10 });
+    // Secondary metallic clank — the dock connector seating
+    this._beep({ type: 'square', freqStart: 1400, freqEnd: 800, dur: 0.08, gainStart: 0.12, delay: 0.20 });
+  }
+
   countdown() { this._beep({ type: 'square', freqStart: 440, dur: 0.12, gainStart: 0.18 }); }
   waveStart() {
     [523, 659, 784, 1047, 1319].forEach((f, i) =>

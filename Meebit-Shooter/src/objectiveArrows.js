@@ -29,6 +29,7 @@ import { depot as currentDepot, ores } from './ores.js';
 import { CHAPTERS } from './config.js';
 import { getActiveZone } from './powerupZones.js';
 import { LAYOUT } from './waveProps.js';
+import { getTruckPos } from './escortTruck.js';
 
 const POOL_SIZE = 8;
 const PANIC_COLOR = '#ff2e4d';   // always-red override for dangerous targets
@@ -166,6 +167,18 @@ function _collectTargets(S, waveDef, playerPos) {
 
   switch (waveDef.type) {
     case 'mining': {
+      // CHAPTER 2 ESCORT — arrow tracks the truck so player can find
+      // it while moving. Truck is the only target during the escort.
+      if (waveDef.isEscortWave) {
+        const tp = getTruckPos();
+        if (tp) {
+          _targets.push({
+            x: tp.x, z: tp.z,
+            label: 'TRUCK', panic: false,
+          });
+        }
+        break;
+      }
       // CHAPTER 1 EGG-WAVE OVERRIDE — phase-aware arrow:
       //   Phase 1: eggs alive → point at nearest egg (treated as block)
       //   Phase 2: eggs broken, cubes spawned → point at crusher position

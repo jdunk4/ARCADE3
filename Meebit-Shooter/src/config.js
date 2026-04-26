@@ -410,7 +410,23 @@ export function getWaveDef(wave) {
         localWave, chapterIdx,
       };
     }
-    // Wave 1 — MINING (chapters 2-6). Dormant hives + turrets visible but inert.
+    if (chapterIdx === 1) {
+      // CHAPTER 2 ESCORT — replaces standard mining. Player escorts a
+      // truck with a power generator from the depot wedge to the silo
+      // position. No ore mining; no depot deposits. Truck moves while
+      // player stays in radius AND no enemies are in front of it.
+      // Wave ends when truck arrives at silo with a decompression hiss.
+      return {
+        type: 'mining',
+        isEscortWave: true,      // signals waves.js to use escort flow
+        enemies: waveEnemyMix(wave, chapterIdx),
+        spawnRate: 7,            // 7 enemies/sec — heavier than chapter 2 mining default
+        blockFallRate: 0,        // no mining blocks
+        blockCount: 0,
+        localWave, chapterIdx,
+      };
+    }
+    // Wave 1 — MINING (chapters 3-7). Dormant hives + turrets visible but inert.
     return {
       type: 'mining',
       oresRequired: 5,
