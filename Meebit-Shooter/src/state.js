@@ -252,9 +252,19 @@ export function resetGame() {
   S.cannonLoadStubT = 0;
   S.cannonLoadStubMax = 0;
   S.cannonLoadWaveT = 0;       // pandemonium ramp clock (14→30)
-  S.cannonChargeT = 0;         // 5s charge progress at cannon
+  S.cannonChargeT = 0;         // 5s charge progress at cannon (legacy single-zone)
   S.cannonChargeStarted = false;
   S.cannonInserted = false;    // gate for pandemonium ramp + barrage
+  // Turn 6 reflow — 4-corner charging mechanic for chapter 1 wave 2.
+  // Each shot fires from a separate charging zone at one of the cannon's
+  // 4 corners. Player charges corner N → shot N fires → consumed → reload
+  // → corner N+1 activates. Phase machine: 'approach' → 'corner-charging'
+  // → 'reload' → ... → 'done'.
+  S.cannonShotIdx = 0;          // 0..3 = current corner; 4 = all done
+  S.cannonCornerChargeT = 0;    // 0..CORNER_CHARGE_DURATION
+  S.cannonReloadT = 0;          // reload window countdown
+  S.cannonPhase = 'approach';   // 'approach' | 'corner-charging' | 'reload' | 'done'
+  S._cannonCornerTickT = 0;     // sfx tick timer
   S.flingerRequested = false;
   S.chargesCarried = 0;        // charges player picked up at depot
   S.chargesLoaded = 0;         // charges delivered to cannon

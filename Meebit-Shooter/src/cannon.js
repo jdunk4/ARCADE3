@@ -151,6 +151,56 @@ export function spawnCannon(chapterIdx) {
   chargeZoneFill.visible = false;
   group.add(chargeZoneFill);
 
+  // --- 4 CORNER CHARGING ZONES (chapter 1 wave 2 reflow) ---
+  // Each shot needs its own active charge — the player stands on a
+  // specific corner to fire ONE shot. When that shot fires, the corner
+  // disappears + next corner activates after a brief reload.
+  // Layout: corners are at ±2.8u offsets from the cannon foot (NE/NW/SE/SW).
+  const CORNER_OFFSETS = [
+    { x:  2.8, z:  2.8 },     // 0 = forward-right
+    { x: -2.8, z:  2.8 },     // 1 = forward-left
+    { x: -2.8, z: -2.8 },     // 2 = rear-left
+    { x:  2.8, z: -2.8 },     // 3 = rear-right
+  ];
+  const CORNER_RADIUS = 1.6;
+  const CORNER_RING_GEO = new THREE.RingGeometry(CORNER_RADIUS - 0.15, CORNER_RADIUS, 32);
+  const CORNER_FILL_GEO = new THREE.CircleGeometry(CORNER_RADIUS, 32);
+  const corners = [];
+  for (let i = 0; i < 4; i++) {
+    const off = CORNER_OFFSETS[i];
+    const ringMat = new THREE.MeshBasicMaterial({
+      color: tint, transparent: true, opacity: 0.0,
+      side: THREE.DoubleSide, depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    });
+    const ring = new THREE.Mesh(CORNER_RING_GEO, ringMat);
+    ring.rotation.x = -Math.PI / 2;
+    ring.position.set(off.x, 0.06, off.z);
+    ring.visible = false;
+    group.add(ring);
+
+    const fillMat = new THREE.MeshBasicMaterial({
+      color: tint, transparent: true, opacity: 0.0,
+      side: THREE.DoubleSide, depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    });
+    const fill = new THREE.Mesh(CORNER_FILL_GEO, fillMat);
+    fill.rotation.x = -Math.PI / 2;
+    fill.position.set(off.x, 0.05, off.z);
+    fill.scale.setScalar(0.001);
+    fill.visible = false;
+    group.add(fill);
+
+    corners.push({
+      offset: off,
+      ring, ringMat,
+      fill, fillMat,
+      active: false,        // currently chargeable
+      consumed: false,      // shot fired — gone forever
+      progress: 0,          // 0..1 fill amount
+    });
+  }
+
   // --- Base + Turret (rotates with reticle) ---
   const base = new THREE.Mesh(BASE_GEO, _baseMat(tint));
   base.position.y = 0.30 + 0.6;
@@ -240,6 +290,8 @@ export function spawnCannon(chapterIdx) {
     slotMeshes, slotLitMats,
     chargeZoneRing, chargeZoneRingMat,
     chargeZoneFill, chargeZoneFillMat,
+    corners,                      // 4 corner zones for per-shot charging
+    activeCornerIdx: -1,          // currently active corner (-1 = none)
     chargeProgress: 0,           // 0..1 — driven by setCannonChargeProgress
     chargePulse: 0,              // animation phase
     tint,
@@ -252,6 +304,48 @@ export function spawnCannon(chapterIdx) {
     reticleSpin: 0,
   };
   return _cannon;
+}
+
+/** Activate a specific corner (0-3). The corner's ring becomes visible
+ *  and starts pulsing. Pass -1 to deactivate all corners (e.g. during
+ *  reload). Consumed corners cannot be re-activated. */
+export function setActiveCannonCorner(idx) {
+  if (!_cannon) return;
+  _cannon.activeCornerIdx = idx;
+  for (let i = 0; i < _cannon.corners.length; i++) {
+    const c = _cannon.corners[i];
+    c.active = (i === idx) && !c.consumed;
+    if (!c.active) c.progress = 0;
+  }
+}
+
+/** Drive the active corner's fill (0..1). */
+export function setCannonCornerProgress(t) {
+  if (!_cannon) return;
+  const idx = _cannon.activeCornerIdx;
+  if (idx < 0 || idx >= _cannon.corners.length) return;
+  _cannon.corners[idx].progress = Math.max(0, Math.min(1, t));
+}
+
+/** Mark a corner as consumed (its shot has been fired). The ring will
+ *  visibly fade out. */
+export function consumeCannonCorner(idx) {
+  if (!_cannon) return;
+  if (idx < 0 || idx >= _cannon.corners.length) return;
+  _cannon.corners[idx].consumed = true;
+  _cannon.corners[idx].active = false;
+  _cannon.corners[idx].progress = 0;
+}
+
+/** Returns the world position of corner idx (for proximity tests). */
+export function getCannonCornerPos(idx) {
+  if (!_cannon) return null;
+  if (idx < 0 || idx >= _cannon.corners.length) return null;
+  const c = _cannon.corners[idx];
+  return {
+    x: _cannon.group.position.x + c.offset.x,
+    z: _cannon.group.position.z + c.offset.z,
+  };
 }
 
 /** Light up the next dim slot. Called when a charge is delivered. */
@@ -467,6 +561,55 @@ export function updateCannon(dt) {
     } else if (_cannon.chargeZoneFillMat.opacity > 0) {
       _cannon.chargeZoneFillMat.opacity = Math.max(0, _cannon.chargeZoneFillMat.opacity - dt * 1.6);
       if (_cannon.chargeZoneFillMat.opacity <= 0) _cannon.chargeZoneFill.visible = false;
+    }
+  }
+
+  // --- Per-corner zone animation (4-corner wave 2 charging) ---
+  // Each corner animates independently. Active corner: bright pulsing
+  // ring + fill scaled to its progress. Consumed: fade out. Inactive:
+  // dim if any corner is currently active in the parent flow (visible
+  // queue), otherwise hidden.
+  if (_cannon.corners) {
+    for (const c of _cannon.corners) {
+      // Ring
+      if (c.consumed) {
+        // Fade out smoothly after consumption
+        if (c.ringMat.opacity > 0) {
+          c.ringMat.opacity = Math.max(0, c.ringMat.opacity - dt * 2.0);
+          if (c.ringMat.opacity <= 0) c.ring.visible = false;
+        }
+        if (c.fillMat.opacity > 0) {
+          c.fillMat.opacity = Math.max(0, c.fillMat.opacity - dt * 2.0);
+          if (c.fillMat.opacity <= 0) c.fill.visible = false;
+        }
+        continue;
+      }
+      if (c.active) {
+        c.ring.visible = true;
+        const baseOpacity = c.progress > 0 ? 0.65 : 0.45;
+        const pulseAmp = c.progress > 0 ? 0.30 : 0.20;
+        c.ringMat.opacity = baseOpacity + pulse * pulseAmp;
+        // Fill — scales with charge progress
+        if (c.progress > 0) {
+          c.fill.visible = true;
+          const s = Math.max(0.05, c.progress);
+          c.fill.scale.set(s, s, s);
+          c.fillMat.opacity = 0.20 + c.progress * 0.50 + pulse * 0.10;
+        } else if (c.fillMat.opacity > 0) {
+          c.fillMat.opacity = Math.max(0, c.fillMat.opacity - dt * 2.0);
+          if (c.fillMat.opacity <= 0) c.fill.visible = false;
+        }
+      } else {
+        // Inactive but not consumed — fade ring out
+        if (c.ringMat.opacity > 0) {
+          c.ringMat.opacity = Math.max(0, c.ringMat.opacity - dt * 1.6);
+          if (c.ringMat.opacity <= 0) c.ring.visible = false;
+        }
+        if (c.fillMat.opacity > 0) {
+          c.fillMat.opacity = Math.max(0, c.fillMat.opacity - dt * 1.6);
+          if (c.fillMat.opacity <= 0) c.fill.visible = false;
+        }
+      }
     }
   }
 }

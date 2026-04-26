@@ -30,12 +30,22 @@ const HALO_GEO  = new THREE.RingGeometry(0.4, 0.7, 16);
 
 // ---- Tunables ----
 const CUBE_HEIGHT = 1.6;            // hover Y above floor
-const PICKUP_RADIUS = 1.4;
-const MAGNET_RADIUS = 3.5;
-const MAGNET_SPEED = 7.0;           // u/s when fully magnetized
+const PICKUP_RADIUS = 3.0;          // enter this radius → magnet all
+const MAGNET_RADIUS = 6.0;          // start drifting toward player
+const MAGNET_SPEED = 14.0;          // u/s when fully magnetized (faster — collect-all feel)
+const COLLECT_RADIUS = 0.9;         // actually picked up at this distance
 
 // ---- Module state ----
 let _cubes = [];
+let _ringMesh = null;          // floor ring at cluster center (always visible)
+let _ringMat = null;
+let _ringPulseT = 0;
+let _basePos = null;           // { x, z } cluster center
+let _slots = [];               // 2×2 spawn slot offsets (4 entries — fill as cubes spawn)
+let _chapterTint = 0xffffff;
+let _allCollectionTriggered = false;   // once player enters PICKUP_RADIUS, magnet ALL
+
+const RING_GEO = new THREE.RingGeometry(PICKUP_RADIUS - 0.25, PICKUP_RADIUS, 48);
 
 function _cubeMat(tint) {
   return new THREE.MeshStandardMaterial({
@@ -49,50 +59,112 @@ function _haloMat(tint) {
     side: THREE.DoubleSide, depthWrite: false,
   });
 }
+function _ringFloorMat(tint) {
+  return new THREE.MeshBasicMaterial({
+    color: tint, transparent: true, opacity: 0.55,
+    side: THREE.DoubleSide, depthWrite: false,
+    blending: THREE.AdditiveBlending,
+  });
+}
 
-/** Spawn 4 chapter-tinted cubes in a tight ring at (basePosX, basePosZ).
- *  Cubes are arranged in a 2x2 grid centered on the crusher anvil. */
-export function spawnChargeCubes(chapterIdx, basePosX, basePosZ) {
+/** Set up the cube cluster: builds the chapter-tinted floor ring at
+ *  (basePosX, basePosZ) and prepares 4 spawn slot offsets. NO cubes
+ *  spawn yet — call addChargeCube(chapterIdx) once per crusher slam. */
+export function spawnChargeCubeCluster(chapterIdx, basePosX, basePosZ) {
   clearChargeCubes();
-  const tint = CHAPTERS[chapterIdx % CHAPTERS.length].full.grid1;
-  // 2x2 grid centered on the anvil — small offsets so cubes don't overlap
-  const offsets = [
-    { x: -0.55, z: -0.55 },
-    { x:  0.55, z: -0.55 },
-    { x: -0.55, z:  0.55 },
-    { x:  0.55, z:  0.55 },
+  _chapterTint = CHAPTERS[chapterIdx % CHAPTERS.length].full.grid1;
+  _basePos = { x: basePosX, z: basePosZ };
+  _allCollectionTriggered = false;
+  // 2x2 grid offsets — cubes spawn into these slots in order
+  _slots = [
+    { x: -0.55, z: -0.55, filled: false },
+    { x:  0.55, z: -0.55, filled: false },
+    { x: -0.55, z:  0.55, filled: false },
+    { x:  0.55, z:  0.55, filled: false },
   ];
-  for (let i = 0; i < offsets.length; i++) {
-    const off = offsets[i];
-    const cubeMat = _cubeMat(tint);
-    const cube = new THREE.Mesh(CUBE_GEO, cubeMat);
-    cube.position.set(basePosX + off.x, CUBE_HEIGHT, basePosZ + off.z);
-    cube.castShadow = true;
-    scene.add(cube);
+  // Build the visible floor ring at cluster center
+  _ringMat = _ringFloorMat(_chapterTint);
+  _ringMesh = new THREE.Mesh(RING_GEO, _ringMat);
+  _ringMesh.rotation.x = -Math.PI / 2;
+  _ringMesh.position.set(basePosX, 0.04, basePosZ);
+  scene.add(_ringMesh);
+  _ringPulseT = 0;
+}
 
-    // Floor halo
-    const haloMat = _haloMat(tint);
-    const halo = new THREE.Mesh(HALO_GEO, haloMat);
-    halo.rotation.x = -Math.PI / 2;
-    halo.position.set(basePosX + off.x, 0.05, basePosZ + off.z);
-    scene.add(halo);
+/** Spawn ONE cube in the next empty slot. Called once per crusher slam
+ *  during the wave-1 finisher. Returns true if a cube was spawned. */
+export function addChargeCube(chapterIdx) {
+  if (!_basePos) return false;
+  // Find next unfilled slot
+  const slot = _slots.find(s => !s.filled);
+  if (!slot) return false;
+  slot.filled = true;
+  const tint = _chapterTint;
 
-    _cubes.push({
-      mesh: cube,
-      mat: cubeMat,
-      halo, haloMat,
-      restPos: new THREE.Vector3(basePosX + off.x, CUBE_HEIGHT, basePosZ + off.z),
-      bobSeed: i * 0.7,
-      yaw: i * 0.5,
-      collected: false,
-      magnetActive: false,
-    });
-  }
+  const cubeMat = _cubeMat(tint);
+  const cube = new THREE.Mesh(CUBE_GEO, cubeMat);
+  cube.position.set(_basePos.x + slot.x, CUBE_HEIGHT, _basePos.z + slot.z);
+  cube.castShadow = true;
+  scene.add(cube);
+
+  // Floor halo (small, around individual cube — distinct from cluster ring)
+  const haloMat = _haloMat(tint);
+  const halo = new THREE.Mesh(HALO_GEO, haloMat);
+  halo.rotation.x = -Math.PI / 2;
+  halo.position.set(_basePos.x + slot.x, 0.05, _basePos.z + slot.z);
+  scene.add(halo);
+
+  _cubes.push({
+    mesh: cube,
+    mat: cubeMat,
+    halo, haloMat,
+    restPos: new THREE.Vector3(_basePos.x + slot.x, CUBE_HEIGHT, _basePos.z + slot.z),
+    bobSeed: _cubes.length * 0.7,
+    yaw: _cubes.length * 0.5,
+    collected: false,
+    magnetActive: false,
+  });
+  // Spawn-in burst for visual punch
+  try {
+    hitBurst(cube.position.clone(), 0xffffff, 8);
+    hitBurst(cube.position.clone(), tint, 14);
+  } catch (e) {}
+  return true;
+}
+
+/** Backward-compat wrapper: old call signature spawned 4 cubes at once.
+ *  Delegate to spawnChargeCubeCluster + add 4 cubes immediately. */
+export function spawnChargeCubes(chapterIdx, basePosX, basePosZ) {
+  spawnChargeCubeCluster(chapterIdx, basePosX, basePosZ);
+  for (let i = 0; i < 4; i++) addChargeCube(chapterIdx);
 }
 
 /** Per-frame update — animate bob/rotation/pulse, magnetize toward
  *  player, collection check. Returns number of cubes still uncollected. */
 export function updateChargeCubes(dt, playerPos) {
+  // Tick + drive the cluster ring animation regardless of cube count
+  _ringPulseT += dt * 2.5;
+  let playerInPickupRadius = false;
+  if (_basePos && playerPos) {
+    const bdx = playerPos.x - _basePos.x;
+    const bdz = playerPos.z - _basePos.z;
+    const bdist = Math.sqrt(bdx * bdx + bdz * bdz);
+    playerInPickupRadius = bdist < PICKUP_RADIUS;
+    // Once player enters pickup radius, trigger magnet-all flag.
+    // It stays on after entry (cubes finish their flight even if
+    // player walks back out — feels good).
+    if (playerInPickupRadius) _allCollectionTriggered = true;
+  }
+  // Drive the cluster ring: brighter pulse when player in range
+  if (_ringMesh && _ringMat) {
+    const ringPulse = 0.5 + 0.5 * Math.sin(_ringPulseT);
+    if (playerInPickupRadius) {
+      _ringMat.opacity = 0.65 + ringPulse * 0.30;
+    } else {
+      _ringMat.opacity = 0.40 + ringPulse * 0.20;
+    }
+  }
+
   if (!_cubes.length) return 0;
   let remaining = 0;
   for (let i = _cubes.length - 1; i >= 0; i--) {
@@ -115,18 +187,15 @@ export function updateChargeCubes(dt, playerPos) {
       const dz = playerPos.z - c.mesh.position.z;
       const dist = Math.sqrt(dx * dx + dz * dz);
 
-      // Pickup
-      if (dist < PICKUP_RADIUS) {
-        // Collected!
+      // Collect when very close to player (or trigger fired and very close)
+      if (dist < COLLECT_RADIUS) {
         c.collected = true;
         S.chargesCarried = (S.chargesCarried || 0) + 1;
-        // Pickup VFX
         const tint = c.mat.color.getHex();
         const p = c.mesh.position.clone();
         hitBurst(p, 0xffffff, 12);
         hitBurst(p, tint, 24);
         try { Audio.eggHit && Audio.eggHit(); } catch (e) {}
-        // Remove meshes
         if (c.mesh && c.mesh.parent) scene.remove(c.mesh);
         if (c.mat && c.mat.dispose) c.mat.dispose();
         if (c.halo && c.halo.parent) scene.remove(c.halo);
@@ -136,18 +205,29 @@ export function updateChargeCubes(dt, playerPos) {
         continue;
       }
 
-      // Magnet — drift toward player when within range
-      if (dist < MAGNET_RADIUS && dist > 0.001) {
-        const t = 1 - (dist / MAGNET_RADIUS);   // 0..1
-        const speed = MAGNET_SPEED * t * dt;
+      // Magnet logic: when _allCollectionTriggered is set (player has
+      // entered pickup radius), all cubes fly hard toward player. Use
+      // distance-independent fast speed so they catch up quickly.
+      // Otherwise: gentle drift if within MAGNET_RADIUS.
+      if (_allCollectionTriggered && dist > 0.001) {
+        // Hard magnet — fly at full speed toward player
+        const inv = 1 / dist;
+        const step = MAGNET_SPEED * dt;
+        c.mesh.position.x += dx * inv * step;
+        c.mesh.position.z += dz * inv * step;
+        c.halo.position.x = c.mesh.position.x;
+        c.halo.position.z = c.mesh.position.z;
+      } else if (dist < MAGNET_RADIUS && dist > 0.001) {
+        // Soft magnet — gentle drift if just close
+        const t = 1 - (dist / MAGNET_RADIUS);
+        const speed = MAGNET_SPEED * 0.4 * t * dt;
         const inv = 1 / dist;
         c.mesh.position.x += dx * inv * speed;
         c.mesh.position.z += dz * inv * speed;
-        // Halo follows
         c.halo.position.x = c.mesh.position.x;
         c.halo.position.z = c.mesh.position.z;
       } else {
-        // Drift back toward rest if no longer in magnet range
+        // Drift back toward rest if no longer in any magnet range
         const rdx = c.restPos.x - c.mesh.position.x;
         const rdz = c.restPos.z - c.mesh.position.z;
         c.mesh.position.x += rdx * Math.min(1, dt * 2);
@@ -181,4 +261,13 @@ export function clearChargeCubes() {
     if (c.haloMat && c.haloMat.dispose) c.haloMat.dispose();
   }
   _cubes = [];
+  // Also remove cluster floor ring + reset slot state
+  if (_ringMesh && _ringMesh.parent) scene.remove(_ringMesh);
+  if (_ringMat && _ringMat.dispose) _ringMat.dispose();
+  _ringMesh = null;
+  _ringMat = null;
+  _basePos = null;
+  _slots = [];
+  _allCollectionTriggered = false;
+  _ringPulseT = 0;
 }

@@ -245,10 +245,19 @@ export function triggerCrusherSlam() {
 export function triggerCrusherFinisher() {
   if (!_crusher) return;
   _crusher.finisherActive = true;
-  _crusher.finisherSlamsLeft = 3;
+  _crusher.finisherSlamsLeft = 4;       // 4 slams = 4 cubes
+  _crusher.finisherSlamIdx = 0;         // increments on each impact
   _crusher.finisherDelay = 0;
   _crusher.slamPhase = 'rising';
   _crusher.slamT = 0;
+}
+
+let _slamCallback = null;
+/** Register a callback that fires on each crusher slam IMPACT during
+ *  the finisher (called with slam index 1..N). Used to spawn one
+ *  charge cube per slam. */
+export function setCrusherSlamCallback(fn) {
+  _slamCallback = fn;
 }
 
 /** Sink the crusher into the ground. Used at wave 1 end (after all 4
@@ -337,6 +346,12 @@ export function updateCrusher(dt) {
       try { Audio.crusherSlam && Audio.crusherSlam(); } catch (e) {}
       _crusher.slamPhase = 'recover';
       _crusher.slamT = 0;
+      // Fire slam callback during finisher — used to spawn one cube
+      // per slam impact. Index increments with each impact (1, 2, 3, 4).
+      if (isFinisher && _slamCallback) {
+        _crusher.finisherSlamIdx = (_crusher.finisherSlamIdx || 0) + 1;
+        try { _slamCallback(_crusher.finisherSlamIdx); } catch (e) {}
+      }
     }
   } else if (_crusher.slamPhase === 'recover') {
     // Hammer slowly rises back to rest position

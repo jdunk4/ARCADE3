@@ -26,13 +26,16 @@ import {
   hasCannon, getCannonOrigin, getCannonCooldown,
   loadChargeSlot, armCannon, aimCannonAt, tryFireCannon, setCannonChargeProgress,
   setCannonChargeZoneVisible,
+  setActiveCannonCorner, setCannonCornerProgress, consumeCannonCorner, getCannonCornerPos,
   triggerCannonSink,
 } from './cannon.js';
 import {
   triggerCrusherSlam, triggerCrusherFinisher, triggerCrusherSink,
+  setCrusherSlamCallback,
 } from './crusher.js';
 import {
-  spawnChargeCubes, chargeCubesRemaining, clearChargeCubes,
+  spawnChargeCubes, spawnChargeCubeCluster, addChargeCube,
+  chargeCubesRemaining, clearChargeCubes,
 } from './chargeCubes.js';
 import {
   spawnEscortTruck, updateEscortTruck, getTruckPos, isTruckArrived,
@@ -327,13 +330,21 @@ export function startWave(waveNum) {
       //   when the player has collected all 4 cubes (handled in tick).
       setSuppressMegaOre(true);
       setOnAllOresConvergedHook(() => {
-        // Crusher does its 3-slam mega-finisher
-        triggerCrusherFinisher();
-        // Spawn the 4 chapter-tinted charge cubes on the crusher pad.
-        // Position = depot's world position (where the crusher visually
-        // sits). Slight Y offset is handled inside chargeCubes.js.
+        // Set up the cluster (floor ring + 4 empty slots) at the depot
+        // position. NO cubes spawn yet — the crusher's slam callback
+        // spawns one cube per slam (4 slams = 4 cubes, sequential).
         const dPos = OresModule.depot && OresModule.depot.pos;
-        if (dPos) spawnChargeCubes(S.chapter || 0, dPos.x, dPos.z);
+        if (dPos) spawnChargeCubeCluster(S.chapter || 0, dPos.x, dPos.z);
+        // Register slam callback BEFORE triggering the finisher so the
+        // very first impact already has a callback wired.
+        setCrusherSlamCallback((slamIdx) => {
+          // Each slam impact spawns the next cube into the cluster.
+          // slamIdx is 1..4 — we just call addChargeCube which fills
+          // the next empty slot.
+          addChargeCube(S.chapter || 0);
+        });
+        // Crusher does its 4-slam mega-finisher (one slam per cube)
+        triggerCrusherFinisher();
         S._chargeCubesSpawned = true;
       });
       // Reset chargesCarried state — player will accumulate it back to
@@ -432,13 +443,16 @@ export function startWave(waveNum) {
     S.cannonChargeT = 0;
     S.cannonChargeStarted = false;
     S.cannonInserted = false;
-    S.cannonLoadWaveT = 0;        // ramp does NOT tick until insertion
+    S.cannonLoadWaveT = 0;
     S.flingerRequested = false;
-    // chargesCarried inherits from wave 1's cube collection — player
-    // already has all 4 charges from picking up the cubes after the
-    // crusher finisher. Do NOT reset to 0 here. Defensive: if for some
-    // reason the player somehow entered wave 2 without 4 charges
-    // (debug skip, etc), default to 4 so the wave can still complete.
+    // 4-CORNER CHARGING STATE — wave 2 reflow. Each shot fires from a
+    // separate charging zone at one of the cannon's 4 corners. Player
+    // charges corner N (4s standing in zone) → shot N fires → corner N
+    // consumed → 1.5s reload → corner N+1 activates → repeat.
+    S.cannonShotIdx = 0;              // 0..3 = current corner; 4 = all done
+    S.cannonCornerChargeT = 0;        // 0..CORNER_CHARGE_DURATION
+    S.cannonReloadT = 0;              // counts down during reload window
+    S.cannonPhase = 'approach';       // 'approach' | 'corner-charging' | 'reload' | 'done'
     if ((S.chargesCarried || 0) < 4) S.chargesCarried = 4;
     S.chargesLoaded = 0;
     // Pandemonium ramp — wave 2 spawn rate escalates from 14 to 30
@@ -1258,170 +1272,157 @@ export function updateWaves(dt) {
   //      shield dome. Wave ends when 4th dome pops.
   if (waveDef.type === 'cannon-load' && S.cannonLoadActive) {
     const queen = getQueen();
-    // Cannon proximity uses the cannon's FOOT (silo position) — the
-    // muzzle returned by getCannonOrigin is elevated + yaw-rotated and
-    // not appropriate for "is the player standing at the cannon" tests.
+    // Cannon proximity uses the cannon's FOOT (silo position).
     const cannonFootX = LAYOUT.silo.x;
     const cannonFootZ = LAYOUT.silo.z;
 
-    // PANDEMONIUM RAMP — only ticks AFTER cannon insertion. Until the
-    // player reaches the cannon and completes the charge, the arena
-    // stays calm: no spawning, no ramp accumulation.
-    if (S.cannonInserted) {
-      // Pandemonium baseline locked at 14 (no escalation). Tuning
-      // notes: full ramp 14→30 felt overwhelming in playtest. 14 is
-      // already "BRING IT ON" while leaving room to dodge.
-      S.cannonLoadWaveT = (S.cannonLoadWaveT || 0) + dt;
-      waveDef.spawnRate = 14;
+    // 4-CORNER CHARGING STATE MACHINE
+    //   approach:        player walks toward cannon, no corners active yet.
+    //                    First corner activates when within 6u of cannon foot.
+    //   corner-charging: corner N's ring is active. Player stands on it
+    //                    for CORNER_CHARGE_DURATION → fires shot N → pops
+    //                    next shield. Consume corner N → enter reload phase.
+    //   reload:          1.5s window. Corner N is consumed. Next corner
+    //                    activates after delay. If shotIdx >= 4 → done.
+    //   done:            All 4 shots fired, all shields popped. Wave end
+    //                    triggers via the existing shields-down branch.
+
+    const CORNER_CHARGE_DURATION = 4.0;
+    const RELOAD_DURATION = 1.5;
+
+    // Pandemonium spawn rate: ramp up once the FIRST corner activates
+    // (player has reached the cannon, narrative is "going hot now").
+    if (S.cannonPhase === 'approach') {
+      waveDef.spawnRate = 0;     // calm during walk
     } else {
-      // Pre-insert: keep spawn rate at 0 so the standard spawn loop
-      // above doesn't fire any enemies. The walk to the cannon is
-      // intentionally calm — narrative beat: the storm before the
-      // storm. Player can take their time.
-      waveDef.spawnRate = 0;
+      waveDef.spawnRate = 14;    // BRING IT
     }
 
-    // Phase B — proximity-driven auto-charge. Progress accumulates
-    // while standing within 4.5u of the cannon foot. Drains slowly
-    // (0.5u/s) when the player steps off so a brief detour doesn't
-    // erase the whole charge. At 100% the cannon inserts.
-    if (!S.cannonInserted && (S.chargesCarried || 0) > 0 && hasCannon()) {
+    // Aim the cannon at the next intact dome each frame
+    if (queen && queen.pos) aimCannonAt(queen.pos);
+
+    // PHASE: APPROACH
+    if (S.cannonPhase === 'approach') {
       const cdx = player.pos.x - cannonFootX;
       const cdz = player.pos.z - cannonFootZ;
-      const inRange = (cdx * cdx + cdz * cdz) < (4.5 * 4.5);
-      const CHARGE_DURATION = 5.0;
+      const inRange = (cdx * cdx + cdz * cdz) < (6 * 6);
       if (inRange) {
-        S.cannonChargeT = Math.min(CHARGE_DURATION, (S.cannonChargeT || 0) + dt);
-        // First entry — toast that the charge is starting (only once)
-        if (!S.cannonChargeStarted) {
-          S.cannonChargeStarted = true;
-          UI.toast('INSERTING CHARGES...', '#ffaa00', 1800);
-        }
-        // Charging hum tick — fires every 0.4s while in range. Pitch
-        // climbs with progress so it sounds like it's "winding up."
-        S._cannonChargeTickT = (S._cannonChargeTickT || 0) - dt;
-        if (S._cannonChargeTickT <= 0) {
-          S._cannonChargeTickT = 0.4;
-          try { Audio.cannonChargingTick && Audio.cannonChargingTick(S.cannonChargeT / CHARGE_DURATION); } catch (e) {}
-        }
-      } else {
-        // Slow drain — losing 5s of charge for stepping off briefly
-        // would feel punitive. Drain at 0.5/s = full reset takes 10s
-        // outside the ring.
-        S.cannonChargeT = Math.max(0, (S.cannonChargeT || 0) - dt * 0.5);
-      }
-      // Drive cannon charge zone visual — ring + fill on the floor.
-      // Fill radius scales with progress so the player sees a growing
-      // disc as charge climbs. Cleared once inserted.
-      setCannonChargeProgress((S.cannonChargeT || 0) / CHARGE_DURATION);
-
-      // Charge complete — INSERT NOW
-      if (S.cannonChargeT >= CHARGE_DURATION) {
-        S.cannonInserted = true;
-        S.cannonLoadWaveT = 0;       // pandemonium ramp starts NOW
-        setCannonChargeProgress(0);  // fade out the floor zone
-        setCannonChargeZoneVisible(false);   // hide ring fully — player done with charge zone
-        const toLoad = S.chargesCarried;
-        for (let i = 0; i < toLoad; i++) {
-          loadChargeSlot();
-        }
+        // Player has reached the cannon — arm it + activate first corner
+        S.cannonPhase = 'corner-charging';
+        S.cannonShotIdx = 0;
+        S.cannonCornerChargeT = 0;
+        // Load all charges into the cannon visually (the slot lights pop)
+        const toLoad = S.chargesCarried || 4;
+        for (let i = 0; i < toLoad; i++) loadChargeSlot();
         S.chargesLoaded = (S.chargesLoaded || 0) + toLoad;
         S.chargesCarried = 0;
-        // Aim cannon at queen (already aimed by per-frame tick, but
-        // defensive in case the queen moved or wasn't ready earlier)
-        if (queen && queen.pos) aimCannonAt(queen.pos);
         armCannon();
-        UI.toast('CANNON ARMED — BRACE FOR CONTACT', '#ff5050', 2400);
-        // Burst at the cannon foot for the dramatic moment
-        try {
-          for (let k = 0; k < 6; k++) {
-            hitBurst(
-              new THREE.Vector3(cannonFootX + (Math.random() - 0.5) * 2.0,
-                                1.5 + Math.random() * 0.8,
-                                cannonFootZ + (Math.random() - 0.5) * 2.0),
-              0xff8800, 18,
-            );
-          }
-        } catch (e) {}
-        // Spawn flinger ally — the reinforcement beat. The flinger
-        // module already awarded a charge at wave-2 start via
-        // onWaveStartedForFlingers (wave 2 is in the global schedule)
-        // and set up a pending deploy gated on S.powerplantLit. For
-        // chapter 1 we don't have a powerplant flow, so the deploy
-        // never fires on its own. Setting powerplantLit=true here +
-        // calling addFlingerCharge(0) fires _tryConsumePendingDeploy
-        // without awarding a duplicate charge.
+        // Activate corner 0 — visible chapter-tinted ring at NE corner
+        setActiveCannonCorner(0);
+        // Hide the central charge ring — corners take over now
+        setCannonChargeZoneVisible(false);
+        // Spawn flinger ally
         try {
           S.powerplantLit = true;
           addFlingerCharge(0);
           S.flingerRequested = true;
         } catch (e) {}
+        UI.toast('CANNON ARMED — FIRE FROM CORNERS', '#ff5050', 2400);
       }
     }
-
-    // Phase C — cannon auto-fires every 15s. tryFireCannon checks its
-    // own cooldown and shotsFired cap. We pop a shield on success.
-    if ((S.chargesLoaded || 0) >= 4 && queen && queen.pos) {
-      const fired = tryFireCannon(queen.pos);
-      if (fired) {
-        // Beam VFX: spawn a chapter-tinted laser between cannon muzzle
-        // and the next intact dome.
-        const muzzlePos = getCannonOrigin();
-        const domePos = getNextDomePos();
-        if (muzzlePos && domePos) {
-          spawnCannonBeam(muzzlePos, domePos);
+    // PHASE: CORNER-CHARGING
+    else if (S.cannonPhase === 'corner-charging') {
+      const idx = S.cannonShotIdx;
+      const cornerPos = getCannonCornerPos(idx);
+      if (cornerPos) {
+        const ddx = player.pos.x - cornerPos.x;
+        const ddz = player.pos.z - cornerPos.z;
+        const inCorner = (ddx * ddx + ddz * ddz) < (1.6 * 1.6);
+        if (inCorner) {
+          S.cannonCornerChargeT = Math.min(CORNER_CHARGE_DURATION, (S.cannonCornerChargeT || 0) + dt);
+          // Charging tick SFX
+          S._cannonCornerTickT = (S._cannonCornerTickT || 0) - dt;
+          if (S._cannonCornerTickT <= 0) {
+            S._cannonCornerTickT = 0.4;
+            try { Audio.cannonChargingTick && Audio.cannonChargingTick(S.cannonCornerChargeT / CORNER_CHARGE_DURATION); } catch (e) {}
+          }
+        } else {
+          // Slow drain when off corner
+          S.cannonCornerChargeT = Math.max(0, (S.cannonCornerChargeT || 0) - dt * 0.3);
         }
-        popQueenShield();
+        setCannonCornerProgress(S.cannonCornerChargeT / CORNER_CHARGE_DURATION);
+
+        // Charge complete — FIRE THIS SHOT
+        if (S.cannonCornerChargeT >= CORNER_CHARGE_DURATION) {
+          if (queen && queen.pos) {
+            const fired = tryFireCannon(queen.pos);
+            if (fired) {
+              const muzzlePos = getCannonOrigin();
+              const domePos = getNextDomePos();
+              if (muzzlePos && domePos) spawnCannonBeam(muzzlePos, domePos);
+              popQueenShield();
+            }
+          }
+          // Consume this corner + start reload
+          consumeCannonCorner(idx);
+          S.cannonShotIdx = idx + 1;
+          S.cannonReloadT = RELOAD_DURATION;
+          S.cannonPhase = 'reload';
+          setActiveCannonCorner(-1);    // no corner active during reload
+        }
+      }
+    }
+    // PHASE: RELOAD (between shots)
+    else if (S.cannonPhase === 'reload') {
+      S.cannonReloadT = Math.max(0, (S.cannonReloadT || 0) - dt);
+      if (S.cannonReloadT <= 0) {
+        if (S.cannonShotIdx >= 4) {
+          // All 4 shots fired — done
+          S.cannonPhase = 'done';
+        } else {
+          // Activate next corner
+          S.cannonCornerChargeT = 0;
+          setActiveCannonCorner(S.cannonShotIdx);
+          S.cannonPhase = 'corner-charging';
+        }
       }
     }
 
-    // Wave end when all 4 domes are down
+    // Wave end when all 4 domes are down (matches old logic)
     if (queenShieldsRemaining() === 0 && (S.chargesLoaded || 0) >= 4) {
       S.cannonLoadActive = false;
-      // Turn off turrets — wave 3 (queen-cleanup) is the player's
-      // climax fight. Auto-firing turrets would trivialize the heavy
-      // swarms. Player faces wave 3 alone.
       deactivateAllTurrets();
-      // Remove turret meshes outright + sink the cannon. Wave 3
-      // begins with a clean arena: just the hive cluster, no leftover
-      // chapter-1 props cluttering the floor.
       clearAllTurrets();
       triggerCannonSink();
-      // Mark chapter-1 wave-2 props removed so the prop-collision
-      // system stops blocking against the (now-invisible) silo and
-      // turret LAYOUT positions. Without this the player runs into
-      // ghost cylinders where the cannon and turrets used to be.
       setCh1Wave2PropsRemoved(true);
       UI.toast('SHIELDS DOWN — QUEEN EXPOSED', '#ff3cac', 2200);
       endWave();
       return;
     }
 
-    // Objective text — phase-aware.
-    //   Pre-insert: walking to cannon → "DELIVER CHARGES TO THE CANNON"
-    //               with charge % once they're standing on it
-    //   Post-insert: "CANNON BARRAGE · X/4 shields down"
-    if (!S.cannonInserted) {
-      const chargePct = Math.round(((S.cannonChargeT || 0) / 5.0) * 100);
-      if ((S.cannonChargeT || 0) > 0) {
-        UI.showObjective(
-          'INSERTING CHARGES · ' + chargePct + '%',
-          'Stay near the cannon to complete insertion.',
-        );
-      } else {
-        UI.showObjective(
-          'DELIVER 4 CHARGES TO THE CANNON',
-          'Walk to the cannon and stand near it for 5 seconds.',
-        );
-      }
-    } else {
-      const cd = getCannonCooldown();
+    // Objective text — phase-aware
+    if (S.cannonPhase === 'approach') {
+      UI.showObjective(
+        'WALK TO THE CANNON',
+        'Approach the cannon to begin firing.',
+      );
+    } else if (S.cannonPhase === 'corner-charging') {
+      const popped = 4 - queenShieldsRemaining();
+      const pct = Math.round((S.cannonCornerChargeT / CORNER_CHARGE_DURATION) * 100);
+      UI.showObjective(
+        'CHARGE CORNER ' + (S.cannonShotIdx + 1) + '/4 · ' + pct + '%',
+        'Stand on the lit corner to fire shot ' + (S.cannonShotIdx + 1) + ' · ' + popped + ' shield' + (popped !== 1 ? 's' : '') + ' down',
+      );
+    } else if (S.cannonPhase === 'reload') {
       const popped = 4 - queenShieldsRemaining();
       UI.showObjective(
-        'CANNON BARRAGE · ' + popped + '/4 shields down',
-        cd > 0
-          ? 'Next shot in ' + Math.ceil(cd) + 's · defend yourself'
-          : 'Firing...',
+        'RELOADING · ' + popped + '/4 shields down',
+        'Next corner activates in ' + Math.ceil(S.cannonReloadT) + 's',
+      );
+    } else if (S.cannonPhase === 'done') {
+      UI.showObjective(
+        'BARRAGE COMPLETE',
+        'All shields neutralized.',
       );
     }
   }
