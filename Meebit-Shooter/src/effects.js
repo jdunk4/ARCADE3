@@ -427,27 +427,25 @@ export function updateRain(dt, playerPos) {
     if (drop.position.x < -r) drop.position.x += r * 2;
   }
 
-  // Lightning (active on every storm wave per amplified curve).
-  // MORE LIGHTNING per user direction. Typhoon storms now strike
-  // every 0.4-1.5s (was 0.8-2.5s) and have an 80% chance of a
-  // double-strike second bolt + 25% chance of a triple-strike third.
-  // Result: during a wave-5 boss fight the screen is almost
-  // continuously lit. Non-typhoon storms stay at the 2.0-4.0s
-  // cadence — only triggered if some future curve sets typhoon=false.
+  // Lightning. Cadence dialed back ~2/3 from the "MAKE IT RAIN" peak
+  // — typhoon storms now strike every 1.2-4.5s (was 0.4-1.5s), with
+  // a 27% double-strike chance and an 8% triple-strike. Result: the
+  // storm flashes noticeably during boss fights but no longer feels
+  // constant. Non-typhoon storms stay at the 2.0-4.0s baseline.
   if (cfg.lightning) {
     nextLightningIn -= dt;
     if (nextLightningIn <= 0) {
       lightningFlashT = 1.0;
       nextLightningIn = cfg.typhoon
-        ? 0.4 + Math.random() * 1.1   // 0.4–1.5s
+        ? 1.2 + Math.random() * 3.3   // 1.2–4.5s
         : 2.0 + Math.random() * 2.0;  // 2.0–4.0s
       // Typhoon double-strike — second bolt 90ms after the first.
-      // Bumped from 60% → 80% so most strikes are forked.
-      if (cfg.typhoon && Math.random() < 0.80) {
+      // 27% chance (cut from 80%).
+      if (cfg.typhoon && Math.random() < 0.27) {
         setTimeout(() => { lightningFlashT = Math.max(lightningFlashT, 0.9); }, 90);
-        // Triple-strike — 25% chance of a third bolt 200ms after
-        // the first. Reads as a very violent rolling thunder cluster.
-        if (Math.random() < 0.25) {
+        // Triple-strike — 8% chance of a third bolt 200ms after
+        // the first (cut from 25%). Rare rolling-thunder cluster.
+        if (Math.random() < 0.08) {
           setTimeout(() => { lightningFlashT = Math.max(lightningFlashT, 0.85); }, 200);
         }
       }
