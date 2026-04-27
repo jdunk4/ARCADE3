@@ -119,6 +119,7 @@ import { spawnPacman, despawnPacman, updatePacman, isPacmanActive, runAwayPacman
 import { spawnPellets, despawnPellets, updatePellets } from './pacmanPellets.js';
 import { buildCrowd, updateCrowd, recolorCrowd } from './crowd.js';
 import { spawnGravestones, recolorGravestones, clearGravestones } from './gravestones.js';
+import { playMatrixRain } from './matrixRain.js';
 import { prefetchMeebits, pickRandomMeebitId } from './meebitsPublicApi.js';
 import {
   spawnPickup, updatePickups as updateNewPickups, clearAllPickups,
@@ -3099,6 +3100,18 @@ function animate() {
         try {
           recolorGravestones(CHAPTERS[S.chapter % CHAPTERS.length].full.grid1);
         } catch (e) { console.warn('[gravestones] recolor', e); }
+        // Matrix-rain chapter transition. Brief full-screen translucent
+        // cascade tinted with the incoming chapter's color. ~3s total
+        // duration, self-disposing, pointer-events: none — pure flavor
+        // overlay that doesn't interfere with gameplay continuing
+        // underneath. Skipped on chapter 7 entry because the existing
+        // ch7 cinematic flow already handles its own transition;
+        // doubling up would be busy.
+        if (S.chapter !== PARADISE_FALLEN_CHAPTER_IDX) {
+          try {
+            playMatrixRain(CHAPTERS[S.chapter % CHAPTERS.length].full.grid1);
+          } catch (e) { console.warn('[matrixRain] play', e); }
+        }
         // Confirm the ally was applied (or wasn't because chapter doesn't have one).
         if (S.chapter === 1) console.log(`[chapter-change] galaga ship active=${isGalagaShipActive()}`);
         if (S.chapter === 3) console.log(`[chapter-change] pacman active=${isPacmanActive()}`);
