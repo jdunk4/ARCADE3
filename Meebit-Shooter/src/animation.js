@@ -428,46 +428,56 @@ export const IDLE_HIP_EXCLUDE_BONES = [
 // don't transfer because Mixamo bones use +Y as the longitudinal axis,
 // so the rotation deltas compose against a different local frame.
 //
+// CRITICAL: player.js sets `meebit.rotation.y = Math.PI` to align the
+// VRM's authored-forward (-Z in the source asset) with the game's
+// +Z-forward convention. That 180° flip is in the parent chain of
+// every bone, so bone-LOCAL rotations need their Y signs flipped
+// from what they'd be in a non-rotated VRM. This caught me on v1 of
+// this pose — I rotated -π/2 expecting arms to swing forward, but
+// they swung BACKWARD because of the pre-rotation. v2 has the signs
+// flipped to match the actual world behavior.
+//
 // Math goal:
 //   After this pose runs, the right hand bone's WORLD rotation should
-//   equal RotY(π). Why: the gun is parented to the hand with identity
+//   be identity. Why: the gun is parented to the hand with identity
 //   local rotation, meaning the gun's barrel direction (gun-local +Z)
-//   equals the hand's local +Z direction. With hand world = RotY(π),
-//   hand-local +Z maps to world -Z (which is meebit-forward in the
-//   default three.js camera/three convention). So the gun barrel will
-//   point in the meebit's aim direction — predictably, by construction.
+//   equals the hand's local +Z direction. With hand world = identity,
+//   hand-local +Z maps to world +Z (which is meebit-forward AFTER the
+//   180° meebit-object pre-rotation — because the wrapper's rotation
+//   places +Z facing the aim direction). So the gun barrel will point
+//   in the meebit's aim direction by construction.
 //
 // Construction:
-//   - RightShoulder rotates the entire arm from T-pose-extended-right
-//     (+X world) to extended-forward (-Z world). That's RotY(-π/2).
-//   - RightUpperArm: identity (skip elbow tuck for v1; arm is straight
-//     forward, hand at chest level naturally).
-//   - RightLowerArm: identity (no elbow bend in v1).
-//   - RightHand: RotY(-π/2) so that combined with the shoulder's
-//     RotY(-π/2), hand world rotation = RotY(-π/2) * RotY(-π/2) =
-//     RotY(-π) = RotY(π). ✓
+//   Reset pose has the right arm extending world -X (meebit's right).
+//   To swing it to world +Z (meebit's forward), rotate around world Y
+//   by +π/2: that sends world -X to world +Z. Shoulder local Y axis
+//   coincides with world Y (the only Y-rotation in the parent chain
+//   is the meebit's 180°, which is around Y itself — a no-op for the
+//   axis), so a local +π/2 Y rotation on the shoulder achieves the
+//   world +π/2 Y rotation needed.
 //
-// Left arm mirrored — RotY(+π/2) on shoulder + hand to bring left
-// arm forward as a support brace.
+//   With shoulder rotated +π/2 around Y, hand world rotation (without
+//   any local hand rotation) = RotY(π) × RotY(+π/2) = RotY(-π/2).
+//   To bring hand world to identity, hand-local rotation must be the
+//   inverse: RotY(+π/2).
 //
-// v1 is intentionally a straight-armed forward pose. It's predictable
-// rather than pretty. Once the gun is verified to be in the right
-// place with the right barrel direction, v2 can add an elbow bend
-// (rotation on lower-arm Z) and a slight inward tuck (rotation on
-// upper-arm Z) for a more natural look — those tweaks keep the hand's
-// world rotation invariant if applied symmetrically along axes that
-// don't disturb the +Z mapping.
+//   Left arm mirrors with flipped signs (-π/2 on shoulder + hand).
+//
+// v2 is intentionally simple — straight arms forward, no elbow bend.
+// Predictable rather than pretty. Once the gun is verified to be in
+// the right place with the right barrel direction, v3 can add elbow
+// bends and inward tucks for a more natural look.
 const GUN_HOLD_POSE = {
   // RIGHT ARM — primary grip (weapon hand)
-  RightShoulderBone: { x: 0, y: -Math.PI / 2, z: 0 },  // -90° Y: arm forward
-  RightUpperArmBone: { x: 0, y: 0,            z: 0 },  // straight
-  RightLowerArmBone: { x: 0, y: 0,            z: 0 },  // no elbow bend yet
-  RightHandBone:     { x: 0, y: -Math.PI / 2, z: 0 },  // -90° Y: hand-local +Z → world -Z
+  RightShoulderBone: { x: 0, y: +Math.PI / 2, z: 0 },  // arm forward
+  RightUpperArmBone: { x: 0, y: 0,            z: 0 },
+  RightLowerArmBone: { x: 0, y: 0,            z: 0 },
+  RightHandBone:     { x: 0, y: +Math.PI / 2, z: 0 },  // brings hand world → identity
   // LEFT ARM — mirror for the support-hand brace
-  LeftShoulderBone:  { x: 0, y: +Math.PI / 2, z: 0 },  // +90° Y: arm forward (mirrored)
+  LeftShoulderBone:  { x: 0, y: -Math.PI / 2, z: 0 },
   LeftUpperArmBone:  { x: 0, y: 0,            z: 0 },
   LeftLowerArmBone:  { x: 0, y: 0,            z: 0 },
-  LeftHandBone:      { x: 0, y: +Math.PI / 2, z: 0 },  // mirrored
+  LeftHandBone:      { x: 0, y: -Math.PI / 2, z: 0 },
 };
 
 // Reusable scratch quaternions/euler — allocation-free per-frame path.
