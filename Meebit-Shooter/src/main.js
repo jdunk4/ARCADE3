@@ -36,7 +36,17 @@ import { scene, camera, renderer, CAMERA_OFFSET, applyTheme, Scene, enterChapter
 import {
   isTutorialActive, setTutorialActive,
   applyTutorialFloor, restoreNormalFloor,
+  disableShadows, restoreShadows,
 } from './tutorial.js';
+import {
+  startTutorialController, stopTutorialController,
+  tickTutorialController,
+  notifyEnemyKilled as tutorialOnEnemyKilled,
+  notifyShotFired as tutorialOnShotFired,
+  notifyDashed as tutorialOnDashed,
+  notifyHazardHit as tutorialOnHazardHit,
+  notifyPotionConsumed as tutorialOnPotionConsumed,
+} from './tutorialLessons.js';
 import { updateLifedrainBeams, applyLifedrainTick, fireLifedrainSwarm, updateLifedrainProjectiles, clearLifedrainEffects } from './lifedrainer.js';
 import { scatterCorpses, clearCorpses } from './corpses.js';
 import { S, keys, mouse, joyState, resetGame, getWeapon, shake } from './state.js';
@@ -90,7 +100,7 @@ import { prewarmShaders } from './prewarm.js';
 import {
   spawnHazardsForWave, clearHazards, hurtPlayerIfOnHazard,
   repelEnemyFromHazards, updateHazards, setHazardSpawningEnabled,
-  setHazardStyle,
+  setHazardStyle, tickHazardSpawning,
 } from './hazards.js';
 import * as tetrisStyle from './hazardsTetris.js';
 import * as galagaStyle from './hazardsGalaga.js';
@@ -1409,7 +1419,8 @@ window.addEventListener('keydown', e => {
     // Use a potion from inventory: heals POTION_HEAL HP if not at max,
     // no-op if already full or no potions held. Toast feedback in
     // tryUsePotion handles all the player-facing messages.
-    tryUsePotion();
+    const consumed = tryUsePotion();
+    if (consumed && S.tutorialMode) tutorialOnPotionConsumed();
   }
   if (e.key.toLowerCase() === 'n') {
     // Super Nuke — cleanses infectors arena-wide. Only available in
@@ -1506,6 +1517,7 @@ function tryDash() {
   S.dashCooldown = PLAYER.dashCooldown;
   S.invulnTimer = Math.max(S.invulnTimer, PLAYER.dashDuration);
   shake(0.1, 0.1);
+  if (S.tutorialMode) tutorialOnDashed();
 }
 
 // ---- GAMEPAD ----
@@ -1995,8 +2007,18 @@ function startTutorial() {
   const titleEl = document.getElementById('title');
   if (titleEl) titleEl.classList.add('hidden');
 
-  // Reveal the in-game HUD just like startGame does.
+  // Reveal the in-game HUD just like startGame does, then HIDE the
+  // panels we don't want during the tutorial. Per spec:
+  //   • hide #hud-top      — score / chapter / wave / kills (meaningless here)
+  //   • hide #player-panel — HP/XP bars + avatar (clutter)
+  //   • keep  #inventory   — weapon revolver
+  //   • keep  #controls    — keybind reference
+  //   • keep killstreak / grenade / potion HUDs (lazily created by ui.js)
   document.querySelectorAll('.hidden-ui').forEach(el => el.style.display = '');
+  const _hudTop = document.getElementById('hud-top');
+  const _playerPanel = document.getElementById('player-panel');
+  if (_hudTop) _hudTop.style.display = 'none';
+  if (_playerPanel) _playerPanel.style.display = 'none';
 
   resetGame();
 
@@ -2004,17 +2026,15 @@ function startTutorial() {
   S.tutorialMode = true;
   setTutorialActive(true);
 
-  // Load player identity (same path as startGame), then unlock the
-  // entire arsenal so the player can cycle 1..6 + Q + G.
+  // Load player identity. Tutorial only starts the player with the
+  // pistol — additional weapons are granted by their respective
+  // lessons so the player learns each one in context.
   const rec = Save.load();
   S.username = rec.username;
   S.playerMeebitId = rec.playerMeebitId || S.playerMeebitId;
   S.playerMeebitSource = rec.playerMeebitSource || S.playerMeebitSource;
   S.walletAddress = rec.walletAddress;
-  S.ownedWeapons = new Set([
-    'pistol', 'shotgun', 'smg', 'rocket', 'raygun', 'flamethrower',
-    'pickaxe',
-  ]);
+  S.ownedWeapons = new Set(['pistol']);
   S.currentWeapon = 'pistol';
   S.previousCombatWeapon = 'pistol';
 
@@ -2065,18 +2085,42 @@ function startTutorial() {
   // theme's lamp tint doesn't multiply the rainbow colors.
   applyTutorialFloor();
 
+  // Tutorial mode is bare-bones: no shadows (flat, calm look) and no
+  // music (silent except for game sfx). Both are restored in
+  // restoreNormalFloor() / on quit-to-title via the same flow.
+  disableShadows(renderer);
+
   Audio.init();
   Audio.resume();
   Audio.stopCDrone && Audio.stopCDrone();
-  setTimeout(() => {
-    try { Audio.startMusic(1); } catch (e) {}
-  }, 200);
+  // NOTE: we deliberately do NOT call Audio.startMusic — tutorial is
+  // silent so the lesson hints land without a soundtrack fighting
+  // them.
 
   UI.updateHUD();
   UI.updateWeaponSlots();
-  // Show a quick onboarding toast.
-  UI.toast('TUTORIAL ARENA · ALL WEAPONS UNLOCKED', '#ffd93d', 3200);
-  startWave(1);
+  UI.toast('TUTORIAL · FOLLOW THE CHECKLIST', '#ffd93d', 3000);
+
+  // Start the lesson controller. We do NOT call startWave(1) — the
+  // tutorial controller drives all spawns and props. waves.js
+  // updateWaves early-returns when S.tutorialMode is true (see step 4
+  // below).
+  startTutorialController({
+    onAllDone: () => {
+      // Auto-return to title after a short pause so the player can
+      // savor the final checkmark.
+      setTimeout(() => {
+        S.paused = false;
+        S.running = false;
+        Audio.stopMusic();
+        _exitTutorialIfActive();
+        document.querySelectorAll('.hidden-ui').forEach(el => el.style.display = 'none');
+        document.getElementById('gameover').classList.add('hidden');
+        const _t = document.getElementById('title');
+        if (_t) _t.classList.remove('hidden');
+      }, 2200);
+    },
+  });
 }
 
 function gameOver() {
@@ -2096,13 +2140,36 @@ function gameOver() {
   document.getElementById('gameover').classList.remove('hidden');
 }
 
+// Tutorial teardown helper — called from every path that exits a
+// tutorial run (Start, Restart, Pause→Quit, and the auto-return on
+// completion). Keeps the cleanup sequence in one place so we don't
+// drift over time.
+function _exitTutorialIfActive() {
+  if (!isTutorialActive() && !S.tutorialMode) return;
+  setTutorialActive(false);
+  S.tutorialMode = false;
+  S.tutorialHazardCycle = false;
+  restoreNormalFloor();
+  restoreShadows(renderer);
+  // Stop hazard spawning that the tutorial cycler may have enabled.
+  setHazardSpawningEnabled(false);
+  // Tear down the lesson controller (also removes the checklist DOM).
+  try { stopTutorialController(); } catch (e) {}
+  // Restore HUD panels we hid for tutorial mode.
+  const _hudTop = document.getElementById('hud-top');
+  const _playerPanel = document.getElementById('player-panel');
+  if (_hudTop) _hudTop.style.display = '';
+  if (_playerPanel) _playerPanel.style.display = '';
+  // Reset the hazard cycler state so a future tutorial starts clean.
+  _tutHazInit = false;
+  _tutHazIdx = 0;
+  _tutHazTimer = 0;
+}
+
 document.getElementById('start-btn').addEventListener('click', () => {
   // If we somehow got here from a tutorial run, make sure the rainbow
-  // floor is gone before the real game starts.
-  if (isTutorialActive()) {
-    setTutorialActive(false);
-    restoreNormalFloor();
-  }
+  // floor + tutorial state are gone before the real game starts.
+  _exitTutorialIfActive();
   Audio.init();
   startGame();
 });
@@ -2112,11 +2179,8 @@ document.getElementById('tutorial-btn').addEventListener('click', () => {
 });
 document.getElementById('restart-btn').addEventListener('click', () => {
   // Restart always returns to the real game flow — drop the tutorial
-  // floor if it's currently up.
-  if (isTutorialActive()) {
-    setTutorialActive(false);
-    restoreNormalFloor();
-  }
+  // floor + state if it's currently up.
+  _exitTutorialIfActive();
   startGame();
 });
 
@@ -2132,10 +2196,7 @@ PauseMenu.setHandlers({
     Audio.stopMusic();
     // If quitting a tutorial run, drop the rainbow floor so the title
     // screen + any subsequent normal run look right.
-    if (isTutorialActive()) {
-      setTutorialActive(false);
-      restoreNormalFloor();
-    }
+    _exitTutorialIfActive();
     document.querySelectorAll('.hidden-ui').forEach(el => el.style.display = 'none');
     document.getElementById('gameover').classList.add('hidden');
     document.getElementById('title').classList.remove('hidden');
@@ -2397,6 +2458,15 @@ let _lastSeenWave = 0;
 // tracker the style stays stuck as tetris for the whole run.
 let _lastSeenChapter = -1;
 
+// Tutorial-only hazard cycle state. Driven by lesson 10 via
+// S.tutorialHazardCycle. _tutHazInit guards the one-time setup; the
+// timer rotates through the four arcade-style hazards every 5s.
+let _tutHazInit = false;
+let _tutHazIdx = 0;
+let _tutHazTimer = 0;
+const _tutHazStyles = [tetrisStyle, galagaStyle, minesweeperStyle, pacmanStyle];
+const _tutHazNames = ['TETRIS', 'GALAGA', 'MINESWEEPER', 'PACMAN'];
+
 function animate() {
   requestAnimationFrame(animate);
   const dt = Math.min(0.05, clock.getDelta());
@@ -2488,6 +2558,40 @@ function animate() {
     updateFogRing(player.pos);
     updateBossCubes(dt);
     updateCivilians(dt, enemies, player, onCivilianKilled, onCivilianRescued);
+    // In tutorial mode the lesson controller drives spawns and props
+    // every frame. updateWaves below early-returns when tutorialMode
+    // is on, so the two systems never fight for game state.
+    if (S.tutorialMode) {
+      try { tickTutorialController(dt); } catch (e) { console.warn('[tutorial] tick', e); }
+      // Hazard cycle driver — only runs when the active lesson sets
+      // S.tutorialHazardCycle (lesson 10). Rotates through the four
+      // arcade-flavored hazard styles every ~5 seconds so the player
+      // sees Tetris → Galaga → Minesweeper → Pacman in one stretch.
+      // updateWaves' tickHazardSpawning is gated behind the wave
+      // system; in tutorial we call it directly here.
+      if (S.tutorialHazardCycle) {
+        if (!_tutHazInit) {
+          _tutHazInit = true;
+          _tutHazIdx = 0;
+          _tutHazTimer = 0;
+          setHazardStyle(_tutHazStyles[0]);
+          setHazardSpawningEnabled(true);
+        }
+        _tutHazTimer += dt;
+        if (_tutHazTimer >= 5.0) {
+          _tutHazTimer = 0;
+          _tutHazIdx = (_tutHazIdx + 1) % _tutHazStyles.length;
+          setHazardStyle(_tutHazStyles[_tutHazIdx]);
+          UI.toast('HAZARD STYLE: ' + _tutHazNames[_tutHazIdx], '#ff8844', 1400);
+        }
+        // Drive the actual hazard tile drops + per-style ticking.
+        tickHazardSpawning(dt, 0, player.pos, []);
+      } else if (_tutHazInit) {
+        // Lesson finished — turn spawning off and clear the flag.
+        _tutHazInit = false;
+        setHazardSpawningEnabled(false);
+      }
+    }
     updateWaves(dt);
     // Notify the pixl-pal system of new waves so it can award charges
     // every 3rd wave. Cheap: one int comparison per frame.
@@ -2846,7 +2950,13 @@ function updatePlayer(dt) {
 
   // Floor hazards (lava tetrominoes) damage the player continuously while
   // they stand on one. Dash frames' invuln protects them briefly.
+  // Tutorial: snapshot HP before the call so we can detect a fresh
+  // hazard hit (HP drop) and notify the lesson controller.
+  const _hpBeforeHazard = S.tutorialMode ? S.hp : 0;
   hurtPlayerIfOnHazard(dt, player.pos, S, UI, Audio, shake);
+  if (S.tutorialMode && S.hp < _hpBeforeHazard) {
+    tutorialOnHazardHit();
+  }
   if (S.hp <= 0) { S.hp = 0; UI.updateHUD(); gameOver(); return; }
 
   let targetX = mouse.worldX, targetZ = mouse.worldZ;
@@ -2892,6 +3002,9 @@ function fireWeapon() {
   const rate = w.fireRate * (S.fireRateBoost || 1);
   const dmgBoost = S.damageBoost || 1;
   const origin = new THREE.Vector3(player.pos.x, 1.3, player.pos.z);
+  // Tutorial: count this as a shot for the SHOOT lesson and tag the
+  // current weapon for the TRY ALL WEAPONS lesson.
+  if (S.tutorialMode) tutorialOnShotFired(S.currentWeapon);
 
   if (w.isLifedrainer) {
     // Two-phase: if charge >= 1, the press becomes a SWARM RELEASE.
@@ -4437,6 +4550,7 @@ function killEnemy(idx) {
   }
 
   onEnemyKilled(e, inZone);
+  if (S.tutorialMode) tutorialOnEnemyKilled(e);
 }
 
 // ============================================================================

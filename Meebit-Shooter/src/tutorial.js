@@ -72,20 +72,18 @@ const CELL_PX = 130;                                  // 20 × 130 = 2600 inner
 const TEX_W = GRID_COLS * CELL_PX + BORDER_PX * 2;    // 2780
 const TEX_H = GRID_ROWS * CELL_PX + BORDER_PX * 2;    // 2780 (square)
 
-// Four corner colors. Eyeballed from the reference photo.
-//   TL = top-left     = deep red
-//   TR = top-right    = purple/violet
-//   BL = bottom-left  = yellow-green / lemon
-//   BR = bottom-right = cyan/sky-blue
-// Stored as RGB so we can interpolate linearly and avoid hue-wraparound
-// discontinuities that bite us when adjacent corners take different
-// short paths around the color wheel. Corners are pumped fairly
-// saturated so the bilinear mid-tones don't sink to mud.
+// Four corner colors. Pumped near-saturation so the bilinear midpoints
+// stay vivid instead of sinking to mud, AND so the chapter lighting
+// doesn't drag the floor down to gray on a dim wave theme.
+//   TL = top-left     = vivid red
+//   TR = top-right    = vivid purple/violet
+//   BL = bottom-left  = vivid yellow-green
+//   BR = bottom-right = vivid cyan
 const CORNERS = {
-  TL: { r: 230, g:  30, b:  60 },   // red
-  TR: { r: 175, g:  60, b: 220 },   // purple
-  BL: { r: 215, g: 230, b:  50 },   // yellow-green
-  BR: { r:  60, g: 210, b: 230 },   // cyan
+  TL: { r: 255, g:  20, b:  60 },   // red
+  TR: { r: 200, g:  50, b: 255 },   // purple
+  BL: { r: 230, g: 255, b:  40 },   // yellow-green
+  BR: { r:  40, g: 235, b: 255 },   // cyan
 };
 
 function lerp(a, b, t) { return a + (b - a) * t; }
@@ -144,17 +142,16 @@ function buildRainbowTexture() {
 
       // Re-saturate. RGB bilinear interpolation produces muddy mid-
       // tones because complementary corner colors average toward gray.
-      // Push the result back out from gray so the middle band stays
-      // vivid pinks/mauves/pale-greens like the reference.
-      color = saturate(color, 0.35);
+      // With the corners already near-saturation, we only need a small
+      // push to keep the middle band vivid.
+      color = saturate(color, 0.18);
 
       // Pastel band: push toward white in the F–J row range (v ≈
-      // 0.33–0.6). The reference shows a clear bright belt across the
-      // middle of the board; this mimics that without flattening the
-      // dark top rows or deep bottom rows.
+      // 0.33–0.6). Subtle now — we don't want to wash out the vivid
+      // colors we just paid for.
       const peak = 0.45;
       const dist = Math.abs(v - peak);
-      const whiteAmt = Math.max(0, 0.35 - dist * 0.95);
+      const whiteAmt = Math.max(0, 0.22 - dist * 0.7);
       color = tintWhite(color, whiteAmt);
 
       const rr = Math.round(color.r);
@@ -227,32 +224,78 @@ function buildRainbowTexture() {
 // ---------------------------------------------------------------------
 // Apply / restore the floor material. We don't replace the mesh — just
 // swap the texture on the existing groundMat. That keeps shadows, fog,
-// and lighting all unchanged.
+// and lighting all unchanged structurally; we just push the floor's
+// brightness way up so it reads as VIBRANT instead of getting dragged
+// down to muddy gray by the chapter's ambient/fog tint.
+//
+// Three things drive the brightness boost:
+//   1. The texture itself uses near-saturation corner colors and a
+//      lighter pastel boost than the original.
+//   2. We set groundMat.emissive to white and emissiveIntensity high
+//      so the floor self-illuminates and doesn't depend on the moon
+//      directional or the dim chapter ambient.
+//   3. We crush roughness to 1.0 so we don't get specular hot-spots
+//      that look like glare on the bright floor.
 // ---------------------------------------------------------------------
+let _matSnapshot = null;     // captures pre-tutorial groundMat lighting
+
 export function applyTutorialFloor() {
   if (!Scene || !Scene.groundMat) return;
   if (!_rainbowTexture) _rainbowTexture = buildRainbowTexture();
   if (!_originalTexture) _originalTexture = Scene.groundMat.map;
+  // Snapshot the parts of the material we're about to change so
+  // restoreNormalFloor can put them back exactly.
+  if (!_matSnapshot) {
+    _matSnapshot = {
+      color: Scene.groundMat.color.getHex(),
+      emissive: Scene.groundMat.emissive ? Scene.groundMat.emissive.getHex() : 0x000000,
+      emissiveIntensity: Scene.groundMat.emissiveIntensity || 0,
+      emissiveMap: Scene.groundMat.emissiveMap || null,
+      roughness: Scene.groundMat.roughness,
+      metalness: Scene.groundMat.metalness,
+    };
+  }
+
   Scene.groundMat.map = _rainbowTexture;
   // Reset the base color tint so the rainbow shows true to its hues
   // instead of being multiplied by the chapter's lamp color.
   Scene.groundMat.color.setHex(0xffffff);
+  // Self-illumination: use the same texture as the emissive map. This
+  // makes every tile glow with its own color, so dim chapter lighting
+  // can't pull the floor toward gray. emissiveIntensity 1.0 means the
+  // floor effectively ignores ambient/fog and shows its native color.
+  Scene.groundMat.emissive = new THREE.Color(0xffffff);
+  Scene.groundMat.emissiveMap = _rainbowTexture;
+  Scene.groundMat.emissiveIntensity = 1.0;
+  // Kill specularity / metal shine so we don't get camera-angle
+  // hot-spots glaring back at the player.
+  Scene.groundMat.roughness = 1.0;
+  Scene.groundMat.metalness = 0.0;
   Scene.groundMat.needsUpdate = true;
 
   // Leave the chapter grid overlay at its native opacity. The texture
-  // is now sized so each rainbow tile is a 2×2 block of game grid
-  // cells — letting the overlay draw on top adds a subtle subdivision
-  // that visually anchors the floor to the same grid the rest of the
-  // game uses for collisions and movement.
+  // is sized so each rainbow tile is a 2×2 block of game grid cells —
+  // letting the overlay draw on top adds a subtle subdivision that
+  // visually anchors the floor to the same grid the rest of the game
+  // uses for collisions and movement.
 }
 
 export function restoreNormalFloor() {
   if (!Scene || !Scene.groundMat) return;
   if (_originalTexture) {
     Scene.groundMat.map = _originalTexture;
-    Scene.groundMat.needsUpdate = true;
     _originalTexture = null;
   }
+  if (_matSnapshot) {
+    Scene.groundMat.color.setHex(_matSnapshot.color);
+    if (Scene.groundMat.emissive) Scene.groundMat.emissive.setHex(_matSnapshot.emissive);
+    Scene.groundMat.emissiveIntensity = _matSnapshot.emissiveIntensity;
+    Scene.groundMat.emissiveMap = _matSnapshot.emissiveMap;
+    Scene.groundMat.roughness = _matSnapshot.roughness;
+    Scene.groundMat.metalness = _matSnapshot.metalness;
+    _matSnapshot = null;
+  }
+  Scene.groundMat.needsUpdate = true;
   if (Scene.gridHelper && Scene.gridHelper.material) {
     Scene.gridHelper.material.opacity = 0.15;
     Scene.gridHelper.material.needsUpdate = true;
@@ -278,4 +321,26 @@ export function tutorialSpawnRateOverride(defaultRate) {
   // already in that band we leave it alone; otherwise we clamp.
   if (defaultRate >= 1 && defaultRate <= 2) return defaultRate;
   return Math.max(1, Math.min(2, defaultRate || 1.5));
+}
+
+// ---------------------------------------------------------------------
+// Renderer shadow toggle. Tutorial mode wants a flat, bare-bones look
+// — shadows add depth that fights the "polar opposite from the game"
+// direction. We snapshot the renderer's shadow state on entry and
+// restore it on exit so a normal run after the tutorial keeps shadows.
+// ---------------------------------------------------------------------
+let _shadowSnapshot = null;
+export function disableShadows(renderer) {
+  if (!renderer) return;
+  if (_shadowSnapshot === null) {
+    _shadowSnapshot = {
+      enabled: renderer.shadowMap.enabled,
+    };
+  }
+  renderer.shadowMap.enabled = false;
+}
+export function restoreShadows(renderer) {
+  if (!renderer || _shadowSnapshot === null) return;
+  renderer.shadowMap.enabled = _shadowSnapshot.enabled;
+  _shadowSnapshot = null;
 }

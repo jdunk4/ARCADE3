@@ -608,6 +608,12 @@ function _onBonusCaught(info) {
 }
 
 export function updateWaves(dt) {
+  // Tutorial mode disables the wave system entirely. The tutorial
+  // controller in tutorialLessons.js drives all spawns, props, and
+  // objective state when S.tutorialMode is true, so updateWaves
+  // would only fight it for control of S.* flags.
+  if (S.tutorialMode) return;
+
   // Per-frame dormant-prop updates (shield pulse + drop animation).
   // MUST run before the `!S.waveActive` gate below — otherwise the shield
   // cascade's pending-drop timers and collapse animations freeze during
