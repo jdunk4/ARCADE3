@@ -30,7 +30,7 @@ import * as THREE from 'three';
 import { S } from './state.js';
 import { player } from './player.js';
 import { enemies, makeEnemy } from './enemies.js';
-import { WEAPONS, ARENA } from './config.js';
+import { WEAPONS, ARENA, CHAPTERS } from './config.js';
 import { hitBurst, makePickup } from './effects.js';
 import { scene } from './scene.js';
 import { tutorialEnemyColor } from './tutorial.js';
@@ -491,17 +491,51 @@ function buildLessonList() {
     hint: 'Stay close to the truck and clear the path. Defeat the enemy blocking it from reaching the silo.',
     _blocker: null,
     _blockerSpawned: false,
+    _goalRing: null,
     onActivate() {
       this._blocker = null;
       this._blockerSpawned = false;
-      // Truck spawn → goal. Use chapter 0 tint. Path is along x axis
-      // for clarity: from (-22,0) to (+22,0).
+      // Truck path: short and clear. Halved from the earlier (-22..22)
+      // version so the lesson doesn't drag.
+      const FROM = { x: -10, z: 0 };
+      const TO   = { x:  10, z: 0 };
       try {
-        spawnEscortTruck(0, { x: -22, z: 0 }, { x: 22, z: 0 });
-        S.isEscortWave = true;     // some downstream code reads this flag
+        spawnEscortTruck(0, FROM, TO);
+        S.isEscortWave = true;
       } catch (e) { console.warn('[tutorial] escort', e); }
+      // Visible goal ring at the destination so the player has a
+      // concrete "deliver here" target. Tinted with the chapter
+      // color so it matches the rest of the tutorial palette.
+      const tint = CHAPTERS[(S.chapter || 0) % CHAPTERS.length].full.grid1;
+      const ringGeo = new THREE.RingGeometry(2.0, 2.4, 48);
+      const ringMat = new THREE.MeshBasicMaterial({
+        color: tint, transparent: true, opacity: 0.85,
+        side: THREE.DoubleSide,
+      });
+      const ring = new THREE.Mesh(ringGeo, ringMat);
+      ring.rotation.x = -Math.PI / 2;
+      ring.position.set(TO.x, 0.06, TO.z);
+      scene.add(ring);
+      this._goalRing = ring;
+      _activeProps.push(ring);
+      // Inner translucent disc so the ring reads as a "pad" not a
+      // floating outline.
+      const discGeo = new THREE.CircleGeometry(2.0, 36);
+      const discMat = new THREE.MeshBasicMaterial({
+        color: tint, transparent: true, opacity: 0.18,
+      });
+      const disc = new THREE.Mesh(discGeo, discMat);
+      disc.rotation.x = -Math.PI / 2;
+      disc.position.set(TO.x, 0.05, TO.z);
+      scene.add(disc);
+      _activeProps.push(disc);
     },
     onUpdate(dt) {
+      // Pulse the goal ring so it reads as "alive" — same blink we
+      // use on cannon corner pads.
+      if (this._goalRing && this._goalRing.material) {
+        this._goalRing.material.opacity = 0.65 + 0.30 * Math.sin(performance.now() * 0.005);
+      }
       // Once truck exists, spawn a blocker mid-path on the first frame.
       if (!this._blockerSpawned && hasTruck()) {
         this._blockerSpawned = true;
@@ -575,14 +609,17 @@ function buildLessonList() {
         if (z.disc && z.disc.parent) z.disc.parent.remove(z.disc);
       }
       this._bigZones = [];
-      // Spawn one big bright zone over the active corner.
+      // Spawn one big bright zone over the active corner. Single
+      // uniform color across all four corners — the chapter's grid
+      // tint, matching the look the user wants extended into the
+      // main game's cannon visuals too.
       const idx = this._shotIdx;
       if (idx >= 4) return;
       let pos = null;
       try { pos = getCannonCornerPos(idx); } catch (e) {}
       if (!pos) return;
-      const colors = [0xff5555, 0xffdd33, 0x55ddff, 0xdd55ff];
-      const big = _spawnTutorialZone(pos.x, pos.z, 3.0, colors[idx]);
+      const tint = CHAPTERS[(S.chapter || 0) % CHAPTERS.length].full.grid1;
+      const big = _spawnTutorialZone(pos.x, pos.z, 3.0, tint);
       this._bigZones.push(big);
     },
     onUpdate(dt) {

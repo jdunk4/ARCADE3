@@ -1451,6 +1451,35 @@ window.addEventListener('mousedown', e => {
 window.addEventListener('mouseup', e => { if (e.button === 0) mouse.down = false; });
 window.addEventListener('contextmenu', e => e.preventDefault());
 
+// Mouse-wheel weapon cycling. Each wheel "click" rotates the revolver
+// by one slot — wheel up = previous weapon, wheel down = next. The 1-6
+// hotkeys still work; this is an alternate control for players who
+// prefer revolving the inventory like a Halo-style weapon wheel.
+//
+// Trackpads emit many tiny deltaY events per swipe (each only a few
+// pixels); a naive listener would whip through every weapon in one
+// flick. We accumulate deltaY and only step when |accum| crosses a
+// threshold, which feels like one "click" per intentional gesture on
+// both mice and trackpads.
+let _wheelAccum = 0;
+const _WHEEL_STEP_THRESHOLD = 50;     // tuned for both mice & trackpads
+window.addEventListener('wheel', e => {
+  if (!S.running) return;
+  // Don't hijack scroll inside the pause menu, settings panes, etc.
+  if (S.paused) return;
+  // preventDefault so the page doesn't scroll behind the canvas.
+  e.preventDefault();
+  _wheelAccum += e.deltaY;
+  while (_wheelAccum >= _WHEEL_STEP_THRESHOLD) {
+    _wheelAccum -= _WHEEL_STEP_THRESHOLD;
+    _cycleWeapon(+1);                 // wheel down = next weapon
+  }
+  while (_wheelAccum <= -_WHEEL_STEP_THRESHOLD) {
+    _wheelAccum += _WHEEL_STEP_THRESHOLD;
+    _cycleWeapon(-1);                 // wheel up = previous weapon
+  }
+}, { passive: false });               // passive:false so preventDefault works
+
 // Mobile controls (unchanged)
 const joystick = document.getElementById('joystick');
 const knob = document.getElementById('knob');

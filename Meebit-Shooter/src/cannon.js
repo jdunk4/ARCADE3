@@ -619,15 +619,20 @@ export function updateCannon(dt) {
       }
       if (c.active) {
         c.ring.visible = true;
-        const baseOpacity = c.progress > 0 ? 0.65 : 0.45;
-        const pulseAmp = c.progress > 0 ? 0.30 : 0.20;
+        // Boosted opacity values — the corner-charge zone now reads as
+        // a vibrant pulsing ring instead of the previous subtle one.
+        // Used by both the main game's wave-2 cannon mechanic AND the
+        // tutorial's CHARGE THE CANNON lesson; keeping the look
+        // consistent across both.
+        const baseOpacity = c.progress > 0 ? 0.85 : 0.65;
+        const pulseAmp = c.progress > 0 ? 0.25 : 0.30;
         c.ringMat.opacity = baseOpacity + pulse * pulseAmp;
         // Fill — scales with charge progress
         if (c.progress > 0) {
           c.fill.visible = true;
           const s = Math.max(0.05, c.progress);
           c.fill.scale.set(s, s, s);
-          c.fillMat.opacity = 0.20 + c.progress * 0.50 + pulse * 0.10;
+          c.fillMat.opacity = 0.30 + c.progress * 0.55 + pulse * 0.10;
         } else if (c.fillMat.opacity > 0) {
           c.fillMat.opacity = Math.max(0, c.fillMat.opacity - dt * 2.0);
           if (c.fillMat.opacity <= 0) c.fill.visible = false;

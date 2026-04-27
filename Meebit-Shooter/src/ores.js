@@ -187,6 +187,19 @@ function pickupOre(ore, idx) {
   }
   Audio.pickup && Audio.pickup();
   if (UI && UI.toast) UI.toast('+1 ORE', '#ffd93d', 900);
+  // No depot? Pop the ore on pickup — used by tutorial mode and any
+  // future mode that doesn't use the deposit/MEGA-ORE system. Without
+  // this branch the ore mesh would leak in the scene forever, since
+  // _attachOreToDepot early-returns on a null depot.
+  if (!depot) {
+    const m = ore.mesh;
+    if (m) {
+      // One bigger pop effect at the pickup point, then remove.
+      hitBurst(pickupPos, RAINBOW_COLORS[0], 10);
+      if (m.parent) m.parent.remove(m);
+    }
+    return;
+  }
   // Hand the ore mesh off to the depot-orbit system.
   _attachOreToDepot(ore);
 }
