@@ -176,10 +176,14 @@ function attachGLB(gltf) {
   // (RightHandBone), and generic humanoid (RightHand / right_hand).
   const gunGeo = new THREE.BoxGeometry(0.1, 0.1, 0.4);
   const gunMat = new THREE.MeshStandardMaterial({
-    color: 0x111111, emissive: 0x4ff7ff, emissiveIntensity: 0.6,
+    // Matrix green — emissive at intensity 1.2 so the gun glows
+    // against any chapter palette and matches the rest of the
+    // matrix-green UI accents (tutorial-complete, gravestones, etc).
+    color: 0x00ff66,
+    emissive: 0x00ff66,
+    emissiveIntensity: 1.2,
   });
   const gun = new THREE.Mesh(gunGeo, gunMat);
-  gun.position.set(0, -0.05, 0.2);
   gun.castShadow = true;
   const handBone = player.bones['hand_r']
                || player.bones['RightHandBone']
@@ -187,15 +191,62 @@ function attachGLB(gltf) {
                || player.bones['right_hand'];
   if (handBone) {
     handBone.add(gun);
+    // In the Meebits/Mixamo hand bone, local axes are: +Y points
+    // down the fingers (palm-out), +Z points out the back of the
+    // hand. The gun box's local +Z is the barrel direction. Rotating
+    // the gun -90° around its local X axis re-aligns the barrel
+    // with the hand's +Y (fingertip-forward) so the gun points
+    // where the meebit is aiming.
+    gun.rotation.set(-Math.PI / 2, 0, 0);
+    // Seat the gun in the palm: small offset down the fingers (+Y
+    // in hand-local) so the grip ends up near the wrist pivot and
+    // the barrel projects forward past the fingertips. y=0.15
+    // empirically lands the box right in front of the palm.
+    gun.position.set(0, 0.15, 0);
   } else {
+    // Fallback path — no hand bone found. Position+orient relative
+    // to the meebit body root (world-aligned axes, +Z is forward).
     gun.position.set(0.4, 1.3, 0.3);
+    gun.rotation.set(0, 0, 0);
     meebit.add(gun);
   }
-  const muzzle = new THREE.PointLight(0x4ff7ff, 0, 6, 2);
+  // Muzzle light — sits at the END of the barrel (gun-local +Z is
+  // the barrel-tip direction). Gun box is 0.4 deep, half-extent 0.2,
+  // muzzle just past that.
+  const muzzle = new THREE.PointLight(0x00ff66, 0, 6, 2);
   gun.add(muzzle);
-  muzzle.position.set(0, 0, 0.3);
+  muzzle.position.set(0, 0, 0.25);
 
   scene.add(wrapper);
+
+  // PERMANENT player fill lights — addresses the "meebit looks dark
+  // / can't see full body" issue in chapters with moody lighting
+  // (CRIMSON's red ambient, INDIGO's purple, etc). Without these,
+  // the chapter ambient + hemi was dominating the meebit's albedo
+  // and parts of the body went unread.
+  //
+  // Two lights stacked on the wrapper:
+  //   1. A soft top-down PointLight from above. Range 14u,
+  //      intensity 1.4 — wide enough to cover the meebit head-to-toe
+  //      from the camera's vantage. The "light is too close" feedback
+  //      came from the tutorial light at range 7 / chest-height; this
+  //      one is positioned higher (y=4) and falls off slowly so the
+  //      ENTIRE body catches light, not just the upper torso.
+  //   2. A dimmer rim/back light slightly behind and above. Range 8,
+  //      intensity 0.7 — separates the silhouette from dark
+  //      backgrounds (purple sky in late chapters) without competing
+  //      with the chapter's directional moon light.
+  //
+  // Both are White so they don't tint the meebit toward any chapter
+  // color — the chapter-mood lighting still drives the SCENE's color,
+  // but the player itself stays clearly visible in its own albedo.
+  const playerFillTop = new THREE.PointLight(0xffffff, 1.4, 14, 1.6);
+  playerFillTop.position.set(0, 4.0, 0);     // local space — above the wrapper
+  wrapper.add(playerFillTop);
+  const playerFillRim = new THREE.PointLight(0xffffff, 0.7, 8, 1.8);
+  playerFillRim.position.set(0, 2.5, -2.0);  // local space — slightly behind
+  wrapper.add(playerFillRim);
+
   // player.obj is the WRAPPER (outer group that the game rotates).
   // player._innerMesh is the actual VRM scene — needed by tryAttachPlayerMixer
   // so the animation mixer binds to the real skeleton, not the empty wrapper.
@@ -321,7 +372,7 @@ function tryAttachPlayerMixer() {
 
 const PALETTE = {
   skin: 0xd9b08c, hat: 0x1a1a1a, shirt: 0x2c2c2c, pants: 0x1a1a24,
-  boots: 0x0a0a0a, glasses: 0xff3cac, skull: 0xffffff, gun: 0x4ff7ff,
+  boots: 0x0a0a0a, glasses: 0xff3cac, skull: 0xffffff, gun: 0x00ff66,
 };
 
 function buildVoxel(onProgress, onDone, onError) {
@@ -389,7 +440,7 @@ function buildVoxel(onProgress, onDone, onError) {
     gun.position.set(0, -0.9, 0.2); gun.castShadow = true; armR.add(gun);
     const barrelTip = new THREE.Mesh(new THREE.BoxGeometry(0.15, 0.15, 0.2), gunMat);
     barrelTip.position.set(0, 0, 0.4); gun.add(barrelTip);
-    const muzzle = new THREE.PointLight(0xffd93d, 0, 5, 2);
+    const muzzle = new THREE.PointLight(0x00ff66, 0, 5, 2);
     muzzle.position.set(0, 0, 0.6); gun.add(muzzle);
 
     // Legs
@@ -416,6 +467,16 @@ function buildVoxel(onProgress, onDone, onError) {
 
     root.scale.setScalar(0.55 * (PLAYER.scale / 1.8));
     scene.add(root);
+
+    // Permanent fill lights — same as the GLB path, mirrored here so
+    // the legacy/voxel mode also gets clear visibility in moody chapter
+    // lighting. See the GLB-path version for the rationale.
+    const playerFillTop = new THREE.PointLight(0xffffff, 1.4, 14, 1.6);
+    playerFillTop.position.set(0, 4.0, 0);
+    root.add(playerFillTop);
+    const playerFillRim = new THREE.PointLight(0xffffff, 0.7, 8, 1.8);
+    playerFillRim.position.set(0, 2.5, -2.0);
+    root.add(playerFillRim);
 
     player.obj = root;
     player.head = head; player.body = body;
