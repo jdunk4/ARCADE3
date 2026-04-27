@@ -189,7 +189,9 @@ export function startWave(waveNum) {
     prepareChapter(S.chapter);
   }
 
-  // Bonus wave is a victory lap — no orbs, no hazards, minimal rain.
+  // Bonus wave is a victory lap — no orbs, no hazards. Rain is NOT
+  // suppressed here anymore; the wave-4 rain preset is now part of
+  // the climbing typhoon curve (see rainIntensity in config.js).
   const _isBonusWave = waveDef.type === 'bonus';
   if (!_isBonusWave) {
     spawnOrbs(S.chapter, S.localWave);

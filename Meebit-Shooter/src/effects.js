@@ -299,11 +299,13 @@ const RAIN_MAT = new THREE.MeshBasicMaterial({
   color: 0xaaccff, transparent: true, opacity: 0.25,
 });
 
-// Maximum drop count across all intensities (wave 5 typhoon = 1800).
-// We allocate this pool ONCE up front and toggle per-drop .visible per wave,
-// which eliminates the multi-hundred-mesh rebuild that was causing the
-// wave-6 (chapter transition) freeze.
-const RAIN_POOL_MAX = 1800;
+// Maximum drop count across all intensities. Bumped to 3500 to match
+// the amplified rain curve (wave 5 cataclysm = 3500 drops). The pool
+// is allocated once at game start; per-drop .visible flags toggle
+// off-pool drops, so the cost of the larger pool is just initial
+// memory (a few extra MB for the meshes — negligible on any device
+// that can render the game) and a one-time build pass.
+const RAIN_POOL_MAX = 4500;
 let rainPoolBuilt = false;
 
 function buildRainPool(tintHex, cfg) {
@@ -379,7 +381,9 @@ export function applyRainTo(chapterTintHex, localWave) {
     ensureLightningLight();
     if (lightningLight) lightningLight.color.setHex(lightningTintHex);
     ensureCssFlash();
-    nextLightningIn = 2 + Math.random() * 4;
+    // First strike comes within 0.5–2s of storm activation (was 2–6s)
+    // so the player immediately registers that a storm is here.
+    nextLightningIn = 0.5 + Math.random() * 1.5;
   } else {
     lightningFlashT = 0;
     if (lightningLight) lightningLight.intensity = 0;
@@ -423,17 +427,29 @@ export function updateRain(dt, playerPos) {
     if (drop.position.x < -r) drop.position.x += r * 2;
   }
 
-  // Lightning (waves 4 and 5)
+  // Lightning (active on every storm wave per amplified curve).
+  // MORE LIGHTNING per user direction. Typhoon storms now strike
+  // every 0.4-1.5s (was 0.8-2.5s) and have an 80% chance of a
+  // double-strike second bolt + 25% chance of a triple-strike third.
+  // Result: during a wave-5 boss fight the screen is almost
+  // continuously lit. Non-typhoon storms stay at the 2.0-4.0s
+  // cadence — only triggered if some future curve sets typhoon=false.
   if (cfg.lightning) {
     nextLightningIn -= dt;
     if (nextLightningIn <= 0) {
       lightningFlashT = 1.0;
       nextLightningIn = cfg.typhoon
-        ? 1.5 + Math.random() * 2.5
-        : 4 + Math.random() * 6;
-      // Typhoon double-strike
-      if (cfg.typhoon && Math.random() < 0.4) {
+        ? 0.4 + Math.random() * 1.1   // 0.4–1.5s
+        : 2.0 + Math.random() * 2.0;  // 2.0–4.0s
+      // Typhoon double-strike — second bolt 90ms after the first.
+      // Bumped from 60% → 80% so most strikes are forked.
+      if (cfg.typhoon && Math.random() < 0.80) {
         setTimeout(() => { lightningFlashT = Math.max(lightningFlashT, 0.9); }, 90);
+        // Triple-strike — 25% chance of a third bolt 200ms after
+        // the first. Reads as a very violent rolling thunder cluster.
+        if (Math.random() < 0.25) {
+          setTimeout(() => { lightningFlashT = Math.max(lightningFlashT, 0.85); }, 200);
+        }
       }
       // Thunder SFX hook — audio module can subscribe via window.__onLightning
       if (typeof window !== 'undefined' && window.__onLightning) {
@@ -442,8 +458,11 @@ export function updateRain(dt, playerPos) {
     }
     if (lightningFlashT > 0) {
       lightningFlashT = Math.max(0, lightningFlashT - dt * 4.5);
-      if (lightningLight) lightningLight.intensity = lightningFlashT * 2.0;
-      if (cssFlashEl) cssFlashEl.style.opacity = String(lightningFlashT * 0.55);
+      // Brighter flash — intensity multiplier 3.0 (was 2.0) and CSS
+      // overlay opacity 0.75 (was 0.55) so each strike is unmissable
+      // even in the chaos of late-wave combat.
+      if (lightningLight) lightningLight.intensity = lightningFlashT * 3.0;
+      if (cssFlashEl) cssFlashEl.style.opacity = String(lightningFlashT * 0.75);
     }
   }
 }

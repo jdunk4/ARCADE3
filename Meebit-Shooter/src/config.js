@@ -875,22 +875,44 @@ export const RAIN_CONFIG = {
  * Per-wave rain intensity curve. Color comes from the chapter theme — these
  * values control only intensity knobs (drop count, speed, opacity, wind,
  * lightning, typhoon).
- *   wave 1 MINING  : drizzle (atmospheric)
- *   wave 2 POWERUP : steady rain
- *   wave 3 HIVE    : downpour
- *   wave 4 BONUS   : storm has cleared — victory-lap drizzle
- *   wave 5 BOSS    : TYPHOON
+ *
+ * NEW AMPLIFIED CURVE (per user direction "MAKE IT RAIN"):
+ *   - Wave 1 OPENS at the previous wave-5 typhoon levels. Game starts
+ *     already in a storm, no drizzle introduction.
+ *   - Every subsequent wave ESCALATES — drop count, wind, fog all
+ *     keep climbing right up to wave 5.
+ *   - Wave 4 used to be a deliberate calm beat ("victory lap" before
+ *     boss). User explicitly cancelled that — wave 4 is now wet too,
+ *     in line with the climb.
+ *   - Wave 5 hits the new pool cap (4500 drops) with maxed wind and
+ *     opacity. Lightning cadence is bumped in effects.js to fire
+ *     more often on every typhoon wave.
+ *
+ *   wave 1 MINING  : 3500 drops · wind 1.80 — was the old wave-5 peak
+ *   wave 2 POWERUP : 3800 drops · wind 2.10
+ *   wave 3 HIVE    : 4100 drops · wind 2.40
+ *   wave 4 BONUS   : 4300 drops · wind 2.70 — IT RAINS
+ *   wave 5 BOSS    : 4500 drops · wind 3.00 — APOCALYPSE
  */
 export function rainIntensity(localWave) {
   const w = Math.max(1, Math.min(5, localWave || 1));
   const presets = {
-    1: { dropCount: 80,   speedY: -14, speedX: 4,   opacity: 0.25, wind: 0.05, lightning: false, typhoon: false, fogBoost: 0.00 },
-    2: { dropCount: 260,  speedY: -20, speedX: 8,   opacity: 0.40, wind: 0.15, lightning: false, typhoon: false, fogBoost: 0.10 },
-    3: { dropCount: 600,  speedY: -32, speedX: 14,  opacity: 0.55, wind: 0.30, lightning: false, typhoon: false, fogBoost: 0.25 },
-    // Bonus wave: storm clears for the victory lap. Minimal drizzle.
-    4: { dropCount: 40,   speedY: -10, speedX: 2,   opacity: 0.15, wind: 0.02, lightning: false, typhoon: false, fogBoost: 0.00 },
-    // Boss wave: full typhoon returns.
-    5: { dropCount: 1800, speedY: -56, speedX: 36,  opacity: 0.80, wind: 1.00, lightning: true,  typhoon: true,  fogBoost: 0.70 },
+    // Wave 1: opens at the previous wave-5 typhoon. The game starts
+    // already mid-storm — no easing in.
+    1: { dropCount: 3500, speedY: -76, speedX: 56, opacity: 0.95, wind: 1.80, lightning: true, typhoon: true, fogBoost: 0.95 },
+    // Wave 2: escalated wind + drops past the old peak.
+    2: { dropCount: 3800, speedY: -82, speedX: 64, opacity: 0.95, wind: 2.10, lightning: true, typhoon: true, fogBoost: 0.95 },
+    // Wave 3: harder still — wind picks up more than drops here so
+    // the storm reads as VIOLENT, not just "more pixels".
+    3: { dropCount: 4100, speedY: -88, speedX: 72, opacity: 0.95, wind: 2.40, lightning: true, typhoon: true, fogBoost: 0.95 },
+    // Wave 4: previously a calm victory lap. Now: the storm KEEPS
+    // building. User direction: "MAKE IT RAIN in wave 4." So we do.
+    // Wind 2.70 reads as near-hurricane drift — drops streak almost
+    // horizontally across the screen.
+    4: { dropCount: 4300, speedY: -94, speedX: 80, opacity: 0.95, wind: 2.70, lightning: true, typhoon: true, fogBoost: 0.95 },
+    // Wave 5: APOCALYPSE. Hits the pool cap (4500). Lightning cadence
+    // bump in effects.js makes strikes feel constant during the boss.
+    5: { dropCount: 4500, speedY: -100, speedX: 88, opacity: 0.95, wind: 3.00, lightning: true, typhoon: true, fogBoost: 0.95 },
   };
   return presets[w];
 }
