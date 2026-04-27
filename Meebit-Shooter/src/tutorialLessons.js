@@ -850,73 +850,93 @@ function buildLessonList() {
     isComplete: () => (_potionsConsumed - _potionsConsumedAtActivate) >= 1,
   });
 
-  // ----- 13. OVERDRIVE — 25-streak chains trigger overdrive -----
-  // Wave-6 finale. We spawn an enemy stream that PROGRESSIVELY
-  // ramps up — early-streak the player gets a few targets at a
-  // calm pace; late-streak the arena fills with enemies so chaining
-  // 25 in a row is achievable. The cap on simultaneous alive
-  // tutorial-spawned enemies grows with progress, and the spawn
-  // timer between drops shrinks. Without the ramp the player
-  // could chain through their starting batch and then have no
-  // targets left while waiting for the slow spawn cadence to
-  // refill — making 25 unreachable. Difficulty curve below is
-  // tuned by streak count, not by elapsed time, so a fast player
-  // gets harder waves faster than a methodical one.
+  // ----- 13. OVERDRIVE — 25-streak triggers overdrive (HORDE MODE) -----
+  // Wave-6 finale. Floods the arena with enemies so the player can
+  // realistically chain 25 kills. Earlier versions trickled one enemy
+  // at a time and felt empty; this version spawns enemies in BATCHES
+  // and ramps the batch size + max-alive cap aggressively. The intent
+  // matches the user's direction: "BRING IT ON. Forget the slow
+  // trickle." By streak 10 the screen should already feel busy; by
+  // streak 25 it's a swarm.
+  //
+  // Batch spawn pattern: each spawn tick drops `batchSize` enemies in
+  // a fan around the player, distributed across a 360° spread so they
+  // don't all funnel from one direction. Distance jittered 12–18u
+  // (always within the player's screen, never offscreen).
   list.push({
     id: 'overdrive',
     label: 'OVERDRIVE · 25 KILL STREAK',
-    hint: 'Chain 25 kills WITHOUT letting your streak break. Enemies will keep spawning, ramping up as you chain. Hit 25 → OVERDRIVE.',
+    hint: 'CHAIN 25 KILLS without breaking your streak. The hordes are coming. Hit 25 → OVERDRIVE.',
     _streakAtActivate: 0,
     _spawnTimer: 0,
     onActivate() {
       // Snapshot streak so existing kills don't pre-fill progress.
-      // (The kill lesson and other earlier lessons may have left a
-      // small streak in flight.)
       this._streakAtActivate = S.killstreak || 0;
       this._spawnTimer = 0;
+      // Seed the arena IMMEDIATELY with a starter batch — no awkward
+      // "where are the enemies?" pause after the lesson activates.
+      const seedCount = 6;
+      for (let i = 0; i < seedCount; i++) {
+        const ang = (i / seedCount) * Math.PI * 2 + Math.random() * 0.4;
+        const dist = 13 + Math.random() * 5;
+        _spawnTutorialEnemy(ang, dist);
+      }
     },
     onUpdate(dt) {
       // Streak progress 0..25.
       const progress = Math.max(0, (S.killstreak || 0) - this._streakAtActivate);
-      // Difficulty ramp — interpolated by progress.
-      //   progress  0 → maxAlive 2,  spawnInterval 1.4s
-      //   progress  5 → maxAlive 4,  spawnInterval 1.0s
-      //   progress 10 → maxAlive 6,  spawnInterval 0.7s
-      //   progress 15 → maxAlive 9,  spawnInterval 0.5s
-      //   progress 20 → maxAlive 12, spawnInterval 0.4s
-      //   progress 25 → maxAlive 14, spawnInterval 0.35s
+      // HORDE ramp — wide-open caps and short intervals from the
+      // start, climbing into chaos by 25.
+      //
+      //   progress  0 → maxAlive  8, batch 2, interval 0.50s
+      //   progress  5 → maxAlive 14, batch 3, interval 0.35s
+      //   progress 10 → maxAlive 20, batch 4, interval 0.22s
+      //   progress 15 → maxAlive 25, batch 5, interval 0.15s
+      //   progress 20 → maxAlive 28, batch 6, interval 0.12s
+      //   progress 25 → maxAlive 30, batch 6, interval 0.10s
+      //
       // Linear lerp between the two anchor points the progress sits
-      // between. Caps at the last anchor so post-25 (rare — overdrive
-      // should fire on 25) doesn't keep climbing forever.
+      // between. batchSize is rounded UP so a partial-progress bump
+      // promotes early. maxAlive caps the on-screen total so the
+      // browser doesn't choke even at peak swarm.
       const ramp = [
-        { p:  0, max:  2, interval: 1.40 },
-        { p:  5, max:  4, interval: 1.00 },
-        { p: 10, max:  6, interval: 0.70 },
-        { p: 15, max:  9, interval: 0.50 },
-        { p: 20, max: 12, interval: 0.40 },
-        { p: 25, max: 14, interval: 0.35 },
+        { p:  0, max:  8, batch: 2, interval: 0.50 },
+        { p:  5, max: 14, batch: 3, interval: 0.35 },
+        { p: 10, max: 20, batch: 4, interval: 0.22 },
+        { p: 15, max: 25, batch: 5, interval: 0.15 },
+        { p: 20, max: 28, batch: 6, interval: 0.12 },
+        { p: 25, max: 30, batch: 6, interval: 0.10 },
       ];
       let maxAlive = ramp[ramp.length - 1].max;
+      let batchSize = ramp[ramp.length - 1].batch;
       let spawnInterval = ramp[ramp.length - 1].interval;
       for (let i = 0; i < ramp.length - 1; i++) {
         const a = ramp[i], b = ramp[i + 1];
         if (progress >= a.p && progress < b.p) {
           const t = (progress - a.p) / (b.p - a.p);
           maxAlive = a.max + (b.max - a.max) * t;
+          batchSize = a.batch + (b.batch - a.batch) * t;
           spawnInterval = a.interval + (b.interval - a.interval) * t;
           break;
         }
       }
       maxAlive = Math.floor(maxAlive);
+      batchSize = Math.ceil(batchSize);
 
       this._spawnTimer -= dt;
-      if (this._spawnTimer <= 0 && _alivePlayerSpawnedEnemies() < maxAlive) {
+      if (this._spawnTimer <= 0) {
         this._spawnTimer = spawnInterval;
-        // Spawn around the player at varying angles + distance so
-        // the action is always reachable.
-        const ang = Math.random() * Math.PI * 2;
-        const dist = 14 + Math.random() * 4;
-        _spawnTutorialEnemy(ang, dist);
+        // Spawn the batch as a fan around the player. Don't blow past
+        // maxAlive — clip the batch to the remaining headroom.
+        const alive = _alivePlayerSpawnedEnemies();
+        const room = Math.max(0, maxAlive - alive);
+        const drop = Math.min(batchSize, room);
+        const spreadStart = Math.random() * Math.PI * 2;   // randomize fan rotation each tick
+        for (let i = 0; i < drop; i++) {
+          const ang = spreadStart + (i / Math.max(1, drop)) * Math.PI * 2 + (Math.random() - 0.5) * 0.3;
+          const dist = 12 + Math.random() * 6;
+          _spawnTutorialEnemy(ang, dist);
+        }
       }
       // Arrow → nearest enemy so the player can find prey fast.
       let nearest = null, bestD2 = Infinity;

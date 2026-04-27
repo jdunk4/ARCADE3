@@ -1223,14 +1223,17 @@ function _makeReticleCursor(svgInner) {
   // matrix green (#00ff66) so it reads as "targeting mode" regardless
   // of which chapter palette is active.
   //
-  // Note: this CSS-cursor variant is now used only as a fallback on
-  // platforms where the DOM-rendered reticle fails to attach. Most
-  // browsers cap CSS cursors at 32×32 (Windows in particular silently
-  // falls back to the system cursor for anything larger), which is
-  // why we render the on-screen reticle as a fixed-position DOM
-  // element instead — see _ensureCursorEl() / _updateCursorEl().
-  const svg = `<svg xmlns='http://www.w3.org/2000/svg' width='40' height='40' viewBox='0 0 40 40'><defs><filter id='g' x='-50%25' y='-50%25' width='200%25' height='200%25'><feGaussianBlur stdDeviation='2'/></filter></defs><g filter='url(%23g)' opacity='0.9'>${svgInner}</g>${svgInner}</svg>`;
-  return `url("data:image/svg+xml;utf8,${svg}") 20 20, crosshair`;
+  // Sizing: rendered at 128×128 with the SVG's viewBox kept at 40×40,
+  // so the inner shape coordinates and stroke widths scale up
+  // proportionally. 128 is the documented Firefox cap for CSS cursors
+  // and the largest size that renders reliably across modern browsers
+  // (Windows in particular silently downscales beyond 128). Hotspot
+  // moves from (20,20) to (64,64) — the new center of the 128px image.
+  // This approach keeps the cursor experience identical to the
+  // pre-DOM-element shipping behavior the player is used to, just
+  // bigger.
+  const svg = `<svg xmlns='http://www.w3.org/2000/svg' width='128' height='128' viewBox='0 0 40 40'><defs><filter id='g' x='-50%25' y='-50%25' width='200%25' height='200%25'><feGaussianBlur stdDeviation='2'/></filter></defs><g filter='url(%23g)' opacity='0.9'>${svgInner}</g>${svgInner}</svg>`;
+  return `url("data:image/svg+xml;utf8,${svg}") 64 64, crosshair`;
 }
 
 // Build all reticles once. The SVG strings reference matrix green as the
@@ -1353,146 +1356,22 @@ function _reticleFor(weapon) {
 }
 
 // ===========================================================================
-// DOM-RENDERED RETICLE
+// WEAPON CURSOR SYNC
 // ===========================================================================
-// CSS cursor images are capped at ~32×32 by browsers (Windows in particular
-// silently falls back to the system cursor for anything bigger), which makes
-// the chunky 4× reticle the player wants impossible to deliver via the CSS
-// `cursor: url(...)` mechanism. Workaround: render the reticle as a
-// fixed-position DOM element that follows the mouse, and hide the native
-// cursor over the game canvas. This gives us full size control with no
-// browser cap.
+// Each weapon has a dedicated reticle (built above as _pistolReticle,
+// _shotgunReticle, etc.). _syncWeaponCursor() picks the right one for
+// S.currentWeapon and writes it to the --matrix-cursor CSS variable,
+// which the styles.css rules on body / #game / canvas pick up
+// automatically. One write updates every aiming surface at once.
 //
-// The element is lazy-built on first use, then reused across weapon swaps —
-// _syncWeaponCursor() updates its inner SVG when S.currentWeapon changes
-// instead of swapping a CSS variable. The mousemove listener positions the
-// element in window-pixel coords on every frame.
-//
-// We KEEP the CSS cursor variant (_makeReticleCursor + the --matrix-cursor
-// CSS variable) as a fallback for the brief instant before this DOM
-// element is built and for any platform where the inline element fails to
-// attach. On the typical fast-path it's invisible because we set
-// `cursor: none` on #game and its descendants.
-
-// Render a reticle SVG at a target on-screen size. The SVG's viewBox stays
-// 40×40 (the original coordinate space all the inner shapes were authored
-// against), so we just bump width/height to scale everything proportionally.
-// 160 was chosen because it's exactly 4× the original 40 — the size the
-// user asked for.
-const _RETICLE_DOM_SIZE = 160;
-function _makeReticleDomSvg(svgInner) {
-  // Same green-glow halo treatment as _makeReticleCursor, but we DON'T
-  // need to URI-encode (this string is set via innerHTML, not a CSS data
-  // URL). We can also use real # and % characters here.
-  const decoded = svgInner
-    .replace(/%2300ff66/g, '#00ff66')
-    .replace(/%23003d18/g, '#003d18');
-  return `<svg xmlns='http://www.w3.org/2000/svg' width='${_RETICLE_DOM_SIZE}' height='${_RETICLE_DOM_SIZE}' viewBox='0 0 40 40'>` +
-    `<defs><filter id='g' x='-50%' y='-50%' width='200%' height='200%'><feGaussianBlur stdDeviation='2'/></filter></defs>` +
-    `<g filter='url(#g)' opacity='0.9'>${decoded}</g>${decoded}` +
-    `</svg>`;
-}
-
-let _cursorEl = null;          // the fixed-position div following the mouse
-let _cursorElWeapon = null;    // last weapon whose SVG we rendered into it
-let _cursorVisible = false;    // cached so we don't flip CSS every move
-
-function _ensureCursorEl() {
-  if (_cursorEl) return _cursorEl;
-  const el = document.createElement('div');
-  el.id = 'reticle-cursor';
-  // pointer-events: none so clicks fall through to whatever's behind it
-  // (canvas, buttons, etc.). z-index high enough to sit above the HUD
-  // overlays the player normally aims through, but below modal pause /
-  // gameover screens which use higher z-indexes (≥ 100 in styles.css).
-  el.style.cssText = [
-    'position: fixed',
-    'top: 0', 'left: 0',
-    'width: ' + _RETICLE_DOM_SIZE + 'px',
-    'height: ' + _RETICLE_DOM_SIZE + 'px',
-    // We translate by -50% on each axis so the SVG center aligns with
-    // the recorded mouse position — same as the (20,20) hotspot the
-    // CSS-cursor variant uses. transform() is set to the literal value
-    // here because the per-frame mousemove handler appends a translate().
-    'transform: translate(-9999px, -9999px)',
-    'pointer-events: none',
-    'z-index: 60',
-    'will-change: transform',
-    // Crisp pixel rendering — the SVG has its own anti-aliased strokes;
-    // we don't want the browser adding a smoothing pass on top.
-    'image-rendering: auto',
-  ].join(';');
-  document.body.appendChild(el);
-  _cursorEl = el;
-  return el;
-}
-
-function _updateCursorElPos(clientX, clientY) {
-  const el = _ensureCursorEl();
-  // translate3d so the browser keeps it on the GPU compositor layer —
-  // smoother than left/top updates which trigger layout.
-  // Center the element on the mouse point: shift by half the size.
-  const x = clientX - _RETICLE_DOM_SIZE / 2;
-  const y = clientY - _RETICLE_DOM_SIZE / 2;
-  el.style.transform = `translate3d(${x}px, ${y}px, 0)`;
-}
-
-function _setCursorElVisible(visible) {
-  if (_cursorVisible === visible) return;
-  _cursorVisible = visible;
-  const el = _ensureCursorEl();
-  el.style.display = visible ? '' : 'none';
-}
-
-// Inject a rule that hides the native cursor over the game surface so
-// the DOM reticle is the only thing the player sees. We do this from JS
-// rather than editing styles.css so it lands as a single self-contained
-// addition. The rule overrides the var(--matrix-cursor) declarations in
-// styles.css for #game and canvas; non-game UI surfaces (title, pause,
-// HUD chrome) keep the matrix pointer cursor.
-(function _installReticleCss() {
-  if (document.getElementById('reticle-cursor-css')) return;
-  const s = document.createElement('style');
-  s.id = 'reticle-cursor-css';
-  s.textContent = [
-    '#game, #game *, canvas { cursor: none !important; }',
-    '#reticle-cursor { display: none; }',
-  ].join('\n');
-  document.head.appendChild(s);
-})();
-
-// Map weapon → raw inner SVG fragment (the same _STROKE/etc.-flavored
-// strings used by _reticleFor for the CSS-cursor fallback). We split
-// this out so _syncWeaponCursor can render BOTH the DOM reticle and the
-// CSS-variable fallback from one source of truth.
-function _reticleSvgInnerFor(weapon) {
-  switch (weapon) {
-    case 'shotgun':      return _shotgunReticle;
-    case 'smg':          return _smgReticle;
-    case 'rocket':       return _rocketReticle;
-    case 'raygun':       return _raygunReticle;
-    case 'flamethrower': return _flameReticle;
-    case 'pickaxe':      return _pickaxeReticle;
-    case 'lifedrainer':  return _lifedrainerReticle;
-    case 'pistol':
-    default:             return _pistolReticle;
-  }
-}
+// Called after every action that can change the active weapon: the 1-6
+// hotkeys, mouse-wheel cycle, gamepad cycle, weapon-pickup swap, and
+// the chapter-7 lifedrainer takeover. Also called once at module load
+// so the initial cursor matches the starting weapon (pistol).
 
 function _syncWeaponCursor() {
-  const w = S.currentWeapon;
-  // 1. Update CSS fallback variable so any surface still using
-  //    var(--matrix-cursor) gets the weapon-tinted reticle (e.g.
-  //    if the DOM cursor element fails to attach for any reason).
-  document.documentElement.style.setProperty('--matrix-cursor', _reticleFor(w));
-  // 2. Update the DOM reticle's inner SVG. Only re-render if the
-  //    weapon actually changed since the last sync — innerHTML
-  //    writes trigger a parse/layout, so we skip when redundant.
-  if (_cursorElWeapon !== w) {
-    _cursorElWeapon = w;
-    const el = _ensureCursorEl();
-    el.innerHTML = _makeReticleDomSvg(_reticleSvgInnerFor(w));
-  }
+  const cursor = _reticleFor(S.currentWeapon);
+  document.documentElement.style.setProperty('--matrix-cursor', cursor);
 }
 
 // Initial call so the cursor matches the starting weapon (pistol).
@@ -1588,18 +1467,6 @@ window.addEventListener('mousemove', e => {
   const hit = new THREE.Vector3();
   raycaster.ray.intersectPlane(aimPlane, hit);
   if (hit) { mouse.worldX = hit.x; mouse.worldZ = hit.z; }
-  // Drive the DOM reticle. Show it once the player moves into the game
-  // window; hide it again if the mouse leaves the viewport (mouseout
-  // handler below).
-  _updateCursorElPos(e.clientX, e.clientY);
-  _setCursorElVisible(true);
-});
-// Hide the reticle when the mouse exits the viewport — the player has
-// alt-tabbed or moved to a different window. Re-shown on mousemove.
-window.addEventListener('mouseout', e => {
-  // mouseout fires for many child-element transitions too. Only act on
-  // the case where the mouse actually leaves the document.
-  if (!e.relatedTarget && !e.toElement) _setCursorElVisible(false);
 });
 window.addEventListener('mousedown', e => {
   if (e.button === 0) { mouse.down = true; Audio.resume(); }

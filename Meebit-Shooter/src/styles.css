@@ -338,15 +338,58 @@ canvas { display: block; cursor: var(--matrix-cursor); }
  * mode tiles). On narrow viewports the cards stack vertically and
  * shrink — keeps the screen usable on phones.
  */
-#mode-picker {
+/* ============================================================
+   TITLE ROW — three columns: tutorial card | title text | game card
+   ============================================================
+   The title screen uses a horizontal layout with the game-mode
+   cards flanking the central title block. The cards take their
+   normal portrait dimensions (420×560 desktop) and the center
+   column carries the H1, H2, intro paragraph, and save panel.
+   On narrow viewports the row wraps: cards drop below the text. */
+#title-row {
   display: flex;
   flex-direction: row;
-  gap: 18px;
-  margin-top: 10px;
-  margin-bottom: 12px;
+  align-items: center;
   justify-content: center;
+  gap: 36px;
+  width: 100%;
+  max-width: 1500px;
+  margin-top: 10px;
   flex-wrap: wrap;
 }
+#title-center {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  /* Hard-cap the center column so the title text stays readable
+     and doesn't push the cards too far to the edges. */
+  flex: 0 1 540px;
+  min-width: 360px;
+}
+/* Override the global .overlay rules just for the center column —
+   smaller H1, narrower paragraph, no extra bottom margin on the
+   save panel. The defaults outside the title row stay untouched. */
+#title-center h1 {
+  font-size: 72px;
+  margin-bottom: 12px;
+  line-height: 0.95;
+}
+#title-center h2 {
+  font-size: 16px;
+  letter-spacing: 4px;
+  margin-bottom: 18px;
+}
+#title-center p {
+  font-size: 12px;
+  letter-spacing: 1.5px;
+  line-height: 1.8;
+  max-width: 520px;
+  margin-bottom: 18px;
+}
+#title-center #title-save-panel {
+  margin: 0;
+}
+
 .mode-card {
   position: relative;
   width: 420px;
@@ -357,6 +400,10 @@ canvas { display: block; cursor: var(--matrix-cursor); }
   overflow: hidden;
   transition: transform 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease, filter 0.2s ease;
   filter: saturate(0.4) brightness(0.7);
+  /* Cards are flex children of #title-row but should not stretch —
+     keep them at their fixed dimensions even when the row has
+     extra space. */
+  flex: 0 0 auto;
 }
 .mode-card-img {
   position: absolute;
@@ -395,7 +442,7 @@ canvas { display: block; cursor: var(--matrix-cursor); }
   font-size: 13px;
   letter-spacing: 5px;
   color: #888;
-  margin-top: 10px;
+  margin-top: 16px;
 }
 #mode-picker-desc {
   text-align: center;
@@ -407,18 +454,28 @@ canvas { display: block; cursor: var(--matrix-cursor); }
   min-height: 20px;
 }
 
-/* Step the cards down on shorter / narrower screens.
-   - <= 1100px viewport: shrink toward original size so two cards fit
-   - <= 700px: stack vertically and shrink further
-   The Fortnite-style design works best when both cards are visible
-   side-by-side, so we keep them horizontal as long as possible. */
-@media (max-width: 1100px) {
-  .mode-card { width: 320px; height: 420px; }
-  .mode-card-label { font-size: 28px; letter-spacing: 4px; }
+/* Responsive scaling for the title row.
+   At narrower viewports the cards shrink and eventually wrap below
+   the center text so the title remains the focal point. */
+@media (max-width: 1400px) {
+  #title-row { gap: 24px; }
+  .mode-card { width: 340px; height: 460px; }
+  .mode-card-label { font-size: 30px; letter-spacing: 4px; }
+  #title-center h1 { font-size: 60px; }
 }
-@media (max-width: 700px) {
-  .mode-card { width: 220px; height: 300px; }
-  .mode-card-label { font-size: 20px; letter-spacing: 3px; bottom: 12px; }
+@media (max-width: 1100px) {
+  .mode-card { width: 280px; height: 380px; }
+  .mode-card-label { font-size: 24px; letter-spacing: 3px; }
+  #title-center h1 { font-size: 52px; }
+  #title-center { flex-basis: 420px; min-width: 320px; }
+}
+@media (max-width: 900px) {
+  /* Wrap: cards stack vertically below the text. */
+  #title-row { flex-direction: column; }
+  .mode-card { width: 240px; height: 320px; }
+  .mode-card-label { font-size: 22px; letter-spacing: 3px; bottom: 12px; }
+  #title-center h1 { font-size: 44px; letter-spacing: 4px; }
+  #title-center { flex-basis: auto; min-width: 0; max-width: 90vw; }
 }
 
 /* ====== WALLET BUTTON ====== */
