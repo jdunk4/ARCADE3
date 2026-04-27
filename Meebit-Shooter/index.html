@@ -36,39 +36,42 @@
 <!-- TITLE -->
 <div id="title" class="overlay hidden">
   <div class="matrix-bg" id="matrix-bg-title"></div>
-  <h1>EXTINGUISH<br>THE VIRUS</h1>
-  <h2>:: OTHERSIDE DEPLOYMENT ::</h2>
-  <p>
-    THE GRID IS BREACHED. THE ZOMEEBS APPROACH.<br>
-    <b>MOVE</b> WASD <span class="mobile-only">/ JOYSTICK</span> &nbsp;|&nbsp; <b>AIM</b> MOUSE <span class="mobile-only">/ AUTO</span><br>
-    <b>FIRE</b> HOLD LMB &nbsp;|&nbsp; <b>Q</b> TOGGLE PICKAXE &nbsp;|&nbsp; <b>SPACE</b> DASH<br>
-    FREE CAGED MEEBITS · MINE FALLING BLOCKS · SURVIVE EACH CHAPTER
-  </p>
 
-  <!-- Saved progress -->
-  <div id="title-save-panel">
-    <div class="save-row"><span>HIGH SCORE</span><b id="title-highscore">0</b></div>
-    <div class="save-row"><span>FURTHEST</span><b id="title-highchap">1 · Wave 1</b></div>
-    <div class="save-row"><span>MEEBITS FREED</span><b id="title-collection">0 / 20000</b></div>
-  </div>
-
-  <!-- GAME-MODE SELECTOR (two-card picker, Fortnite-style)
-       Each card is hover/click-selectable. Selecting a card toggles a
-       full-color highlight + reveals a label + description below the
-       row. Click triggers the underlying #start-btn or #tutorial-btn,
-       which carry the actual start logic in main.js. The buttons
-       themselves are hidden but kept in the DOM so all existing
-       event listeners and code paths still work. -->
-  <div id="mode-picker">
+  <!-- THREE-COLUMN ROW: tutorial card on the left, the title block
+       in the middle (title text + intro + save panel), ATTACK THE AI
+       on the right. This matches the Fortnite-style mode-select
+       layout the user requested where the chosen mode card flanks
+       the central artwork on either side. -->
+  <div id="title-row">
     <div class="mode-card" id="mode-card-tutorial" data-target="tutorial-btn">
       <div class="mode-card-img" style="background-image:url('assets/title_card_tutorial.png');"></div>
       <div class="mode-card-label">TUTORIAL</div>
     </div>
+
+    <div id="title-center">
+      <h1>EXTINGUISH<br>THE VIRUS</h1>
+      <h2>:: OTHERSIDE DEPLOYMENT ::</h2>
+      <p>
+        THE GRID IS BREACHED. THE ZOMEEBS APPROACH.<br>
+        <b>MOVE</b> WASD <span class="mobile-only">/ JOYSTICK</span> &nbsp;|&nbsp; <b>AIM</b> MOUSE <span class="mobile-only">/ AUTO</span><br>
+        <b>FIRE</b> HOLD LMB &nbsp;|&nbsp; <b>Q</b> TOGGLE PICKAXE &nbsp;|&nbsp; <b>SPACE</b> DASH<br>
+        FREE CAGED MEEBITS · MINE FALLING BLOCKS · SURVIVE EACH CHAPTER
+      </p>
+
+      <!-- Saved progress -->
+      <div id="title-save-panel">
+        <div class="save-row"><span>HIGH SCORE</span><b id="title-highscore">0</b></div>
+        <div class="save-row"><span>FURTHEST</span><b id="title-highchap">1 · Wave 1</b></div>
+        <div class="save-row"><span>MEEBITS FREED</span><b id="title-collection">0 / 20000</b></div>
+      </div>
+    </div>
+
     <div class="mode-card" id="mode-card-game" data-target="start-btn">
       <div class="mode-card-img" style="background-image:url('assets/title_card_game.png');"></div>
       <div class="mode-card-label">ATTACK THE AI</div>
     </div>
   </div>
+
   <div id="mode-picker-hint">SELECT A GAME MODE</div>
   <div id="mode-picker-desc"></div>
 
@@ -85,7 +88,7 @@
   // Selection model: at most one card is .selected at a time. The
   // description panel below shows that card's text.
   (function () {
-    const cards = document.querySelectorAll('#mode-picker .mode-card');
+    const cards = document.querySelectorAll('#title-row .mode-card');
     const desc = document.getElementById('mode-picker-desc');
     const DESCRIPTIONS = {
       'tutorial-btn': 'TUTORIAL · LEARN THE GRID. NO DEATH. NO PRESSURE.',
@@ -108,7 +111,7 @@
       });
     });
     // Default selection: ATTACK THE AI (the production game) is the
-    // featured center card, mirroring Fortnite's BATTLE ROYALE focus.
+    // featured card, mirroring Fortnite's BATTLE ROYALE focus.
     const def = document.getElementById('mode-card-game');
     if (def) select(def);
   })();
