@@ -55,7 +55,7 @@ import {
 } from './escortTruck.js';
 import { spawnBlock, blocks } from './blocks.js';
 import { updateOres, clearAllOres } from './ores.js';
-import { spawnPickup } from './pickups.js';
+import { spawnPickup, pickups } from './pickups.js';
 
 // ---------------------------------------------------------------------
 // State
@@ -903,10 +903,38 @@ function buildLessonList() {
   // drops, the lesson's progression becomes ambiguous (did they
   // pick up the new ones, or use a stockpile?). Forcing zero starts
   // them on a clean slate.
+  // ----- 12. HEAL & THROW — pick up a potion + grenade, use both -----
+  // Expanded from a simple "use a potion" task. Lesson 11 (DODGE THE
+  // DEADLY) almost certainly killed the player at least once — they
+  // respawned at center via the tutorial's no-die handler. Now we
+  // spawn a potion AND a grenade pickup right at center, forcing
+  // them to walk over both, pick them up, and USE both.
+  //
+  // Two things make this lesson resilient:
+  //   1. Picking up a potion auto-heals the player if they're hurt.
+  //      That auto-heal counts as "potion used" for lesson progress
+  //      (notify wired in pickups.js — fires from BOTH the auto-heal
+  //      branch and the H-key tryUsePotion branch). Without that, a
+  //      player with low HP would auto-heal on touch and the potion
+  //      would never enter inventory, leaving the lesson stuck.
+  //   2. Pickups respawn every ~6s if they've been collected. Player
+  //      can't get stuck even if they wander away or accidentally
+  //      pick up only one item.
+  //
+  // Why we zero out S.potions and S.grenadeCharges on activate: the
+  // spawned pickups need to be REQUIRED. If the player already had
+  // a potion or grenade in their inventory from earlier wave drops,
+  // the lesson's progression becomes ambiguous (did they pick up the
+  // new ones, or use a stockpile?). Drops are also blocked from
+  // enemies during early lessons (see main.js's drop-suppress check)
+  // so this scenario is mostly defensive.
   list.push({
     id: 'heal',
     label: 'PICK UP & USE POTION + GRENADE',
     hint: 'Walk over the items at center. Press H to heal, G to throw the grenade.',
+    _respawnTimer: 0,
+    _spawnX: 0,
+    _spawnZ: 0,
     onActivate() {
       // Clear inventory so pickups are required, not optional.
       S.potions = 0;
@@ -916,28 +944,51 @@ function buildLessonList() {
       if (S.hp >= S.hpMax) {
         S.hp = Math.max(1, Math.floor(S.hpMax * 0.5));
       }
-      // Spawn the two pickups at CENTER (0,0). The user spec'd
-      // "see a grenade and potion near center" — this stays true
-      // even if the player happened to skip dying in lesson 11
-      // and arrives at the heal lesson from somewhere else in the
-      // arena. Slight separation so the pickup meshes don't visually
-      // overlap.
-      const cx = 0;
-      const cz = 0;
-      this._spawnX = cx;
-      this._spawnZ = cz;
+      this._spawnX = 0;
+      this._spawnZ = 0;
+      this._respawnTimer = 0;
+      this._spawnHealPair();
+    },
+    _spawnHealPair() {
+      // Spawn both pickups at center. Slight separation so the
+      // meshes don't visually overlap.
       try {
-        spawnPickup('potion', new THREE.Vector3(cx - 1.2, 0.5, cz));
-        spawnPickup('grenade', new THREE.Vector3(cx + 1.2, 0.5, cz));
+        spawnPickup('potion', new THREE.Vector3(this._spawnX - 1.2, 0.5, this._spawnZ));
+        spawnPickup('grenade', new THREE.Vector3(this._spawnX + 1.2, 0.5, this._spawnZ));
       } catch (e) { console.warn('[tutorial] heal pickups', e); }
     },
-    onUpdate() {
-      // Arrows → unused pickups. We can't reliably see pickups from
-      // here without importing the array, so just point at where they
-      // were spawned. The pickup mesh's auto-magnet pull will draw the
-      // player toward them once close enough.
-      const cx = (this._spawnX != null) ? this._spawnX : 0;
-      const cz = (this._spawnZ != null) ? this._spawnZ : 0;
+    _hasPickupOfKind(kind) {
+      // Scan the live pickups array. Used to detect which kinds
+      // have been collected so we only respawn the missing ones.
+      try {
+        for (const p of pickups) {
+          if (p && p.kind === kind) return true;
+        }
+      } catch (e) {}
+      return false;
+    },
+    onUpdate(dt) {
+      // Respawn any missing pickup every ~6 seconds. We check kind
+      // individually so if the player only collected the potion,
+      // the existing grenade is left alone instead of getting a
+      // duplicate spawned next to it.
+      this._respawnTimer -= dt;
+      if (this._respawnTimer <= 0) {
+        this._respawnTimer = 6.0;
+        try {
+          if (!this._hasPickupOfKind('potion')) {
+            spawnPickup('potion', new THREE.Vector3(this._spawnX - 1.2, 0.5, this._spawnZ));
+          }
+          if (!this._hasPickupOfKind('grenade')) {
+            spawnPickup('grenade', new THREE.Vector3(this._spawnX + 1.2, 0.5, this._spawnZ));
+          }
+        } catch (e) {}
+      }
+      // Arrows → unused pickups. Arrow points at the spawn anchor
+      // because the pickup auto-magnet pull will draw the player in
+      // once they're close.
+      const cx = this._spawnX;
+      const cz = this._spawnZ;
       const arrows = [];
       const potionUsed = (_potionsConsumed - _potionsConsumedAtActivate) >= 1;
       const grenadeUsed = (_grenadesThrown - _grenadesThrownAtActivate) >= 1;

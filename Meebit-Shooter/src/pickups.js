@@ -23,6 +23,7 @@ import { scene } from './scene.js';
 import { S } from './state.js';
 import { Audio } from './audio.js';
 import { UI } from './ui.js';
+import { notifyPotionConsumed as _tutPotionConsumed } from './tutorialLessons.js';
 
 // ----- TUNING -----
 export const POTION_MAX        = 3;          // max held by player
@@ -104,7 +105,7 @@ const _grenadeRingMat = new THREE.MeshBasicMaterial({
 });
 
 // ----- STATE -----
-const pickups = [];   // { obj, kind: 'potion'|'grenade', pos, age, spawnT }
+export const pickups = [];   // { obj, kind: 'potion'|'grenade', pos, age, spawnT }
 
 // ---------------------------------------------------------------------
 // SPAWN
@@ -200,6 +201,14 @@ function _applyPotionPickup() {
     S.hp = Math.min(S.hpMax, S.hp + POTION_HEAL);
     Audio.levelup && Audio.levelup();
     if (UI && UI.toast) UI.toast('+' + POTION_HEAL + ' HP', '#33aaff', 1100);
+    // Tutorial: count this pickup-heal as "potion consumed" so the
+    // heal lesson can complete. Without this, a player who gets hit
+    // before reaching the potion would auto-heal on touch (the
+    // potion never enters inventory, so pressing H is impossible)
+    // and the lesson would never advance — the bug the user
+    // hit. Same notify fires from tryUsePotion for the H-key path,
+    // so either flow advances the lesson.
+    if (S.tutorialMode) { try { _tutPotionConsumed(); } catch (e) {} }
     return true;
   }
   if ((S.potions || 0) < POTION_MAX) {
