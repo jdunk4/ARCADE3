@@ -2093,9 +2093,10 @@ function startTutorial() {
   Audio.init();
   Audio.resume();
   Audio.stopCDrone && Audio.stopCDrone();
-  // NOTE: we deliberately do NOT call Audio.startMusic — tutorial is
-  // silent so the lesson hints land without a soundtrack fighting
-  // them.
+  // Tutorial gets its own dedicated looping track. Drops on tutorial
+  // exit (quit, restart, or auto-return on completion) via
+  // _exitTutorialIfActive() → Audio.stopTutorialMusic().
+  try { Audio.startTutorialMusic(); } catch (e) { console.warn('[tutorial] music', e); }
 
   UI.updateHUD();
   UI.updateWeaponSlots();
@@ -2124,6 +2125,25 @@ function startTutorial() {
 }
 
 function gameOver() {
+  // Tutorial mode never actually ends. If the player runs out of HP
+  // we respawn them at the center of the arena with full health and
+  // a brief invuln window, so they can resume the lesson without
+  // dropping to the SIGNAL LOST screen. Some hazards (Minesweeper
+  // bombs, Pacman ghosts) are designed to insta-kill in the real
+  // game — in tutorial we still want the player to *experience*
+  // those hits, just survive them.
+  if (S.tutorialMode) {
+    S.hp = S.hpMax;
+    S.invulnTimer = Math.max(S.invulnTimer, 1.5);
+    if (player && player.pos) {
+      player.pos.set(0, 0, 0);
+      if (player.obj) player.obj.position.copy(player.pos);
+    }
+    UI.toast('TUTORIAL · NO DEATH · RESPAWNED', '#ffd93d', 1800);
+    UI.updateHUD();
+    return;
+  }
+
   S.running = false;
   S.phase = 'gameover';
   Audio.stopMusic();
@@ -2153,6 +2173,8 @@ function _exitTutorialIfActive() {
   restoreShadows(renderer);
   // Stop hazard spawning that the tutorial cycler may have enabled.
   setHazardSpawningEnabled(false);
+  // Stop the tutorial soundtrack.
+  try { Audio.stopTutorialMusic && Audio.stopTutorialMusic(); } catch (e) {}
   // Tear down the lesson controller (also removes the checklist DOM).
   try { stopTutorialController(); } catch (e) {}
   // Restore HUD panels we hid for tutorial mode.
@@ -2162,8 +2184,10 @@ function _exitTutorialIfActive() {
   if (_playerPanel) _playerPanel.style.display = '';
   // Reset the hazard cycler state so a future tutorial starts clean.
   _tutHazInit = false;
+  _tutHazMode = false;
   _tutHazIdx = 0;
   _tutHazTimer = 0;
+  try { clearHazards(); } catch (e) {}
 }
 
 document.getElementById('start-btn').addEventListener('click', () => {
@@ -2458,14 +2482,28 @@ let _lastSeenWave = 0;
 // tracker the style stays stuck as tetris for the whole run.
 let _lastSeenChapter = -1;
 
-// Tutorial-only hazard cycle state. Driven by lesson 10 via
-// S.tutorialHazardCycle. _tutHazInit guards the one-time setup; the
-// timer rotates through the four arcade-style hazards every 5s.
+// Tutorial-only hazard cycle state. Driven by lesson 10/11 via
+// S.tutorialHazardCycle which is one of:
+//   'damage' — non-lethal hazards (Tetris, Galaga). Damage but
+//              don't insta-kill.
+//   'deadly' — lethal hazards (Minesweeper, Pacman). Insta-kill in
+//              the real game; the tutorial gameOver helper respawns
+//              the player at center.
+//    false   — cycle off.
+// _tutHazInit guards the one-time setup; the timer rotates through
+// the active group every 5s.
 let _tutHazInit = false;
+let _tutHazMode = false;
 let _tutHazIdx = 0;
 let _tutHazTimer = 0;
-const _tutHazStyles = [tetrisStyle, galagaStyle, minesweeperStyle, pacmanStyle];
-const _tutHazNames = ['TETRIS', 'GALAGA', 'MINESWEEPER', 'PACMAN'];
+const _tutHazStylesByMode = {
+  damage: [tetrisStyle, galagaStyle],
+  deadly: [minesweeperStyle, pacmanStyle],
+};
+const _tutHazNamesByMode = {
+  damage: ['TETRIS', 'GALAGA'],
+  deadly: ['MINESWEEPER', 'PACMAN'],
+};
 
 function animate() {
   requestAnimationFrame(animate);
@@ -2550,7 +2588,15 @@ function animate() {
     // sink animation needs to keep ticking AFTER wave 1 ends so the
     // truck actually vanishes for wave 2. Calling with null playerPos
     // skips movement; only beacon + sink animations run.
-    updateEscortTruck(dt, null, null);
+    // In tutorial mode we DO want the truck to move when the escort
+    // lesson is active, so pass real args. The escort lesson spawns
+    // a truck via spawnEscortTruck; on other tutorial lessons no
+    // truck exists and updateEscortTruck early-returns harmlessly.
+    if (S.tutorialMode) {
+      updateEscortTruck(dt, player.pos, enemies);
+    } else {
+      updateEscortTruck(dt, null, null);
+    }
     updateServerWarehouse(dt);
     updateSafetyPod(dt);
     updateHiveLasers(dt);
@@ -2564,32 +2610,44 @@ function animate() {
     if (S.tutorialMode) {
       try { tickTutorialController(dt); } catch (e) { console.warn('[tutorial] tick', e); }
       // Hazard cycle driver — only runs when the active lesson sets
-      // S.tutorialHazardCycle (lesson 10). Rotates through the four
-      // arcade-flavored hazard styles every ~5 seconds so the player
-      // sees Tetris → Galaga → Minesweeper → Pacman in one stretch.
-      // updateWaves' tickHazardSpawning is gated behind the wave
-      // system; in tutorial we call it directly here.
-      if (S.tutorialHazardCycle) {
-        if (!_tutHazInit) {
-          _tutHazInit = true;
+      // S.tutorialHazardCycle to 'damage' or 'deadly'. Cycles through
+      // the matching style group every ~5s. updateWaves'
+      // tickHazardSpawning is gated behind the wave system; in
+      // tutorial we call it directly here.
+      const mode = S.tutorialHazardCycle;
+      if (mode && _tutHazStylesByMode[mode]) {
+        // Mode change: tear down + re-init for the new group.
+        if (_tutHazMode !== mode) {
+          _tutHazMode = mode;
+          _tutHazInit = false;
           _tutHazIdx = 0;
           _tutHazTimer = 0;
-          setHazardStyle(_tutHazStyles[0]);
+          // Wipe currently-falling hazards so the player isn't hit
+          // by leftovers from the previous group.
+          try { clearHazards(); } catch (e) {}
+        }
+        const stylesNow = _tutHazStylesByMode[_tutHazMode];
+        const namesNow = _tutHazNamesByMode[_tutHazMode];
+        if (!_tutHazInit) {
+          _tutHazInit = true;
+          setHazardStyle(stylesNow[0]);
           setHazardSpawningEnabled(true);
+          UI.toast('HAZARD STYLE: ' + namesNow[0], '#ff8844', 1400);
         }
         _tutHazTimer += dt;
         if (_tutHazTimer >= 5.0) {
           _tutHazTimer = 0;
-          _tutHazIdx = (_tutHazIdx + 1) % _tutHazStyles.length;
-          setHazardStyle(_tutHazStyles[_tutHazIdx]);
-          UI.toast('HAZARD STYLE: ' + _tutHazNames[_tutHazIdx], '#ff8844', 1400);
+          _tutHazIdx = (_tutHazIdx + 1) % stylesNow.length;
+          setHazardStyle(stylesNow[_tutHazIdx]);
+          UI.toast('HAZARD STYLE: ' + namesNow[_tutHazIdx], '#ff8844', 1400);
         }
-        // Drive the actual hazard tile drops + per-style ticking.
         tickHazardSpawning(dt, 0, player.pos, []);
       } else if (_tutHazInit) {
-        // Lesson finished — turn spawning off and clear the flag.
+        // Lesson finished — turn spawning off, clear in-flight tiles.
         _tutHazInit = false;
+        _tutHazMode = false;
         setHazardSpawningEnabled(false);
+        try { clearHazards(); } catch (e) {}
       }
     }
     updateWaves(dt);

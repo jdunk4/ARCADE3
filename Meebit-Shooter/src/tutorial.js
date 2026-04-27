@@ -142,17 +142,16 @@ function buildRainbowTexture() {
 
       // Re-saturate. RGB bilinear interpolation produces muddy mid-
       // tones because complementary corner colors average toward gray.
-      // With the corners already near-saturation, we only need a small
-      // push to keep the middle band vivid.
-      color = saturate(color, 0.18);
-
-      // Pastel band: push toward white in the F–J row range (v ≈
-      // 0.33–0.6). Subtle now — we don't want to wash out the vivid
-      // colors we just paid for.
-      const peak = 0.45;
-      const dist = Math.abs(v - peak);
-      const whiteAmt = Math.max(0, 0.22 - dist * 0.7);
-      color = tintWhite(color, whiteAmt);
+      // We push the result HARD back away from gray, *more* in the
+      // middle of the board than at the corners, so the center reads
+      // as the single most vibrant region. (Earlier iteration washed
+      // the center toward white — opposite of what we want.)
+      // Distance from board center, max ~0.71 at the corners.
+      const dx = u - 0.5, dy = v - 0.5;
+      const distToCenter = Math.sqrt(dx * dx + dy * dy);
+      // Saturation amount: 0.55 at center, 0.30 at the corners.
+      const satAmt = 0.55 - distToCenter * 0.35;
+      color = saturate(color, satAmt);
 
       const rr = Math.round(color.r);
       const gg = Math.round(color.g);
@@ -210,6 +209,13 @@ function buildRainbowTexture() {
   }
 
   const tex = new THREE.CanvasTexture(c);
+  // Color space MUST be sRGB so the renderer (which outputs sRGB)
+  // doesn't read the canvas as linear and wash everything to gray.
+  // This was the actual cause of the "floor looks gray even though
+  // we set vibrant corners" bug — the colors *were* vibrant in the
+  // canvas, but a missing colorSpace flag let three.js gamma-shift
+  // them on read.
+  tex.colorSpace = THREE.SRGBColorSpace;
   // No tiling — one giant texture maps 1:1 onto the floor plane so each
   // canvas cell is one arena cell.
   tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping;
@@ -328,6 +334,12 @@ export function tutorialSpawnRateOverride(defaultRate) {
 // — shadows add depth that fights the "polar opposite from the game"
 // direction. We snapshot the renderer's shadow state on entry and
 // restore it on exit so a normal run after the tutorial keeps shadows.
+//
+// NOTE: setting renderer.shadowMap.enabled = false alone does NOT
+// remove visible shadows; three.js still composites the existing
+// shadow map. We also have to disable castShadow on the directional
+// light (moon) which is the only shadow caster in this scene. Other
+// lights are point/hemi/rim and don't cast shadows.
 // ---------------------------------------------------------------------
 let _shadowSnapshot = null;
 export function disableShadows(renderer) {
@@ -335,12 +347,17 @@ export function disableShadows(renderer) {
   if (_shadowSnapshot === null) {
     _shadowSnapshot = {
       enabled: renderer.shadowMap.enabled,
+      moonCast: Scene && Scene.moon ? Scene.moon.castShadow : null,
     };
   }
   renderer.shadowMap.enabled = false;
+  if (Scene && Scene.moon) Scene.moon.castShadow = false;
 }
 export function restoreShadows(renderer) {
   if (!renderer || _shadowSnapshot === null) return;
   renderer.shadowMap.enabled = _shadowSnapshot.enabled;
+  if (Scene && Scene.moon && _shadowSnapshot.moonCast !== null) {
+    Scene.moon.castShadow = _shadowSnapshot.moonCast;
+  }
   _shadowSnapshot = null;
 }

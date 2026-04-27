@@ -35,6 +35,26 @@ import { hitBurst, makePickup } from './effects.js';
 import { scene } from './scene.js';
 import { tutorialEnemyColor } from './tutorial.js';
 
+// Real game systems — tutorial lessons drive these directly so the
+// player learns the actual mechanics rather than tutorial-flavored
+// mocks.
+import {
+  spawnCannon, clearCannon,
+  setActiveCannonCorner, setCannonCornerProgress, consumeCannonCorner,
+  getCannonCornerPos, forceFireCannon, getCannonOrigin, hasCannon,
+} from './cannon.js';
+import {
+  spawnQueenHive, clearQueenHive, popQueenShield,
+  queenShieldsRemaining, getQueen, getNextDomePos,
+  spawnCannonBeam,
+} from './queenHive.js';
+import {
+  spawnEscortTruck, clearEscortTruck, getTruckPos,
+  isTruckArrived, hasTruck, isPlayerInEscortRadius,
+} from './escortTruck.js';
+import { spawnBlock } from './blocks.js';
+import { updateOres, clearAllOres } from './ores.js';
+
 // ---------------------------------------------------------------------
 // State
 // ---------------------------------------------------------------------
@@ -187,6 +207,9 @@ function _advance() {
   _hazardHitsAtActivate = _hazardHits;
   _potionsConsumedAtActivate = _potionsConsumed;
   _weaponsTried.clear();
+  // Clear any arrows the previous lesson may have left up; the new
+  // lesson will repopulate them in onActivate or onUpdate if needed.
+  S.tutorialArrows = [];
   if (lesson.onActivate) {
     try { lesson.onActivate(); } catch (e) { console.warn('[tutorial] onActivate', e); }
   }
@@ -201,6 +224,8 @@ function _teardownActive() {
   // Don't forcibly remove enemies — let them play out / be killed.
   // We'll just stop tracking them.
   _activeEnemies.clear();
+  // Wipe arrows; next lesson sets its own.
+  S.tutorialArrows = [];
 }
 
 // ---------------------------------------------------------------------
@@ -302,15 +327,32 @@ function buildLessonList() {
     },
   });
 
-  // ----- 4. KILL 3 -----
+  // ----- 4. DEFEAT 3 ENEMIES -----
   list.push({
     id: 'kill',
-    label: 'DEFEAT 3 MEEBITS',
-    hint: 'Three meebits will approach. Take them down with your pistol.',
-    onActivate: () => {
+    label: 'DEFEAT 3 ENEMIES',
+    hint: 'Three enemies will approach. Take them down with your pistol.',
+    _spawned: 0,
+    onActivate() {
+      this._spawned = 0;
       _spawnTutorialEnemy(Math.random() * Math.PI * 2, 16);
       setTimeout(() => _spawnTutorialEnemy(Math.random() * Math.PI * 2, 16), 1500);
       setTimeout(() => _spawnTutorialEnemy(Math.random() * Math.PI * 2, 16), 3000);
+    },
+    onUpdate() {
+      // Point an arrow at the nearest live tutorial-spawned enemy so
+      // the player always knows where to look.
+      let nearest = null, bestD2 = Infinity;
+      for (const e of _activeEnemies) {
+        if (!e || e.hp <= 0) continue;
+        const dx = e.pos.x - player.pos.x;
+        const dz = e.pos.z - player.pos.z;
+        const d2 = dx * dx + dz * dz;
+        if (d2 < bestD2) { bestD2 = d2; nearest = e; }
+      }
+      S.tutorialArrows = nearest
+        ? [{ x: nearest.pos.x, z: nearest.pos.z, label: 'ENEMY' }]
+        : [];
     },
     isComplete: () => (_enemyKillCount - _enemyKillCountAtActivate) >= 3,
     progress: () => {
@@ -323,7 +365,7 @@ function buildLessonList() {
   list.push({
     id: 'levelup',
     label: 'REACH LEVEL 2',
-    hint: 'Defeat more meebits to earn XP and level up. Killing meebits drops health and shield pickups too.',
+    hint: 'Defeat more enemies to earn XP and level up. Killing enemies drops health and shield pickups too.',
     _spawned: 0,
     _lastSpawnAt: 0,
     onActivate() { this._spawned = 0; this._lastSpawnAt = 0; },
@@ -335,6 +377,18 @@ function buildLessonList() {
         this._lastSpawnAt = nowMs;
         this._spawned++;
       }
+      // Arrow → nearest enemy
+      let nearest = null, bestD2 = Infinity;
+      for (const e of _activeEnemies) {
+        if (!e || e.hp <= 0) continue;
+        const dx = e.pos.x - player.pos.x;
+        const dz = e.pos.z - player.pos.z;
+        const d2 = dx * dx + dz * dz;
+        if (d2 < bestD2) { bestD2 = d2; nearest = e; }
+      }
+      S.tutorialArrows = nearest
+        ? [{ x: nearest.pos.x, z: nearest.pos.z, label: 'ENEMY' }]
+        : [];
     },
     isComplete: () => (S.level || 1) >= 2,
   });
@@ -354,8 +408,6 @@ function buildLessonList() {
       for (const w of ['shotgun', 'smg', 'rocket', 'raygun', 'flamethrower']) {
         S.ownedWeapons.add(w);
       }
-      // Spawn a steady stream of dummies so the player has something
-      // to shoot at — driven by onUpdate below.
     },
     onUpdate() {
       if (_alivePlayerSpawnedEnemies() < 2 && Math.random() < 0.02) {
@@ -369,290 +421,346 @@ function buildLessonList() {
     },
   });
 
-  // ----- 7. CANNON CHARGE -----
-  // Stub: spawn 4 charge zones at the four cardinal corners of a
-  // small ring around the arena center; require the player to stand
-  // in each one for ~2 seconds. We don't reuse the real cannon module
-  // here — too tangled with chapter/wave state — but the experience
-  // mirrors it.
+  // ----- 7. BREAK BLOCKS / COLLECT ORES -----
+  // Uses the real spawnBlock + ore systems. The block-mined hook in
+  // main.js bumps S.blocksMined whenever a player destroys a block,
+  // and the existing block-destroy code in blocks.js spawns ores
+  // automatically. We just need to drop blocks and watch the count.
+  // updateOres needs to be ticked too — that's wired in main.js's
+  // animate loop via S.tutorialMode (see Phase 2 wiring in main.js).
   list.push({
-    id: 'cannon',
-    label: 'CHARGE THE CANNON',
-    hint: 'Stand on each glowing corner pad to charge the cannon. 4 corners = full charge.',
-    _zones: [],
-    _filled: [false, false, false, false],
-    _chargeT: [0, 0, 0, 0],
-    _chargeNeeded: 1.6,
-    _cannonProp: null,
+    id: 'mining',
+    label: 'BREAK 3 BLOCKS',
+    hint: 'Falling blocks contain ore. Shoot the blocks until they shatter, then watch the ore fly toward you.',
+    _baseline: 0,
+    _spawned: 0,
+    _lastSpawnAt: 0,
     onActivate() {
-      this._zones = [];
-      this._filled = [false, false, false, false];
-      this._chargeT = [0, 0, 0, 0];
-      // Cannon prop in the middle — a simple boxy stand-in so the
-      // player has a focal point. (We don't import the real cannon
-      // module to keep this lesson independent.)
-      const cannonGroup = new THREE.Group();
-      const base = new THREE.Mesh(
-        new THREE.CylinderGeometry(1.5, 1.8, 1.0, 24),
-        new THREE.MeshStandardMaterial({ color: 0x222222, emissive: 0x0a0a0a, emissiveIntensity: 0.6 }),
-      );
-      base.position.y = 0.5;
-      cannonGroup.add(base);
-      const barrel = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.55, 0.55, 3.5, 16),
-        new THREE.MeshStandardMaterial({ color: 0x444444, emissive: 0xffaa33, emissiveIntensity: 0.4 }),
-      );
-      barrel.rotation.z = Math.PI / 2;
-      barrel.position.set(0, 1.4, 0);
-      cannonGroup.add(barrel);
-      cannonGroup.position.set(0, 0, 0);
-      scene.add(cannonGroup);
-      this._cannonProp = cannonGroup;
-      _activeProps.push(cannonGroup);
-      // Four corner zones at offsets.
-      const offs = [[-6, -6], [6, -6], [-6, 6], [6, 6]];
-      const colors = [0xff5555, 0xffdd33, 0x55ddff, 0xdd55ff];
-      for (let i = 0; i < 4; i++) {
-        const z = _spawnTutorialZone(offs[i][0], offs[i][1], 1.6, colors[i]);
-        this._zones.push(z);
-      }
+      // Snapshot S.blocksMined so we count only blocks broken during
+      // THIS lesson.
+      this._baseline = S.blocksMined || 0;
+      this._spawned = 0;
+      this._lastSpawnAt = 0;
+      // Mining mode flag — main.js gates pickaxe-style mining + bullet
+      // collisions with blocks behind it. (Player has no pickaxe in
+      // tutorial; bullets do the job.)
+      S.miningActive = true;
     },
     onUpdate(dt) {
-      for (let i = 0; i < 4; i++) {
-        if (this._filled[i]) continue;
-        if (_isPlayerInZone(this._zones[i])) {
-          this._chargeT[i] = Math.min(this._chargeNeeded, this._chargeT[i] + dt);
-          // Pulse the ring color as it fills.
-          const t = this._chargeT[i] / this._chargeNeeded;
-          this._zones[i].ring.material.opacity = 0.5 + 0.5 * Math.sin(performance.now() * 0.01);
-          this._zones[i].disc.material.opacity = 0.18 + t * 0.4;
-          if (this._chargeT[i] >= this._chargeNeeded) {
-            this._filled[i] = true;
-            this._zones[i].disc.material.color.setHex(0x55ff77);
-            this._zones[i].ring.material.color.setHex(0x55ff77);
-            // Visual pop + a bigger disc to read as "charged".
-            hitBurst(new THREE.Vector3(this._zones[i].x, 1, this._zones[i].z), 0x55ff77, 12);
-          }
-        }
+      // Spawn one block every ~1.5s until we've dropped 4 (one extra
+      // for slack). Each block falls from the sky into the mining
+      // triangle.
+      const nowMs = performance.now();
+      if (this._spawned < 4 && nowMs - this._lastSpawnAt > 1500) {
+        try { spawnBlock(0); this._spawned++; this._lastSpawnAt = nowMs; }
+        catch (e) { console.warn('[tutorial] spawnBlock', e); }
       }
-      // When all four are filled, do a satisfying flash on the cannon.
-      if (this._filled.every(Boolean) && this._cannonProp && !this._fired) {
-        this._fired = true;
-        hitBurst(new THREE.Vector3(0, 1.5, 0), 0xffaa33, 32);
-      }
+      // Tick ores so they animate toward the player (auto-collect).
+      try { updateOres(dt, player); } catch (e) {}
+      // Arrow → nearest block. We don't import `blocks` to avoid a
+      // circular-ish dependency; instead we let the arrow code skip
+      // showing if no target. Callers can also point at the depot
+      // beacon if there were one.
+      // Skipping arrow for now — blocks are visually loud enough.
+      S.tutorialArrows = [];
     },
-    isComplete() { return !!this._fired; },
+    isComplete() {
+      return (S.blocksMined - this._baseline) >= 3;
+    },
+    onComplete() {
+      // Leave miningActive on — having S.miningActive true outside of
+      // a wave is harmless, but reset it so subsequent lessons don't
+      // get block-collision branches wrongly.
+      S.miningActive = false;
+    },
     progress() {
-      const n = this._filled.filter(Boolean).length;
-      return n + ' / 4 corners';
+      const n = Math.max(0, (S.blocksMined - this._baseline));
+      return Math.min(3, n) + ' / 3';
     },
   });
 
-  // ----- 8. ESCORT -----
-  // Simple version: spawn a glowing waypoint that walks slowly from
-  // one side of the arena to the other. Player has to stay near it
-  // (within 8 units) and kill any enemy that spawns between it and
-  // the destination. Once the waypoint reaches the goal, complete.
+  // ----- 8. ESCORT THE GENERATOR -----
+  // Spawns the real escortTruck. updateEscortTruck is already called
+  // every frame from main.js's animate loop with real player+enemies
+  // args when S.tutorialMode is true. The truck moves when player is
+  // nearby and the path is clear; we spawn one stationary blocker
+  // enemy in the middle so the player has to fight to advance.
   list.push({
     id: 'escort',
     label: 'ESCORT THE GENERATOR',
-    hint: 'Stay close to the generator and clear the path. Kill the meebit blocking the way.',
-    _truck: null,
-    _truckTargetX: 16,
+    hint: 'Stay close to the truck and clear the path. Defeat the enemy blocking it from reaching the silo.',
     _blocker: null,
     _blockerSpawned: false,
-    _arrived: false,
     onActivate() {
-      // Truck stand-in: an emissive cube on a sled.
-      const truck = new THREE.Mesh(
-        new THREE.BoxGeometry(2.0, 1.4, 3.0),
-        new THREE.MeshStandardMaterial({ color: 0xeeee44, emissive: 0xffcc00, emissiveIntensity: 0.55 }),
-      );
-      truck.position.set(-16, 0.7, 0);
-      scene.add(truck);
-      this._truck = truck;
-      _activeProps.push(truck);
-      // Goal beacon at +16, 0.
-      const goal = new THREE.Mesh(
-        new THREE.CylinderGeometry(1.4, 1.4, 0.2, 24),
-        new THREE.MeshBasicMaterial({ color: 0x00ff66, transparent: true, opacity: 0.5 }),
-      );
-      goal.position.set(this._truckTargetX, 0.1, 0);
-      scene.add(goal);
-      _activeProps.push(goal);
-      this._arrived = false;
+      this._blocker = null;
       this._blockerSpawned = false;
+      // Truck spawn → goal. Use chapter 0 tint. Path is along x axis
+      // for clarity: from (-22,0) to (+22,0).
+      try {
+        spawnEscortTruck(0, { x: -22, z: 0 }, { x: 22, z: 0 });
+        S.isEscortWave = true;     // some downstream code reads this flag
+      } catch (e) { console.warn('[tutorial] escort', e); }
     },
     onUpdate(dt) {
-      if (!this._truck) return;
-      // Spawn one blocker enemy in front of the truck once at start.
-      if (!this._blockerSpawned) {
+      // Once truck exists, spawn a blocker mid-path on the first frame.
+      if (!this._blockerSpawned && hasTruck()) {
         this._blockerSpawned = true;
-        // Block at midpoint.
         const tint = tutorialEnemyColor(0xffffff);
         const e = makeEnemy('zomeeb', tint, new THREE.Vector3(0, 0, 0));
         if (e) {
-          e.speed = 0;     // stationary blocker for tutorial clarity
+          e.speed = 0;
           this._blocker = e;
           _activeEnemies.add(e);
         }
       }
-      // Truck advances when player is within 8u and no live blocker.
-      if (this._arrived) return;
-      const px = player && player.pos ? player.pos.x : 0;
-      const pz = player && player.pos ? player.pos.z : 0;
-      const dx = px - this._truck.position.x;
-      const dz = pz - this._truck.position.z;
-      const playerNear = (dx * dx + dz * dz) < 64;        // 8u
+      // Arrow → truck (or blocker if alive).
+      const arrows = [];
       const blockerAlive = this._blocker && this._blocker.hp > 0;
-      if (playerNear && !blockerAlive) {
-        const dirX = this._truckTargetX - this._truck.position.x;
-        if (Math.abs(dirX) > 0.1) {
-          const step = Math.min(2.4 * dt, Math.abs(dirX));
-          this._truck.position.x += Math.sign(dirX) * step;
-        } else {
-          this._arrived = true;
-          hitBurst(new THREE.Vector3(this._truck.position.x, 1.5, 0), 0x00ff66, 24);
-        }
+      if (blockerAlive) {
+        arrows.push({ x: this._blocker.pos.x, z: this._blocker.pos.z, label: 'ENEMY', panic: true });
       }
+      const tp = getTruckPos();
+      if (tp) arrows.push({ x: tp.x, z: tp.z, label: 'TRUCK' });
+      S.tutorialArrows = arrows;
     },
-    isComplete() { return !!this._arrived; },
+    isComplete() {
+      return isTruckArrived();
+    },
+    onComplete() {
+      try { clearEscortTruck(); } catch (e) {}
+      S.isEscortWave = false;
+    },
   });
 
-  // ----- 9. MINING — break blocks and collect ore -----
-  // Spawn 3 simple "ore blocks" the player has to shoot down. Each
-  // destroyed block awards an ore visually; collecting 3 completes
-  // the lesson. We use plain meshes with health and intercept hits
-  // via raycasts on player fire — but to keep this simple and
-  // independent we'll just track a "hits taken" count per block.
+  // ----- 9. CHARGE CANNON · DESTROY HIVE SHIELDS -----
+  // Uses the REAL cannon module + queen hive. We mirror the corner-
+  // charging loop from waves.js: 4 corner zones, stand on one to
+  // charge it, fire the cannon, pop a hive shield, move to next
+  // corner. Done when all 4 shields are popped.
+  //
+  // CORNER_CHARGE_DURATION here matches the value used in waves.js
+  // (1.6s). _spawnTutorialZone is reused for visible glowing pads
+  // OVER the cannon's actual corner positions — gives the tutorial
+  // a brighter target than the cannon's native corner mesh while
+  // still using the cannon's real spatial layout.
+  const CORNER_CHARGE_DURATION = 1.6;
   list.push({
-    id: 'mining',
-    label: 'BREAK 3 BLOCKS',
-    hint: 'Shoot the orange ore blocks until they shatter.',
-    _oreBlocks: [],
-    _broken: 0,
+    id: 'cannon',
+    label: 'CHARGE CANNON · DROP SHIELDS',
+    hint: 'Stand on each glowing CORNER pad to charge the cannon. Each charge fires a shot that pops a hive shield. 4 shields = done.',
+    _shotIdx: 0,
+    _chargeT: 0,
+    _phase: 'corner-charging',     // 'corner-charging' | 'reload' | 'done'
+    _reloadT: 0,
+    _bigZones: [],                  // visible bigger ring overlays for clarity
     onActivate() {
-      this._oreBlocks = [];
-      this._broken = 0;
-      // Three ore blocks at known positions.
-      const positions = [[-10, -8], [10, -8], [0, 12]];
-      for (const [x, z] of positions) {
-        const mesh = new THREE.Mesh(
-          new THREE.BoxGeometry(1.6, 1.6, 1.6),
-          new THREE.MeshStandardMaterial({
-            color: 0xff7733, emissive: 0xff5500, emissiveIntensity: 0.6,
-          }),
-        );
-        mesh.position.set(x, 0.8, z);
-        mesh.userData.tutorialOreHp = 4;        // shots to break
-        mesh.userData.tutorialOre = true;
-        scene.add(mesh);
-        this._oreBlocks.push(mesh);
-        _activeProps.push(mesh);
+      this._shotIdx = 0;
+      this._chargeT = 0;
+      this._phase = 'corner-charging';
+      this._reloadT = 0;
+      this._bigZones = [];
+      try {
+        spawnCannon(0);
+        spawnQueenHive(0);
+      } catch (e) { console.warn('[tutorial] cannon/queen', e); }
+      // Activate the first cannon corner so the cannon module shows
+      // its native ring there; we add a bigger bright overlay too.
+      try { setActiveCannonCorner(0); } catch (e) {}
+      this._refreshOverlay();
+    },
+    _refreshOverlay() {
+      // Tear down old overlay rings.
+      for (const z of this._bigZones) {
+        if (z.ring && z.ring.parent) z.ring.parent.remove(z.ring);
+        if (z.disc && z.disc.parent) z.disc.parent.remove(z.disc);
       }
+      this._bigZones = [];
+      // Spawn one big bright zone over the active corner.
+      const idx = this._shotIdx;
+      if (idx >= 4) return;
+      let pos = null;
+      try { pos = getCannonCornerPos(idx); } catch (e) {}
+      if (!pos) return;
+      const colors = [0xff5555, 0xffdd33, 0x55ddff, 0xdd55ff];
+      const big = _spawnTutorialZone(pos.x, pos.z, 3.0, colors[idx]);
+      this._bigZones.push(big);
     },
     onUpdate(dt) {
-      // Per-frame: detect bullets nearby and damage blocks.
-      for (const block of this._oreBlocks) {
-        if (!block.parent || block.userData.tutorialOreHp <= 0) continue;
-        // Cheap: any of the active bullets close enough on this frame?
-        // We can't import bullets cleanly without circular dep risk,
-        // so we use a simple proximity check on enemy projectiles? No
-        // — those don't exist here. Instead, we use a ray-style hack:
-        // when the player is firing and the player's aim points at
-        // this block within range, count a hit. Each hit ticks down.
-        // The hit cadence is gated by the weapon's fire rate via the
-        // _shotCount counter — only count one "block-hit" per shot.
-        const dx = player.pos.x - block.position.x;
-        const dz = player.pos.z - block.position.z;
-        const dist2 = dx * dx + dz * dz;
-        if (dist2 > 36 * 36) continue;                // too far
-        // Aim direction from player → block:
-        const aimX = -dx, aimZ = -dz;
-        const aimLen = Math.sqrt(aimX * aimX + aimZ * aimZ);
-        if (aimLen < 0.1) continue;
-        // Player firing direction: lifted from mouse world coords.
-        // We don't have direct access here; cheat via _shotCount
-        // delta and proximity. If the player has fired since we last
-        // checked AND the block is roughly in front of them, hit it.
-        const lastShot = block.userData._lastShotSeen || 0;
-        if (_shotCount > lastShot) {
-          // Compare player facing — use aimLen normalized vs the
-          // mouse position carried on the `mouse` import. We avoid
-          // importing mouse directly to keep lesson modules thin;
-          // instead we approximate: if the player's nearest enemy
-          // (or block) is within 35° of straight ahead, it counts.
-          // For simplicity we just count one-block-per-shot if the
-          // shot fired and the block is the CLOSEST tutorial ore.
-          let closestDist2 = Infinity;
-          let closest = null;
-          for (const b of this._oreBlocks) {
-            if (b.userData.tutorialOreHp <= 0) continue;
-            const d2 = (player.pos.x - b.position.x) ** 2 + (player.pos.z - b.position.z) ** 2;
-            if (d2 < closestDist2) { closestDist2 = d2; closest = b; }
-          }
-          if (closest === block) {
-            block.userData.tutorialOreHp -= 1;
-            block.userData._lastShotSeen = _shotCount;
-            // Visual hit reaction.
-            hitBurst(new THREE.Vector3(block.position.x, block.position.y, block.position.z), 0xffaa33, 6);
-            if (block.userData.tutorialOreHp <= 0) {
-              this._broken++;
-              hitBurst(new THREE.Vector3(block.position.x, 1, block.position.z), 0xff7733, 18);
-              scene.remove(block);
-              // Drop a visible ore pickup so the lesson shows the
-              // collect step too.
-              try {
-                makePickup('xp', block.position.x, block.position.z);
-              } catch (e) {}
-            }
+      // Arrow → active corner (or queen hive if all corners done).
+      const arrows = [];
+      if (this._phase === 'corner-charging') {
+        const idx = this._shotIdx;
+        let cp = null;
+        try { cp = getCannonCornerPos(idx); } catch (e) {}
+        if (cp) arrows.push({ x: cp.x, z: cp.z, label: 'CHARGE' });
+      } else {
+        const q = getQueen && getQueen();
+        if (q && q.pos) arrows.push({ x: q.pos.x, z: q.pos.z, label: 'HIVE', panic: true });
+      }
+      S.tutorialArrows = arrows;
+
+      // PHASE: corner-charging
+      if (this._phase === 'corner-charging') {
+        const idx = this._shotIdx;
+        let cornerPos = null;
+        try { cornerPos = getCannonCornerPos(idx); } catch (e) {}
+        if (cornerPos) {
+          const ddx = player.pos.x - cornerPos.x;
+          const ddz = player.pos.z - cornerPos.z;
+          // Bigger acceptance radius (3.0) matches the bigger overlay
+          // ring so the player gets credit standing on the glowing pad.
+          const inCorner = (ddx * ddx + ddz * ddz) < (3.0 * 3.0);
+          if (inCorner) {
+            this._chargeT = Math.min(CORNER_CHARGE_DURATION, this._chargeT + dt);
           } else {
-            block.userData._lastShotSeen = _shotCount;
+            this._chargeT = Math.max(0, this._chargeT - dt * 0.3);
+          }
+          try { setCannonCornerProgress(this._chargeT / CORNER_CHARGE_DURATION); } catch (e) {}
+          // Animate the big overlay ring/disc to track progress.
+          const t = this._chargeT / CORNER_CHARGE_DURATION;
+          const big = this._bigZones[0];
+          if (big) {
+            if (big.disc && big.disc.material) big.disc.material.opacity = 0.18 + t * 0.5;
+            if (big.ring && big.ring.material) big.ring.material.opacity = 0.6 + 0.4 * Math.sin(performance.now() * 0.01);
+          }
+          // Fire on full charge.
+          if (this._chargeT >= CORNER_CHARGE_DURATION) {
+            try {
+              const q = getQueen && getQueen();
+              if (q && q.pos) {
+                forceFireCannon(q.pos);
+                const muzzle = getCannonOrigin && getCannonOrigin();
+                const dome = getNextDomePos && getNextDomePos();
+                if (muzzle && dome) spawnCannonBeam(muzzle, dome);
+              }
+              popQueenShield();
+              consumeCannonCorner(idx);
+            } catch (e) { console.warn('[tutorial] cannon fire', e); }
+            // Visual: green pop on the corner.
+            hitBurst(new THREE.Vector3(cornerPos.x, 1, cornerPos.z), 0x55ff77, 12);
+            this._shotIdx = idx + 1;
+            this._chargeT = 0;
+            this._reloadT = 0.8;            // shorter reload for tutorial
+            this._phase = 'reload';
+            try { setActiveCannonCorner(-1); } catch (e) {}
+          }
+        }
+      }
+      // PHASE: reload
+      else if (this._phase === 'reload') {
+        this._reloadT = Math.max(0, this._reloadT - dt);
+        if (this._reloadT <= 0) {
+          if (this._shotIdx >= 4) {
+            this._phase = 'done';
+          } else {
+            this._phase = 'corner-charging';
+            try { setActiveCannonCorner(this._shotIdx); } catch (e) {}
+            this._refreshOverlay();
           }
         }
       }
     },
-    isComplete() { return this._broken >= 3; },
-    progress() { return this._broken + ' / 3'; },
+    isComplete() {
+      // Done when all 4 shields are popped (queen shields = 0)
+      // OR phase advanced to done (defensive fallback).
+      try { return queenShieldsRemaining() === 0; }
+      catch (e) { return this._phase === 'done'; }
+    },
+    onComplete() {
+      try { clearCannon(); } catch (e) {}
+      try { clearQueenHive(); } catch (e) {}
+      // Tear down our overlay rings.
+      for (const z of this._bigZones) {
+        if (z.ring && z.ring.parent) z.ring.parent.remove(z.ring);
+        if (z.disc && z.disc.parent) z.disc.parent.remove(z.disc);
+      }
+      this._bigZones = [];
+    },
+    progress() {
+      let remaining = 4;
+      try { remaining = queenShieldsRemaining(); } catch (e) {}
+      const popped = 4 - remaining;
+      return popped + ' / 4 shields';
+    },
   });
 
-  // ----- 10. HAZARDS — cycle through Tetris/Galaga/Minesweeper/Pacman -----
-  // We rotate the active hazard style every few seconds and the
-  // lesson completes when the player has taken damage from any one
-  // of them. The notifyHazardHit hook drives completion.
+  // ----- 10. TAKE DAMAGE — Tetris + Galaga (non-lethal) -----
+  // The user said: walk to the EDGE of the map for hazards. We use
+  // the real hazard system but cycle only through Tetris and Galaga
+  // here — both deal damage but don't insta-kill. The tutorial-no-die
+  // gameOver respawn safety still catches anything weird.
   list.push({
-    id: 'hazards',
+    id: 'hazard_damage',
     label: 'TAKE A HAZARD HIT',
-    hint: 'Hazards rain down in waves. Walk into one to feel the damage. (You will be healed at the next lesson.)',
-    _t: 0,
-    _styleIdx: 0,
+    hint: 'Walk toward the edge of the arena. Tetris and Galaga hazards will rain down — let one hit you.',
     onActivate() {
-      this._t = 0;
-      this._styleIdx = 0;
-      // Tutorial-mode hazards are driven from main.js by setting the
-      // current hazard style and enabling spawning. We expose a hint
-      // here that main.js reads to drive the style cycle. We don't
-      // import the modules directly — keeps this file decoupled.
-      S.tutorialHazardCycle = true;
+      // Tells main.js's animate loop to start cycling hazards. In
+      // this lesson we restrict the cycle to non-lethal styles.
+      S.tutorialHazardCycle = 'damage';        // 'damage' or 'deadly'
     },
-    onUpdate(dt) {
-      this._t += dt;
+    onUpdate() {
+      // Suggest a direction: arrow points toward the nearest edge.
+      const px = player.pos.x, pz = player.pos.z;
+      // Pick whichever edge the player is closest to
+      const edges = [
+        { x: ARENA - 4, z: pz, d: ARENA - px },
+        { x: -ARENA + 4, z: pz, d: ARENA + px },
+        { x: px, z: ARENA - 4, d: ARENA - pz },
+        { x: px, z: -ARENA + 4, d: ARENA + pz },
+      ];
+      edges.sort((a, b) => a.d - b.d);
+      S.tutorialArrows = [{ x: edges[0].x, z: edges[0].z, label: 'EDGE' }];
     },
     isComplete: () => (_hazardHits - _hazardHitsAtActivate) >= 1,
+    onComplete() {
+      // Don't turn off the cycle yet — next lesson uses it too. Just
+      // change the mode tag; main.js handles the style selection.
+      // We leave S.tutorialHazardCycle on the value the next lesson
+      // sets in its onActivate.
+    },
+  });
+
+  // ----- 11. AVOID DEADLY HAZARDS — Minesweeper + Pacman (insta-kill, no-die respawn) -----
+  // These hazards insta-kill in the real game. In tutorial the
+  // gameOver helper respawns the player at center. We tell them
+  // up front so the lesson is "see what these do — they kill you."
+  list.push({
+    id: 'hazard_deadly',
+    label: 'DODGE THE DEADLY',
+    hint: 'These hazards INSTANTLY KILL you. Touch a Minesweeper bomb or a Pacman ghost — you respawn in tutorial, but in the real game you would not.',
+    onActivate() {
+      S.tutorialHazardCycle = 'deadly';
+    },
+    onUpdate() {
+      const px = player.pos.x, pz = player.pos.z;
+      const edges = [
+        { x: ARENA - 4, z: pz, d: ARENA - px },
+        { x: -ARENA + 4, z: pz, d: ARENA + px },
+        { x: px, z: ARENA - 4, d: ARENA - pz },
+        { x: px, z: -ARENA + 4, d: ARENA + pz },
+      ];
+      edges.sort((a, b) => a.d - b.d);
+      S.tutorialArrows = [{ x: edges[0].x, z: edges[0].z, label: 'EDGE' }];
+    },
+    isComplete: () => (_hazardHits - _hazardHitsAtActivate) >= 2,
     onComplete() {
       S.tutorialHazardCycle = false;
     },
   });
 
-  // ----- 11. HEAL -----
+  // ----- 12. HEAL -----
   list.push({
     id: 'heal',
     label: 'USE A POTION',
     hint: 'Press H to drink a potion and heal your wounds.',
     onActivate() {
-      // Make sure the player has at least one potion. main.js exposes
-      // S.potions; we just bump it.
+      // Make sure the player has at least one potion AND is below
+      // max HP so the potion actually does something. tryUsePotion
+      // refuses if HP is full.
       if ((S.potions || 0) < 1) S.potions = 1;
+      if (S.hp >= S.hpMax) {
+        S.hp = Math.max(1, Math.floor(S.hpMax * 0.5));
+      }
     },
     isComplete: () => (_potionsConsumed - _potionsConsumedAtActivate) >= 1,
   });

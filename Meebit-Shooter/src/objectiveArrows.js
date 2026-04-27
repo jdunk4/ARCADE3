@@ -162,6 +162,23 @@ function _setArrowColor(p, colorStr) {
 /** Collect (x, z, label, panic) entries for the current wave. */
 function _collectTargets(S, waveDef, playerPos) {
   _targets.length = 0;
+
+  // TUTORIAL ARROW OVERRIDE: when the lesson controller is active it
+  // drives an array of arrow targets via S.tutorialArrows. Each entry
+  // is { x, z, label }. We short-circuit the wave-based switch below
+  // because the tutorial doesn't have a real waveDef.
+  if (S && S.tutorialMode && Array.isArray(S.tutorialArrows) && S.tutorialArrows.length > 0) {
+    for (const t of S.tutorialArrows) {
+      if (typeof t.x !== 'number' || typeof t.z !== 'number') continue;
+      _targets.push({
+        x: t.x, z: t.z,
+        label: t.label || '',
+        panic: !!t.panic,
+      });
+    }
+    return;
+  }
+
   if (!waveDef) return;
 
   const px = playerPos ? playerPos.x : 0;

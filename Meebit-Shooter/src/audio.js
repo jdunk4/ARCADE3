@@ -210,12 +210,14 @@ class AudioEngine {
   setMusicVolume(v) {
     this.musicVolume = Math.max(0, Math.min(1, v));
     for (const el of this._trackEls) el.volume = this._effectiveMusicVolume();
+    if (this._tutorialMusicEl) this._tutorialMusicEl.volume = this._effectiveMusicVolume();
     this._persist();
   }
   setMuted(m) {
     this.muted = !!m;
     if (this.masterGain) this.masterGain.gain.value = this.muted ? 0 : 1;
     for (const el of this._trackEls) el.volume = this._effectiveMusicVolume();
+    if (this._tutorialMusicEl) this._tutorialMusicEl.volume = this._effectiveMusicVolume();
     if (this._phoneRingEl) this._phoneRingEl.volume = this._effectiveSfxVolume();
     if (this._cDroneEl) this._cDroneEl.volume = this._effectiveSfxVolume();
     this._persist();
@@ -278,6 +280,49 @@ class AudioEngine {
     if (this._currentTrackIdx < 0) return;
     const el = this._trackEls[this._currentTrackIdx];
     this._fadeOutAndPause(el);
+  }
+
+  // ---------------------------------------------------------------
+  // TUTORIAL MUSIC — independent of the playlist soundtrack.
+  // Single looping track loaded from assets/TeachingWar.mp3. Has its
+  // own HTMLAudioElement so it can play simultaneously with (or
+  // exclusively from) the main soundtrack — though in practice we
+  // call stopMusic() before starting it, since tutorial mode replaces
+  // the main music entirely.
+  // ---------------------------------------------------------------
+  startTutorialMusic() {
+    if (!this.ctx) this.init();
+    // Lazy-load on first call.
+    if (!this._tutorialMusicEl) {
+      try {
+        const el = new HTMLAudio('assets/TeachingWar.mp3');
+        el.preload = 'auto';
+        el.loop = true;             // loop indefinitely while tutorial runs
+        el.volume = this._effectiveMusicVolume();
+        this._tutorialMusicEl = el;
+      } catch (e) {
+        console.warn('[audio] TeachingWar.mp3 failed to load', e);
+        return;
+      }
+    }
+    // Stop the playlist soundtrack if it's running so the tutorial
+    // track plays alone.
+    this.stopMusic();
+    this._musicOn = true;
+    const el = this._tutorialMusicEl;
+    try {
+      el.currentTime = 0;
+      el.volume = 0;
+      const p = el.play();
+      if (p && p.catch) p.catch(() => {});
+    } catch (e) {}
+    this._fadeIn(el, this._effectiveMusicVolume(), 0.8);
+  }
+
+  stopTutorialMusic() {
+    this._musicOn = false;
+    if (!this._tutorialMusicEl) return;
+    this._fadeOutAndPause(this._tutorialMusicEl);
   }
 
   /** True if a music track is currently active (for callers that want to
