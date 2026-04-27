@@ -199,9 +199,12 @@ function attachGLB(gltf) {
     // window._gunRotIdx (toggled by `]`) cycles through them so
     // we can find the right one visually.
     //
-    // Once the right index is identified, the keydown handler can
-    // be removed and the rotation hard-coded to whichever value
-    // matched.
+    // DIAGNOSTIC MODE: gun is also scaled up 3× and given a much
+    // brighter emissive so rotation differences are unmistakable
+    // from any angle. Production size + emissive get restored when
+    // we lock in the right rotation and remove the cycler.
+    gun.scale.setScalar(3.0);
+    gunMat.emissiveIntensity = 3.0;
     const GUN_ROTATIONS = [
       // 0: original (rotate +Z barrel onto +X)
       { x: 0, y: Math.PI / 2, z: 0, label: '+90 Y (barrel→+X)' },
@@ -217,10 +220,45 @@ function attachGLB(gltf) {
       { x: 0, y: Math.PI, z: 0, label: '180 Y (barrel→-Z)' },
     ];
     let gunRotIdx = 0;
+    // On-screen toast that confirms the keypress registered AND shows
+    // which rotation index we're currently on. Without this, a
+    // not-registered keypress and a registered-but-no-visual-change
+    // are indistinguishable.
+    let toastEl = null;
+    const ensureToast = () => {
+      if (toastEl) return toastEl;
+      if (typeof document === 'undefined') return null;
+      toastEl = document.createElement('div');
+      toastEl.style.cssText = [
+        'position: fixed', 'top: 50%', 'left: 50%',
+        'transform: translate(-50%, -50%)',
+        'padding: 18px 28px',
+        'background: rgba(0, 0, 0, 0.85)',
+        'border: 2px solid #00ff66',
+        'color: #00ff66',
+        'font-family: monospace',
+        'font-size: 24px',
+        'letter-spacing: 3px',
+        'text-shadow: 0 0 12px #00ff66',
+        'z-index: 99999',
+        'pointer-events: none',
+        'opacity: 0',
+        'transition: opacity 0.15s ease-out',
+      ].join(';');
+      document.body.appendChild(toastEl);
+      return toastEl;
+    };
     const applyRot = () => {
       const r = GUN_ROTATIONS[gunRotIdx];
       gun.rotation.set(r.x, r.y, r.z);
       console.log(`[gun-rot ${gunRotIdx}] ${r.label}`);
+      const t = ensureToast();
+      if (t) {
+        t.textContent = `GUN ROT [${gunRotIdx}] · ${r.label}`;
+        t.style.opacity = '1';
+        clearTimeout(t._timer);
+        t._timer = setTimeout(() => { t.style.opacity = '0'; }, 1800);
+      }
     };
     applyRot();
     // ] key cycles the rotation. Module-scope listener so it's wired
