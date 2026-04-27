@@ -415,11 +415,34 @@ export const GUN_HOLD_EXCLUDE_BONES = [
 //
 // Only applies to the idle2/idle3/idle4 clip keys — walk/run are unaffected.
 // Covers both VRM and Unreal bone names.
+// IDLE_HIP_EXCLUDE_BONES — bones whose animation tracks are stripped
+// from the standing-idle clips (idle2/3/4) before they play.
+//
+// The hip/spine bones get excluded because Mixamo idles bake a strong
+// 60°+ hip cock into HipsBone/SpineBone tracks; on a Meebit's chunky
+// proportions that reads as the meebit tipping sideways. Excluding
+// those tracks keeps the legs/spine vertical while the head/shoulder
+// micro-motion (breathing) still plays.
+//
+// The LEG/FOOT bones are also excluded because Mixamo idles include
+// subtle weight-shifting where the meebit rocks weight from one foot
+// to the other — fine for a standing animation in a cinematic, but on
+// a top-down arena shooter where the meebit isn't translating in
+// space, that reads as "feet moving while standing still." Stripping
+// them keeps the legs planted.
+//
+// Only applies to the idle2/idle3/idle4 clip keys — walk/run are unaffected.
+// Covers both VRM and Unreal bone names.
 export const IDLE_HIP_EXCLUDE_BONES = [
-  // VRM
+  // VRM — hips/spine (sideways tilt source)
   'HipsBone', 'SpineBone', 'ChestBone',
+  // VRM — legs + feet (weight-shifting source)
+  'LeftUpperLegBone', 'LeftLowerLegBone', 'LeftFootBone',
+  'RightUpperLegBone', 'RightLowerLegBone', 'RightFootBone',
   // Unreal
   'pelvis', 'spine_01', 'spine_03',
+  'thigh_l', 'calf_l', 'foot_l',
+  'thigh_r', 'calf_r', 'foot_r',
 ];
 
 // Meebits VRM gun-hold pose. RE-AUTHORED for the specific rig — the
@@ -475,8 +498,20 @@ const GUN_HOLD_POSE = {
   RightHandBone:     { x: 0, y: +Math.PI / 2, z: 0 },  // brings hand world → identity
   // LEFT ARM — mirror for the support-hand brace
   LeftShoulderBone:  { x: 0, y: -Math.PI / 2, z: 0 },
-  LeftUpperArmBone:  { x: 0, y: 0,            z: 0 },
-  LeftLowerArmBone:  { x: 0, y: 0,            z: 0 },
+  // Tilt the left upper arm INWARD (toward the meebit's chest center).
+  // Without this, the upper arm extends straight forward and the elbow
+  // sits out at the meebit's left side; an "elbow bend" on the lower
+  // arm alone reads as the forearm angled but the whole arm still
+  // visibly out at the side. Adding +π/6 (30°) inward tilt on the
+  // upper arm moves the elbow itself toward the body centerline,
+  // making the brace pose read as "left hand crosses over to grip
+  // the gun" rather than "left hand sitting beside the right."
+  LeftUpperArmBone:  { x: 0, y: +Math.PI / 6, z: 0 },
+  // Left elbow — bigger bend now (90° right-angle). The forearm
+  // swings up-and-across the body to meet the right hand at the gun.
+  // Combined with the upper arm tilt above, the left arm reads as a
+  // proper braced support arm with a clearly visible elbow joint.
+  LeftLowerArmBone:  { x: 0, y: +Math.PI / 2, z: 0 },
   LeftHandBone:      { x: 0, y: -Math.PI / 2, z: 0 },
 };
 

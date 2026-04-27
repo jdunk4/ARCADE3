@@ -117,6 +117,22 @@ export function playMatrixRain(tintHex) {
   const FADE_OUT = 750;
   const TOTAL = FADE_IN + HOLD + FADE_OUT;
 
+  // Per-column trail buffer. Each column remembers its last N head
+  // positions (and the glyph drawn at each). On render we draw all of
+  // them at decreasing alpha — newest glyph bright at the head,
+  // older glyphs faded as a trail going up. This recreates the
+  // canonical matrix trail look WITHOUT ever putting black pixels
+  // on the canvas: previous versions used a per-frame semi-transparent
+  // black fill that compounded to opaque black behind the glyphs over
+  // the ~1.8s hold, blocking the game scene underneath. With the
+  // trail buffer approach, the canvas stays fully transparent except
+  // for the glyph pixels themselves — game shows through cleanly.
+  const TRAIL_LENGTH = 14;
+  const trails = new Array(colCount);
+  for (let i = 0; i < colCount; i++) {
+    trails[i] = [];   // [{ y: rowIdx, glyph: char }, ...] head first
+  }
+
   // Trigger fade-in via inline style (matches CSS transition).
   // Defer to next frame so the transition catches the change.
   requestAnimationFrame(() => {
@@ -140,35 +156,43 @@ export function playMatrixRain(tintHex) {
       canvas.style.opacity = '0';
     }
 
-    // Fade trail — semi-transparent black overlay each frame so old
-    // glyphs darken progressively toward black. The 0.08 alpha is a
-    // tradeoff: lower values = longer trails (more "dripping" feel),
-    // higher values = shorter, snappier trails. 0.08 matches the
-    // canonical matrix look.
-    ctx.fillStyle = 'rgba(0, 0, 0, 0.08)';
-    ctx.fillRect(0, 0, w, h);
+    // CLEAR the canvas to fully transparent every frame. No black
+    // accumulation — the game scene underneath shows through.
+    ctx.clearRect(0, 0, w, h);
 
-    // Draw each column's current glyph.
+    // Update + render every column.
     for (let i = 0; i < colCount; i++) {
       const x = i * FONT_SIZE;
-      const y = drops[i] * FONT_SIZE;
-      // Lead glyph — bright tinted with chapter color
-      if (y > 0 && y < h + FONT_SIZE) {
-        ctx.fillStyle = `rgba(${rgb}, 0.95)`;
-        ctx.fillText(_randGlyph(), x, y);
-        // Glow trail — second glyph one row up, dimmer. Uses an
-        // offset draw rather than a true blur (cheaper).
-        if (y - FONT_SIZE > 0) {
-          ctx.fillStyle = `rgba(${rgb}, 0.55)`;
-          ctx.fillText(_randGlyph(), x, y - FONT_SIZE);
-        }
-      }
-      // Advance the drop. Reset to top with random jitter when it
-      // falls off the bottom — staggers re-entry so the cascade
-      // doesn't sync up over time.
+      // Advance the drop position
       drops[i] += 0.6 + Math.random() * 0.4;
+      const headRow = Math.floor(drops[i]);
+      // Append a new head glyph if the drop has moved a whole row.
+      // Compare to last entry's row to avoid drawing duplicates if the
+      // drop hasn't advanced enough this frame.
+      const trail = trails[i];
+      const lastEntry = trail[0];
+      if (!lastEntry || lastEntry.y !== headRow) {
+        trail.unshift({ y: headRow, glyph: _randGlyph() });
+        if (trail.length > TRAIL_LENGTH) trail.pop();
+      }
+      // Draw every entry in the trail at alpha that decreases with age.
+      for (let t = 0; t < trail.length; t++) {
+        const entry = trail[t];
+        const y = entry.y * FONT_SIZE;
+        if (y < 0 || y > h + FONT_SIZE) continue;
+        // Head glyph (t=0) at near-full alpha; trail glyphs fade
+        // exponentially with index. The 0.85 base is bright enough
+        // to read against any background; pow(0.78, t) gives a
+        // smooth ~14-glyph trail that fades to invisible by the end.
+        const alpha = 0.85 * Math.pow(0.78, t);
+        ctx.fillStyle = `rgba(${rgb}, ${alpha.toFixed(3)})`;
+        ctx.fillText(entry.glyph, x, y);
+      }
+      // Reset to top with random jitter when the head falls off the
+      // bottom — staggers re-entry so the cascade doesn't sync up.
       if (drops[i] * FONT_SIZE > h && Math.random() > 0.975) {
         drops[i] = -Math.random() * 10;
+        trail.length = 0;       // clear the old trail
       }
     }
 
