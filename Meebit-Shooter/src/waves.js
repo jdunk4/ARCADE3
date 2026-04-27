@@ -308,7 +308,13 @@ export function startWave(waveNum) {
         OresModule.depot.obj.visible = false;
       }
       const fromPos = dPos ? { x: dPos.x, z: dPos.z } : { x: -15, z: 0 };
-      const toPos = { x: LAYOUT.silo.x, z: LAYOUT.silo.z };
+      // Destination: LAYOUT.powerplant — the same coordinate where the
+      // chapter-2 wave-2 server warehouse spawns. The escort cargo is
+      // a generator; it arrives at the powerplant slot and brings the
+      // server online. Then in wave 2 the warehouse mesh appears at
+      // the same location and the player engages its charging zone.
+      // One position, one narrative beat across two waves.
+      const toPos = { x: LAYOUT.powerplant.x, z: LAYOUT.powerplant.z };
       spawnEscortTruck(S.chapter || 0, fromPos, toPos);
       // Disable the depot's deposit logic — escort wave doesn't use
       // the deposit-counted wave-end. We end on truck arrival.
@@ -1403,6 +1409,32 @@ export function updateWaves(dt) {
           S.cannonReloadT = RELOAD_DURATION;
           S.cannonPhase = 'reload';
           setActiveCannonCorner(-1);    // no corner active during reload
+
+          // CASCADE: each successful corner charge brings another part
+          // of the central compound online. Visually connects the
+          // corner-charging-zone mechanic to the rest of the chapter
+          // (powerplant + silo). Each call is idempotent — if the
+          // system is already lit/open from a powerup zone earlier
+          // in the chapter, the call is harmless.
+          //   Shot 1 → light the powerplant (gives "the corner energy
+          //            woke the plant up" feel).
+          //   Shot 4 → open the silo hatch (the final shot triggers
+          //            the launch sequence's first beat).
+          // Shots 2 + 3 still feel meaningful because they pop queen
+          // shields; we just don't add a separate compound effect for
+          // them. Pacing wise the shots feel like beats: shot 1 lights
+          // up the plant (audible whoosh from setPowerplantLit's
+          // existing animation), shot 4 opens the silo (preparing the
+          // finale). Shots 2-3 are pure combat beats.
+          try {
+            if (idx === 0) {
+              setPowerplantLit(true);
+              UI.toast && UI.toast('POWERPLANT ONLINE', '#ffd93d', 1400);
+            } else if (idx === 3) {
+              openSiloHatchOnly();
+              UI.toast && UI.toast('SILO ARMED', '#ff6a1a', 1400);
+            }
+          } catch (e) { console.warn('[cannon-cascade]', e); }
         }
       }
     }

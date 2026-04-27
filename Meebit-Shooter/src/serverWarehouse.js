@@ -334,11 +334,17 @@ export function spawnServerWarehouse(chapterIdx) {
 
   scene.add(group);
 
-  // Charging zone position — in front of the warehouse (now at
-  // powerplant position), offset slightly toward the arena center so
-  // the player approaches the warehouse face naturally.
-  const chargeZoneX = LAYOUT.powerplant.x * 0.6;
-  const chargeZoneZ = LAYOUT.powerplant.z * 0.6;
+  // Charging zone position — directly in front of the warehouse face.
+  // The warehouse sits at LAYOUT.powerplant; we offset 4.5u from the
+  // warehouse toward the arena origin so the player stands right at
+  // its front. (Old version was at LAYOUT.powerplant * 0.6 — 60% of
+  // the way from origin to warehouse, which placed the charging zone
+  // far from the warehouse face. User asked for it adjacent.)
+  const _ppLen = Math.sqrt(LAYOUT.powerplant.x * LAYOUT.powerplant.x + LAYOUT.powerplant.z * LAYOUT.powerplant.z);
+  const _toOriginX = _ppLen > 0.001 ? -LAYOUT.powerplant.x / _ppLen : 0;
+  const _toOriginZ = _ppLen > 0.001 ? -LAYOUT.powerplant.z / _ppLen : 0;
+  const chargeZoneX = LAYOUT.powerplant.x + _toOriginX * 4.5;
+  const chargeZoneZ = LAYOUT.powerplant.z + _toOriginZ * 4.5;
 
   // --- VISIBLE CHARGING ZONE DISC (scene-level, separate group) ---
   // Outer ring + inner fill disc that grows with charge progress.

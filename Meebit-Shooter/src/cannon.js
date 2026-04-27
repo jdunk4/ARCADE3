@@ -163,8 +163,16 @@ export function spawnCannon(chapterIdx) {
     { x:  2.8, z: -2.8 },     // 3 = rear-right
   ];
   const CORNER_RADIUS = 1.6;
-  const CORNER_RING_GEO = new THREE.RingGeometry(CORNER_RADIUS - 0.15, CORNER_RADIUS, 32);
+  // Thicker ring band — was 0.15u thick, now 0.45u — so the outer
+  // halo reads as a SOLID bright glow instead of a thin pencil line.
+  // The user reported the corner zones being too subtle; this fix
+  // matches the chapter-2 server-warehouse charging zone style.
+  const CORNER_RING_GEO = new THREE.RingGeometry(CORNER_RADIUS - 0.45, CORNER_RADIUS, 32);
   const CORNER_FILL_GEO = new THREE.CircleGeometry(CORNER_RADIUS, 32);
+  // Beacon sphere — small bright dot that sits on the corner pad and
+  // bobs vertically. Toned down from the warehouse beacon (0.18 →
+  // 0.14) so it reads as a target without dominating the shot.
+  const CORNER_BEACON_GEO = new THREE.SphereGeometry(0.14, 12, 10);
   const corners = [];
   for (let i = 0; i < 4; i++) {
     const off = CORNER_OFFSETS[i];
@@ -172,6 +180,10 @@ export function spawnCannon(chapterIdx) {
       color: tint, transparent: true, opacity: 0.0,
       side: THREE.DoubleSide, depthWrite: false,
       blending: THREE.AdditiveBlending,
+      // toneMapped: false — full-bright additive output regardless of
+      // the renderer's tone mapping. Same trick the warehouse beacon
+      // uses; it makes the zone POP under any chapter palette.
+      toneMapped: false,
     });
     const ring = new THREE.Mesh(CORNER_RING_GEO, ringMat);
     ring.rotation.x = -Math.PI / 2;
@@ -183,6 +195,7 @@ export function spawnCannon(chapterIdx) {
       color: tint, transparent: true, opacity: 0.0,
       side: THREE.DoubleSide, depthWrite: false,
       blending: THREE.AdditiveBlending,
+      toneMapped: false,
     });
     const fill = new THREE.Mesh(CORNER_FILL_GEO, fillMat);
     fill.rotation.x = -Math.PI / 2;
@@ -191,10 +204,24 @@ export function spawnCannon(chapterIdx) {
     fill.visible = false;
     group.add(fill);
 
+    // Center beacon — bright sphere that hovers above the pad and
+    // bobs slightly. Visibility tracks the ring/fill so it only
+    // appears for the active corner (waves.js drives via setActive
+    // → setCornerActive(idx, true)).
+    const beaconMat = new THREE.MeshBasicMaterial({
+      color: tint,
+      toneMapped: false,
+    });
+    const beacon = new THREE.Mesh(CORNER_BEACON_GEO, beaconMat);
+    beacon.position.set(off.x, 0.6, off.z);
+    beacon.visible = false;
+    group.add(beacon);
+
     corners.push({
       offset: off,
       ring, ringMat,
       fill, fillMat,
+      beacon, beaconMat,
       active: false,        // currently chargeable
       consumed: false,      // shot fired — gone forever
       progress: 0,          // 0..1 fill amount
@@ -599,10 +626,14 @@ export function updateCannon(dt) {
 
   // --- Per-corner zone animation (4-corner wave 2 charging) ---
   // Each corner animates independently. Active corner: bright pulsing
-  // ring + fill scaled to its progress. Consumed: fade out. Inactive:
-  // dim if any corner is currently active in the parent flow (visible
-  // queue), otherwise hidden.
+  // ring + fill scaled to its progress + bobbing center beacon.
+  // Consumed: fade out. Inactive: dim if any corner is currently
+  // active in the parent flow (visible queue), otherwise hidden.
   if (_cannon.corners) {
+    // Bob phase shared across all beacons — derived from chargePulse
+    // so the bob ties to the existing pulse cadence rather than
+    // running on its own clock.
+    const beaconBob = 0.6 + 0.18 * Math.sin(_cannon.chargePulse * 2.2);
     for (const c of _cannon.corners) {
       // Ring
       if (c.consumed) {
@@ -615,6 +646,9 @@ export function updateCannon(dt) {
           c.fillMat.opacity = Math.max(0, c.fillMat.opacity - dt * 2.0);
           if (c.fillMat.opacity <= 0) c.fill.visible = false;
         }
+        // Beacon hides immediately on consumption — the shot fired,
+        // there's nothing to mark anymore.
+        if (c.beacon) c.beacon.visible = false;
         continue;
       }
       if (c.active) {
@@ -637,6 +671,12 @@ export function updateCannon(dt) {
           c.fillMat.opacity = Math.max(0, c.fillMat.opacity - dt * 2.0);
           if (c.fillMat.opacity <= 0) c.fill.visible = false;
         }
+        // Beacon — visible while corner is active. Bobs on chargePulse
+        // and dims slightly between pulses for breathing rhythm.
+        if (c.beacon) {
+          c.beacon.visible = true;
+          c.beacon.position.y = beaconBob;
+        }
       } else {
         // Inactive but not consumed — fade ring out
         if (c.ringMat.opacity > 0) {
@@ -647,6 +687,7 @@ export function updateCannon(dt) {
           c.fillMat.opacity = Math.max(0, c.fillMat.opacity - dt * 1.6);
           if (c.fillMat.opacity <= 0) c.fill.visible = false;
         }
+        if (c.beacon) c.beacon.visible = false;
       }
     }
   }
