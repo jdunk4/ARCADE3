@@ -191,18 +191,50 @@ function attachGLB(gltf) {
                || player.bones['right_hand'];
   if (handBone) {
     handBone.add(gun);
-    // This Meebits VRM rig has T-pose rest with identity rotations
-    // throughout the arm chain. In the hand bone's local frame:
-    //   +X = "down the fingers / out the wrist"  (palm-extended direction)
-    //   +Y = up (back of hand in rest pose)
-    //   +Z = forward (out the back of the wrist in rest pose)
-    // The gun box's local +Z is its barrel direction. To align the
-    // barrel with the hand's +X (fingertip-forward), rotate the gun
-    // +90° around its local Y axis.
-    gun.rotation.set(0, Math.PI / 2, 0);
-    // Seat the gun past the wrist along the fingers axis (+X). Value
-    // tuned empirically: 0.05 lands the box right in the palm of the
-    // hand rather than at the wrist pivot or out past the fingertips.
+    // EMPIRICAL TUNING — the hand bone's local axes aren't what I
+    // expected after the gun-hold pose runs. Last try (rotate +90°
+    // around local Y to align barrel with hand-local +X) ended up
+    // with the barrel pointing at the floor. So one of the OTHER
+    // 6 standard orientations is the right one. The diagnostic
+    // window._gunRotIdx (toggled by `]`) cycles through them so
+    // we can find the right one visually.
+    //
+    // Once the right index is identified, the keydown handler can
+    // be removed and the rotation hard-coded to whichever value
+    // matched.
+    const GUN_ROTATIONS = [
+      // 0: original (rotate +Z barrel onto +X)
+      { x: 0, y: Math.PI / 2, z: 0, label: '+90 Y (barrel→+X)' },
+      // 1: rotate -90° around Y (barrel onto -X)
+      { x: 0, y: -Math.PI / 2, z: 0, label: '-90 Y (barrel→-X)' },
+      // 2: rotate +90° around X (barrel onto -Y, was the "down" we just saw)
+      { x: Math.PI / 2, y: 0, z: 0, label: '+90 X (barrel→-Y)' },
+      // 3: rotate -90° around X (barrel onto +Y, "up")
+      { x: -Math.PI / 2, y: 0, z: 0, label: '-90 X (barrel→+Y)' },
+      // 4: no rotation — barrel along original +Z (hand-local forward axis)
+      { x: 0, y: 0, z: 0, label: 'identity (barrel→+Z)' },
+      // 5: rotate 180° around Y (barrel along -Z)
+      { x: 0, y: Math.PI, z: 0, label: '180 Y (barrel→-Z)' },
+    ];
+    let gunRotIdx = 0;
+    const applyRot = () => {
+      const r = GUN_ROTATIONS[gunRotIdx];
+      gun.rotation.set(r.x, r.y, r.z);
+      console.log(`[gun-rot ${gunRotIdx}] ${r.label}`);
+    };
+    applyRot();
+    // ] key cycles the rotation. Module-scope listener so it's wired
+    // immediately after the player loads. Ungated by game state.
+    if (typeof window !== 'undefined') {
+      window.addEventListener('keydown', (ev) => {
+        if (ev.key === ']') {
+          gunRotIdx = (gunRotIdx + 1) % GUN_ROTATIONS.length;
+          applyRot();
+        }
+      });
+    }
+    // Position is unchanged; we're only tuning rotation. If position
+    // also needs tweaking we'll do that after rotation is locked in.
     gun.position.set(0.05, 0, 0);
   } else {
     // Fallback path — no hand bone found. Position+orient relative
