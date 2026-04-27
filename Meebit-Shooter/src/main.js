@@ -726,10 +726,19 @@ function showIncomingCall() {
 
     // When the player finally clicks ATTACK THE AI, tear down the dive.
     // We do this once the start-btn fires so the fade coincides with the
-    // transition into gameplay (below in startGame).
-    document.getElementById('start-btn').addEventListener('click', () => {
-      diveCtrl.teardown();
-    }, { once: true });
+    // transition into gameplay (below in startGame). The tutorial button
+    // takes the player into a different gameplay path but needs the same
+    // overlay teardown — without it the matrix rain stays on top of the
+    // game and you can hear gameplay but see nothing.
+    const _diveTeardownOnce = (() => {
+      let done = false;
+      return () => { if (!done) { done = true; diveCtrl.teardown(); } };
+    })();
+    document.getElementById('start-btn').addEventListener('click', _diveTeardownOnce, { once: true });
+    const tutorialBtn = document.getElementById('tutorial-btn');
+    if (tutorialBtn) {
+      tutorialBtn.addEventListener('click', _diveTeardownOnce, { once: true });
+    }
   }, { once: true });
 }
 
