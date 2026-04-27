@@ -191,89 +191,22 @@ function attachGLB(gltf) {
                || player.bones['right_hand'];
   if (handBone) {
     handBone.add(gun);
-    // EMPIRICAL TUNING — the hand bone's local axes aren't what I
-    // expected after the gun-hold pose runs. Last try (rotate +90°
-    // around local Y to align barrel with hand-local +X) ended up
-    // with the barrel pointing at the floor. So one of the OTHER
-    // 6 standard orientations is the right one. The diagnostic
-    // window._gunRotIdx (toggled by `]`) cycles through them so
-    // we can find the right one visually.
-    //
-    // DIAGNOSTIC MODE: gun is also scaled up 3× and given a much
-    // brighter emissive so rotation differences are unmistakable
-    // from any angle. Production size + emissive get restored when
-    // we lock in the right rotation and remove the cycler.
-    gun.scale.setScalar(3.0);
-    gunMat.emissiveIntensity = 3.0;
-    const GUN_ROTATIONS = [
-      // 0: original (rotate +Z barrel onto +X)
-      { x: 0, y: Math.PI / 2, z: 0, label: '+90 Y (barrel→+X)' },
-      // 1: rotate -90° around Y (barrel onto -X)
-      { x: 0, y: -Math.PI / 2, z: 0, label: '-90 Y (barrel→-X)' },
-      // 2: rotate +90° around X (barrel onto -Y, was the "down" we just saw)
-      { x: Math.PI / 2, y: 0, z: 0, label: '+90 X (barrel→-Y)' },
-      // 3: rotate -90° around X (barrel onto +Y, "up")
-      { x: -Math.PI / 2, y: 0, z: 0, label: '-90 X (barrel→+Y)' },
-      // 4: no rotation — barrel along original +Z (hand-local forward axis)
-      { x: 0, y: 0, z: 0, label: 'identity (barrel→+Z)' },
-      // 5: rotate 180° around Y (barrel along -Z)
-      { x: 0, y: Math.PI, z: 0, label: '180 Y (barrel→-Z)' },
-    ];
-    let gunRotIdx = 0;
-    // On-screen toast that confirms the keypress registered AND shows
-    // which rotation index we're currently on. Without this, a
-    // not-registered keypress and a registered-but-no-visual-change
-    // are indistinguishable.
-    let toastEl = null;
-    const ensureToast = () => {
-      if (toastEl) return toastEl;
-      if (typeof document === 'undefined') return null;
-      toastEl = document.createElement('div');
-      toastEl.style.cssText = [
-        'position: fixed', 'top: 50%', 'left: 50%',
-        'transform: translate(-50%, -50%)',
-        'padding: 18px 28px',
-        'background: rgba(0, 0, 0, 0.85)',
-        'border: 2px solid #00ff66',
-        'color: #00ff66',
-        'font-family: monospace',
-        'font-size: 24px',
-        'letter-spacing: 3px',
-        'text-shadow: 0 0 12px #00ff66',
-        'z-index: 99999',
-        'pointer-events: none',
-        'opacity: 0',
-        'transition: opacity 0.15s ease-out',
-      ].join(';');
-      document.body.appendChild(toastEl);
-      return toastEl;
-    };
-    const applyRot = () => {
-      const r = GUN_ROTATIONS[gunRotIdx];
-      gun.rotation.set(r.x, r.y, r.z);
-      console.log(`[gun-rot ${gunRotIdx}] ${r.label}`);
-      const t = ensureToast();
-      if (t) {
-        t.textContent = `GUN ROT [${gunRotIdx}] · ${r.label}`;
-        t.style.opacity = '1';
-        clearTimeout(t._timer);
-        t._timer = setTimeout(() => { t.style.opacity = '0'; }, 1800);
-      }
-    };
-    applyRot();
-    // ] key cycles the rotation. Module-scope listener so it's wired
-    // immediately after the player loads. Ungated by game state.
-    if (typeof window !== 'undefined') {
-      window.addEventListener('keydown', (ev) => {
-        if (ev.key === ']') {
-          gunRotIdx = (gunRotIdx + 1) % GUN_ROTATIONS.length;
-          applyRot();
-        }
-      });
-    }
-    // Position is unchanged; we're only tuning rotation. If position
-    // also needs tweaking we'll do that after rotation is locked in.
-    gun.position.set(0.05, 0, 0);
+    // EMPIRICAL FINDING: After diagnostic cycling through all 6
+    // axis-aligned rotations and capturing side-view screenshots,
+    // index 4 (IDENTITY rotation — no extra rotation applied) was
+    // the orientation that put the barrel pointing forward in the
+    // meebit's aim direction. So the gun box's local +Z axis
+    // (the BoxGeometry's depth) maps directly onto the hand's
+    // forward direction once the gun-hold pose has rotated the
+    // arm into the shooter stance. Lock that in.
+    gun.rotation.set(0, 0, 0);
+    // Position seats the gun's grip near the wrist pivot. With
+    // identity rotation, the gun's local axes match the hand bone's
+    // local axes. Hand-local +Z ends up "forward" after the pose
+    // runs; offset along +Z puts the gun forward of the wrist.
+    // The 0.4-deep gun centered at z=0.2 means the back end (grip)
+    // is at the wrist and the muzzle projects 0.4u forward.
+    gun.position.set(0, 0, 0.2);
   } else {
     // Fallback path — no hand bone found. Position+orient relative
     // to the meebit body root (world-aligned axes, +Z is forward).

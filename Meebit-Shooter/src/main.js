@@ -4350,16 +4350,6 @@ function tryMine() {
 }
 
 function updateCamera(dt) {
-  // TEMPORARY DIAGNOSTIC — side-on debug camera. Press [ to toggle.
-  // Used to verify gun orientation in the meebit's hand from a
-  // non-top-down angle. Remove this block after the gun is sorted.
-  if (window._sideViewCam) {
-    // Sit 12u to the right of the player, at chest-eye height,
-    // looking back at the player. Gives a clean profile shot.
-    camera.position.set(player.pos.x + 12, 2.0, player.pos.z);
-    camera.lookAt(player.pos.x, 1.5, player.pos.z);
-    return;
-  }
   camAnchor.set(player.pos.x + CAMERA_OFFSET.x, CAMERA_OFFSET.y, player.pos.z + CAMERA_OFFSET.z);
   camera.position.lerp(camAnchor, Math.min(1, dt * 5));
   if (S.shakeAmt > 0) {
@@ -4368,17 +4358,6 @@ function updateCamera(dt) {
     camera.position.z += (Math.random() - 0.5) * S.shakeAmt;
   }
   camera.lookAt(player.pos.x, 0.8, player.pos.z);
-}
-// Diagnostic camera-toggle key — [ flips between top-down (gameplay)
-// and side-on (debug). Listener is added at module scope so it works
-// the moment the page loads. Removed once gun orientation is sorted.
-if (typeof window !== 'undefined') {
-  window.addEventListener('keydown', (ev) => {
-    if (ev.key === '[') {
-      window._sideViewCam = !window._sideViewCam;
-      console.log('[debug-cam] side view:', !!window._sideViewCam);
-    }
-  });
 }
 
 // ============================================================================
