@@ -857,9 +857,13 @@ function runMatrixDive(progressSource, onReady) {
   overlay.appendChild(pctText);
 
   // Subtitle below the big %. Switches to "READY · ATTACK THE AI" at 100%.
+  // Anchor at top: 72% so the subText sits cleanly below the title-screen
+  // save panel (HIGH SCORE / FURTHEST rows) when both layers are visible
+  // during the title-reveal moment. Earlier 62% had the text clipping
+  // into the save panel from below.
   const subText = document.createElement('div');
   subText.style.cssText = `
-    position:absolute; left:50%; top:62%; transform:translate(-50%,-50%);
+    position:absolute; left:50%; top:72%; transform:translate(-50%,-50%);
     color:#00ff66; font-family:monospace;
     font-size: clamp(12px, 1.4vw, 16px);
     letter-spacing:5px;
