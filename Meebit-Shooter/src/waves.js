@@ -111,6 +111,7 @@ import {
 } from './empLaunch.js';
 import { fireShockwave, clearShockwaves } from './shockwave.js';
 import { startDepotDriveOff } from './ores.js';
+import { spawnPickup } from './pickups.js';
 import { LAYOUT } from './waveProps.js';
 import { startHiveRetraction, getLastHiveDeathPos, forceCompleteRetraction } from './spawners.js';
 import {
@@ -697,18 +698,48 @@ export function updateWaves(dt) {
       endWave();
       return;
     }
-    // Live HUD update
+    // Live HUD update — no total shown per user direction. Just the
+    // running freed count keeps the player focused on saving more
+    // without a "ceiling" hint that lets them know when to stop.
     const t = Math.ceil(state.timeLeft);
     UI.showObjective(
-      (state.herdLabel || 'HERD') + ' · ' + state.caught + ' / ' + state.total + ' FREED',
+      (state.herdLabel || 'HERD') + ' · ' + state.caught + ' FREED',
       'Time left: ' + t + 's · shoot each 3 times to free',
     );
     if (state.finished) {
       const final = endBonusWave();
+      // Wave-end toast in the player-facing voice: "You freed X
+      // meebits!" — celebratory, no total reference, matches the
+      // hidden-ceiling design.
       UI.toast(
-        'BONUS WAVE COMPLETE · ' + final.caught + ' / ' + final.total + ' FREED FROM SIMULATION',
+        'YOU FREED ' + final.caught + ' MEEBITS!',
         '#ffd93d', 3200
       );
+      // PERFECT-RUN BONUS: if the player freed every meebit in the
+      // herd, grant a tangible reward stack:
+      //   - +25,000 score (significant — a normal full bonus wave
+      //     scores ~55,500 from per-catch points alone, so this is
+      //     a meaningful ~45% multiplier on top)
+      //   - one free grenade pickup at the player's position
+      //   - celebratory "PERFECT RESCUE" toast a beat after the
+      //     count toast so the rewards read as separate beats
+      // Total === 0 guard prevents the bonus from triggering on a
+      // degenerate case where the herd never spawned (unlikely but
+      // defensive).
+      if (final.total > 0 && final.caught >= final.total) {
+        S.score += 25000;
+        try {
+          if (player && player.pos) {
+            spawnPickup('grenade', new THREE.Vector3(player.pos.x, 0.5, player.pos.z));
+          }
+        } catch (e) { console.warn('[bonus-perfect] grenade', e); }
+        // Slight delay so the toast doesn't stack on top of the
+        // YOU FREED N toast — visual breathing room between the
+        // two beats.
+        setTimeout(() => {
+          try { UI.toast('PERFECT RESCUE · +25,000 BONUS', '#a8ff8c', 3000); } catch (e) {}
+        }, 1200);
+      }
       // Wave 4 victory beat: shockwave rings out from the player.
       if (player && player.pos) {
         fireShockwave({ x: player.pos.x, y: 0.2, z: player.pos.z });
