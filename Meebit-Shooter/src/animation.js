@@ -499,19 +499,15 @@ const GUN_HOLD_POSE = {
   // LEFT ARM — mirror for the support-hand brace
   LeftShoulderBone:  { x: 0, y: -Math.PI / 2, z: 0 },
   // Tilt the left upper arm INWARD (toward the meebit's chest center).
-  // Without this, the upper arm extends straight forward and the elbow
-  // sits out at the meebit's left side; an "elbow bend" on the lower
-  // arm alone reads as the forearm angled but the whole arm still
-  // visibly out at the side. Adding +π/6 (30°) inward tilt on the
-  // upper arm moves the elbow itself toward the body centerline,
-  // making the brace pose read as "left hand crosses over to grip
-  // the gun" rather than "left hand sitting beside the right."
-  LeftUpperArmBone:  { x: 0, y: +Math.PI / 6, z: 0 },
-  // Left elbow — bigger bend now (90° right-angle). The forearm
-  // swings up-and-across the body to meet the right hand at the gun.
-  // Combined with the upper arm tilt above, the left arm reads as a
-  // proper braced support arm with a clearly visible elbow joint.
-  LeftLowerArmBone:  { x: 0, y: +Math.PI / 2, z: 0 },
+  // Negative Y rotation swings the upper arm across the body toward
+  // the meebit's right side. Previous +π/6 swung the OPPOSITE way
+  // (outward, away from the body) — the meebit looked mangled with
+  // one arm extended to the left and the right arm holding the gun.
+  LeftUpperArmBone:  { x: 0, y: -Math.PI / 6, z: 0 },
+  // Left elbow — 90° bend swinging the forearm across the body to
+  // meet the right hand at the gun grip. Sign matches upper arm so
+  // both rotations swing inward together.
+  LeftLowerArmBone:  { x: 0, y: -Math.PI / 2, z: 0 },
   LeftHandBone:      { x: 0, y: -Math.PI / 2, z: 0 },
 };
 
