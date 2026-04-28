@@ -4,6 +4,8 @@ import { SPAWNER_CONFIG, HIVE_CONFIG, CHAPTERS, ARENA } from './config.js';
 import { hitBurst } from './effects.js';
 import { getTriangleFor } from './triangles.js';
 import { enemies } from './enemies.js';
+import { spawnPyramidPortal } from './pyramidSpawner.js';
+import { spawnUfoPortal } from './ufoSpawner.js';
 
 export const spawners = [];
 
@@ -101,19 +103,41 @@ const _NEST_PAPER_EMISSIVE = 0x3a2a10;
 // Darker cavity — the cell interior you see behind egg sacks.
 const _NEST_CAVITY_COLOR = 0x2a1e10;
 
-// Create a wasp-nest-style hive at (x, z) tinted to the current chapter color.
+// Dispatcher — per user spec, chapters cycle through three structure
+// types on a mod-3 schedule. Each chapter pair gets a distinct theme:
+//   chapter 0 (CH1 INFERNO)  + chapter 3 (CH4 TOXIC)     → HIVE (wasp nest)
+//   chapter 1 (CH2 CRIMSON)  + chapter 4 (CH5 ARCTIC)    → PYRAMID (cursed)
+//   chapter 2 (CH3 SOLAR)    + chapter 5 (CH6 PARADISE)  → UFO (alien)
+// Modulo 3 of the chapter index picks the type so the rotation is
+// implicit in the index and doesn't require a per-chapter table.
+//
+// All three structure modules return objects with the same field
+// shape (obj, pos, nestBody, eggs[], nestMat, nestOriginalColor,
+// crown/coreMat aliases, hp, hpMax, etc), so the existing
+// damageSpawner / updateSpawners / shield / destruction code drives
+// any of them without needing to know which is which.
 export function spawnPortal(x, z, chapterIdx) {
+  const slot = ((chapterIdx % 3) + 3) % 3;     // safe modulo for negatives
+  if (slot === 1) return spawnPyramidPortal(x, z, chapterIdx);
+  if (slot === 2) return spawnUfoPortal(x, z, chapterIdx);
+  return _spawnHivePortal(x, z, chapterIdx);
+}
+
+// Create a wasp-nest-style hive at (x, z) tinted to the current chapter color.
+function _spawnHivePortal(x, z, chapterIdx) {
   const tint = CHAPTERS[chapterIdx % CHAPTERS.length].full.lamp;
   const group = new THREE.Group();
   group.position.set(x, 0, z);
 
   // Base — a thin disc of dried paper the nest grows on. Smaller than the
   // old portal base, tinted browner, reads as "dried pulp" rather than
-  // "sci-fi platform".
+  // "sci-fi platform". Emissive bumped 0.6 → 0.9 so the foundation
+  // glows clearly against the dark chapter floors. Refresh per
+  // playtester request — "modify the look of hives".
   const base = new THREE.Mesh(
     new THREE.CylinderGeometry(1.9, 2.1, 0.22, 14),
     new THREE.MeshStandardMaterial({
-      color: 0x3a2a18, emissive: 0x1a0f05, emissiveIntensity: 0.6,
+      color: 0x3a2a18, emissive: 0x1a0f05, emissiveIntensity: 0.9,
       roughness: 0.95, metalness: 0.0,
     })
   );
@@ -125,18 +149,20 @@ export function spawnPortal(x, z, chapterIdx) {
   // Papery nest body — an egg-shaped dome made of stacked hex rings.
   // The dome sits on the base (y=0.22) and crowns at y~3.4. Each ring
   // tapers as it goes up. I draw 8 rings vertically; ring 0 is widest,
-  // top ring is narrow/crown.
+  // top ring is narrow/crown. Body warm-tone emissive bumped
+  // 0.35 → 0.55 so the papery structure reads as glowing from within
+  // even in dim chapters.
   const nestMat = new THREE.MeshStandardMaterial({
     color: _NEST_PAPER_COLOR,
     emissive: _NEST_PAPER_EMISSIVE,
-    emissiveIntensity: 0.35,
+    emissiveIntensity: 0.55,
     roughness: 0.92,
     metalness: 0.0,
   });
   const capMat = new THREE.MeshStandardMaterial({
     color: _NEST_PAPER_COLOR,
     emissive: tint,                 // faintly tinted — "something alive inside"
-    emissiveIntensity: 0.25,
+    emissiveIntensity: 0.50,
     roughness: 0.85,
     metalness: 0.0,
   });
