@@ -3524,7 +3524,13 @@ function fireWeapon() {
   const w = getWeapon();
   const rate = w.fireRate * (S.fireRateBoost || 1);
   const dmgBoost = S.damageBoost || 1;
-  const origin = new THREE.Vector3(player.pos.x, 1.3, player.pos.z);
+  // Origin Y=1.9 puts the spawn point at gun-barrel height (player's
+  // raised hand area) so bullets and rockets emerge from the weapon,
+  // not the waist. Was 1.3 (hip) — playtester reported all bullet
+  // weapons looked like they were firing from the player's belly.
+  // 1.9 matches BEAM_Y in updateBeams so all weapon emit points
+  // align consistently.
+  const origin = new THREE.Vector3(player.pos.x, 1.9, player.pos.z);
   // Tutorial: count this as a shot for the SHOOT lesson and tag the
   // current weapon for the TRY ALL WEAPONS lesson.
   if (S.tutorialMode) tutorialOnShotFired(S.currentWeapon);
