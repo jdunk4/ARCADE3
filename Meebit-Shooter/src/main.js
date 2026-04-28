@@ -117,6 +117,7 @@ import {
 import {
   triggerFreezeCycle, isInsideAnyPod, getFreezePhase,
   didFreezeFireThisFrame, clearFreeze, updateFreeze,
+  applySuctionToVelocity,
 } from './bossFreeze.js';
 import {
   spawnSolarFlare, clearAllFlares, updateFlares,
@@ -329,12 +330,23 @@ function ensureFlameMeshes() {
   //
   // ConeGeometry(radius, height, radialSegments, heightSegments, openEnded).
   // Default cone: tip at +Y, base at -Y. We translate so the BASE is at
-  // origin and the tip extends along +Y, then rotate so tip points at +Z.
+  // origin and the tip extends along +Y, then rotate so the TIP points
+  // at LOCAL -Z. This is the opposite of what an intuitive read might
+  // suggest — three.js's Object3D.lookAt() aligns local -Z with the
+  // target (camera convention), so for the cone's TIP to point at the
+  // target after lookAt, the tip must be at -Z in object space.
+  //
+  // Previous version used rotateX(+π/2) which put the tip at +Z; lookAt
+  // then sent the tip away from the target, leaving the BASE facing
+  // forward — a megaphone-shaped flame (narrow at muzzle, wide far out).
+  // Visually backwards. Fixed by rotating the other direction so the
+  // tip lands at -Z.
+  //
   // At runtime we scale Z by length, X/Y by BASE radius (the wide muzzle
-  // end).
+  // end at the player's nozzle).
   const flameGeo = new THREE.ConeGeometry(1, 1, 14, 1, true);
   flameGeo.translate(0, 0.5, 0);                // base at origin, tip at +Y
-  flameGeo.rotateX(Math.PI / 2);                // base at origin, tip at +Z
+  flameGeo.rotateX(-Math.PI / 2);               // base at origin, tip at -Z
   flameOuterMat = new THREE.MeshBasicMaterial({
     color: 0xff6622, transparent: true, opacity: 0.75,
     side: THREE.DoubleSide, depthWrite: false,
@@ -3385,6 +3397,11 @@ function updatePlayer(dt) {
 
   const speed = S.playerSpeed * (S.dashActive > 0 ? PLAYER.dashSpeed : 1);
   player.vel.set(mx * speed, 0, mz * speed);
+  // GLACIER_WRAITH suction — during the freeze telegraph, modify the
+  // velocity to add inward pull toward the boss. WASD still works at
+  // full strength but standing still or kiting away is harder. No-op
+  // outside the telegraph phase.
+  applySuctionToVelocity(player.pos, player.vel);
   player.pos.x += player.vel.x * dt;
   player.pos.z += player.vel.z * dt;
   player.pos.x = Math.max(-ARENA + 1.5, Math.min(ARENA - 1.5, player.pos.x));
@@ -3863,8 +3880,10 @@ function applyBeamDamage(w, dmgBoost) {
       }
     }
   }
-  // Also damage portals along the beam (for spawner waves)
-  if (S.spawnerWaveActive) {
+  // Also damage portals along the beam (for spawner waves OR
+  // NIGHT_HERALD's shielded phase, when the boss spawns 3 hives the
+  // player must destroy to break the shield).
+  if (S.spawnerWaveActive || (S.bossRef && S.bossRef.shielded)) {
     for (const s of spawners) {
       if (s.destroyed) continue;
       const dx = s.pos.x - origin.x;
@@ -3992,7 +4011,7 @@ function applyFlameDamage(w, dmgBoost) {
   }
 
   // Hives (spawner wave) in the cone — same flat 0.5/tick as raygun.
-  if (S.spawnerWaveActive) {
+  if (S.spawnerWaveActive || (S.bossRef && S.bossRef.shielded)) {
     for (const s of spawners) {
       if (s.destroyed) continue;
       const dx = s.pos.x - origin.x;
@@ -4244,8 +4263,9 @@ function explodeRocket(r) {
       damageHerdAt(pos.x, pos.z, radius);
     }
   }
-  // AoE can hurt portals too
-  if (S.spawnerWaveActive) {
+  // AoE can hurt portals too (spawner waves OR NIGHT_HERALD's shielded
+  // phase, where the player must destroy 3 hives to break the shield).
+  if (S.spawnerWaveActive || (S.bossRef && S.bossRef.shielded)) {
     for (const s of spawners) {
       if (s.destroyed) continue;
       const dx = s.pos.x - pos.x;
@@ -4703,7 +4723,7 @@ function updateBullets(dt) {
         scene.remove(b); bullets.splice(i, 1); continue;
       }
     }
-    if (S.spawnerWaveActive) {
+    if (S.spawnerWaveActive || (S.bossRef && S.bossRef.shielded)) {
       let portalHit = null;
       for (const s of spawners) {
         if (s.destroyed) continue;

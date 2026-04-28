@@ -32,7 +32,11 @@ const POD_RADIUS = 3.5;
 
 // ---- Geometry ----
 const BASE_GEO  = new THREE.CircleGeometry(POD_RADIUS, 32);
-const DOME_GEO  = new THREE.SphereGeometry(POD_RADIUS, 24, 16, 0, Math.PI * 2, 0, Math.PI / 2);
+// Dome: radius 1.2x the base disc so the hemisphere flares OUT past
+// the safe-zone footprint, reading as a bubble rather than a flat
+// disc. Player feedback wanted a bigger, more visible dome on all
+// pods (chapter 2 wave 2 + GLACIER_WRAITH freeze).
+const DOME_GEO  = new THREE.SphereGeometry(POD_RADIUS * 1.2, 24, 16, 0, Math.PI * 2, 0, Math.PI / 2);
 const RING_GEO  = new THREE.RingGeometry(POD_RADIUS - 0.15, POD_RADIUS, 48);
 const OUTER_RING_GEO = new THREE.RingGeometry(POD_RADIUS + 0.6, POD_RADIUS + 0.85, 48);
 const BEACON_GEO = new THREE.SphereGeometry(0.35, 12, 10);
@@ -46,8 +50,11 @@ function _baseMat(tint) {
   });
 }
 function _domeMat(tint) {
+  // Bumped opacity 0.30 → 0.50 so the dome reads more solidly. User
+  // feedback: "make the top not quite so transparent." Emissive
+  // intensity unchanged so the inner glow is preserved.
   return new THREE.MeshStandardMaterial({
-    color: tint, transparent: true, opacity: 0.30,
+    color: tint, transparent: true, opacity: 0.50,
     emissive: tint, emissiveIntensity: 0.7,
     roughness: 0.4, metalness: 0.1,
     side: THREE.DoubleSide, depthWrite: false,

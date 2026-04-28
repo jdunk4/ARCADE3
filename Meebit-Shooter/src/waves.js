@@ -895,7 +895,7 @@ export function updateWaves(dt) {
     const maxOnScreen = waveDef.type === 'boss'
       ? 10
       : (waveDef.type === 'cannon-load'
-          ? 40               // pandemonium fixed — capped lower than ramp version
+          ? 25               // softened from 40 to 25 for new-player accessibility
           : Math.max(10, Math.floor((40 + S.wave * 2) * density)));
     if (spawnCooldown <= 0 && liveNonBosses < maxOnScreen && !S.hyperdriveActive && (waveDef.spawnRate || 0) > 0) {
       // Cooldown between spawn batches — lower density stretches this out.
@@ -909,9 +909,11 @@ export function updateWaves(dt) {
       const effRate = baseRate * density;
       spawnCooldown = Math.max(0.15, 0.9 / effRate);
       let baseCount = Math.min(3, 1 + Math.floor(S.wave / 3));
-      // Cannon-load pandemonium — fixed batch of 3 (no ramp anymore).
+      // Cannon-load — softened from 3 to 2 per-batch for new-player
+      // accessibility. Combined with the lower spawnRate (14→8) and
+      // lower maxOnScreen (40→25) the wave is now meaningfully gentler.
       if (waveDef.type === 'cannon-load') {
-        baseCount = 3;
+        baseCount = 2;
       }
       // Tutorial mode also limits the per-batch count so the spawn-rate
       // clamp isn't undermined by 3-at-a-time bursts.
@@ -2073,9 +2075,9 @@ function updateBossPattern(dt, boss) {
     // Wave 1 — kickoff burst on first frame
     if (!boss.devilWave1Started) {
       boss.devilWave1Started = true;
-      boss.devilWave1Remaining = 50;
+      boss.devilWave1Remaining = 25;
       boss.devilWave1NextAt = 0;          // fire first batch immediately
-      UI.toast && UI.toast('FIRST DEVIL SWARM · 50 INCOMING', '#ff2e4d', 2200);
+      UI.toast && UI.toast('FIRST DEVIL SWARM · 25 INCOMING', '#ff2e4d', 2200);
     }
     if (boss.devilWave1Remaining > 0) {
       boss.devilWave1NextAt -= dt;
@@ -2089,9 +2091,9 @@ function updateBossPattern(dt, boss) {
     // Wave 2 — 50% HP trigger. Same staggered cadence.
     if (!boss.devilWave2Started && boss.hp / boss.hpMax < 0.5) {
       boss.devilWave2Started = true;
-      boss.devilWave2Remaining = 50;
+      boss.devilWave2Remaining = 25;
       boss.devilWave2NextAt = 0;
-      UI.toast && UI.toast('SECOND DEVIL SWARM · 50 MORE', '#ff2e4d', 2200);
+      UI.toast && UI.toast('SECOND DEVIL SWARM · 25 MORE', '#ff2e4d', 2200);
     }
     if (boss.devilWave2Started && boss.devilWave2Remaining > 0) {
       boss.devilWave2NextAt -= dt;
@@ -2184,6 +2186,17 @@ function updateBossPattern(dt, boss) {
   // (zero velocity → flare drops on top of the player). Survival
   // requires changing direction OR speed during the 1.5s telegraph.
   if (boss.type === 'SOLAR_TYRANT') {
+    // One-shot range override on first frame. The shared boss base
+    // sets ranged=true / range=20, which means the boss STOPS moving
+    // whenever the player is within 20u — that's most of the fight,
+    // so the boss visibly camps in place. Drop SOLAR_TYRANT's range
+    // to 6 so it aggressively closes distance and keeps repositioning.
+    // Player observation: "the solar tyrant just stood still the
+    // whole match."
+    if (!boss._solarRangeOverridden) {
+      boss._solarRangeOverridden = true;
+      boss.range = 6;
+    }
     boss.solarFlareCooldown = (boss.solarFlareCooldown == null) ? 3.0 : boss.solarFlareCooldown - dt;
     if (boss.solarFlareCooldown <= 0) {
       boss.solarFlareCooldown = 4.0;
@@ -2280,6 +2293,21 @@ function updateBossPattern(dt, boss) {
       // Slight breathing-scale on the shield for life
       const sc = 1.0 + 0.04 * Math.sin(tNow * 1.5);
       boss._heraldShield.mesh.scale.set(sc, sc, sc);
+
+      // Hive emit cadence — every 3-4s, each living hive coughs up one
+      // minion. Per playtester request: "enemies spawn out of those
+      // hives." Scope is small (one per hive per cycle) so the player
+      // isn't drowning while also trying to kill the hives.
+      boss.heraldHiveEmitCd = (boss.heraldHiveEmitCd == null) ? 3.0 : boss.heraldHiveEmitCd - dt;
+      if (boss.heraldHiveEmitCd <= 0) {
+        boss.heraldHiveEmitCd = 3.0 + Math.random() * 1.0;
+        const pool = ['zomeeb', 'sprinter'];
+        for (const s of spawners) {
+          if (s.destroyed) continue;
+          if (s.enemiesAlive >= 3) continue;   // soft cap per hive
+          try { spawnFromPortal(s, pool); } catch (e) {}
+        }
+      }
 
       if (livePortalCount() === 0) {
         // All 3 hives down — drop the shield.

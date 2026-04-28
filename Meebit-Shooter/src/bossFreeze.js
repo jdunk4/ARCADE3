@@ -58,13 +58,20 @@ const _state = {
   phaseT: 0,
   pods: [],            // [{ group, baseMat, ringMat, beaconMat, x, z }]
   flashOverlay: null,  // DOM div for the full-screen freeze flash
+  bossPos: null,       // {x, z} captured at trigger time — suction target
+  debris: [],          // [{ mesh, mat, vel, life, maxLife }] — telegraph particles
 };
 
 // ---- POD GEOMETRY (cached) ----
 const _BASE_GEO   = new THREE.CircleGeometry(POD_RADIUS, 32);
 const _RING_GEO   = new THREE.RingGeometry(POD_RADIUS - 0.20, POD_RADIUS, 48);
 const _BEACON_GEO = new THREE.SphereGeometry(0.30, 12, 10);
-const _DOME_GEO   = new THREE.SphereGeometry(POD_RADIUS, 24, 12, 0, Math.PI * 2, 0, Math.PI / 2);
+// Dome geometry: radius 1.2x the base disc so the dome flares OUT
+// from the safe-zone footprint. The original geometry was POD_RADIUS,
+// matching the disc exactly — visually flat-looking from overhead.
+// 1.2x makes the dome read as a hemisphere bubble with a clear
+// outer rim catching light from any angle.
+const _DOME_GEO   = new THREE.SphereGeometry(POD_RADIUS * 1.2, 24, 14, 0, Math.PI * 2, 0, Math.PI / 2);
 
 function _makePod(x, z) {
   const group = new THREE.Group();
@@ -90,10 +97,16 @@ function _makePod(x, z) {
   ring.position.y = 0.08;
   group.add(ring);
 
+  // Dome cap — bigger + less transparent than the original. Switched
+  // from AdditiveBlending to NormalBlending so the dome reads as a
+  // solid translucent SHELL rather than additive haze that blends
+  // into the bright floor disc and disappears.
+  // Player feedback: "I think we need to give it a bigger dome.
+  // Make the top not quite so transparent."
   const domeMat = new THREE.MeshBasicMaterial({
-    color: FREEZE_COLOR, transparent: true, opacity: 0.20,
-    side: THREE.DoubleSide, depthWrite: false,
-    blending: THREE.AdditiveBlending, toneMapped: false,
+    color: FREEZE_COLOR, transparent: true, opacity: 0.45,
+    side: THREE.FrontSide, depthWrite: false,
+    blending: THREE.NormalBlending, toneMapped: false,
   });
   const dome = new THREE.Mesh(_DOME_GEO, domeMat);
   dome.position.y = 0.1;
@@ -180,6 +193,7 @@ export function triggerFreezeCycle(bossPos, podCount) {
   }
   _state.phase = 'telegraph';
   _state.phaseT = 0;
+  _state.bossPos = { x: bossPos.x, z: bossPos.z };   // suction target — locked at trigger time
 
   try {
     UI.toast && UI.toast('FREEZE INCOMING · GET TO A POD', '#4ff7ff', TELEGRAPH_TIME * 1000);
@@ -218,12 +232,49 @@ export function didFreezeFireThisFrame() {
 }
 
 /**
+ * During telegraph phase, modify the player's velocity in-place to
+ * add an inward pull toward the boss. Caller is main.js's player
+ * update — gets called after WASD input has already set player.vel
+ * but before player.pos is integrated. Outside telegraph: no-op.
+ *
+ * The pull is a velocity ADDITION (not a replacement) so player
+ * input still works at full magnitude — this just biases drift
+ * toward the boss when the player isn't actively pushing away.
+ *
+ * Pull strength ramps with telegraph progress:
+ *   - First 1s: gentle (1.5 u/s)
+ *   - Last 2s: stronger (4.5 u/s, comparable to ~50% of player speed)
+ * That ramp gives the player time to react to the warning and start
+ * moving toward a pod before the suction becomes hard to fight.
+ */
+export function applySuctionToVelocity(playerPos, vel) {
+  if (_state.phase !== 'telegraph' || !_state.bossPos) return;
+  const dx = _state.bossPos.x - playerPos.x;
+  const dz = _state.bossPos.z - playerPos.z;
+  const dist = Math.sqrt(dx * dx + dz * dz) || 0.0001;
+  // Ramp strength based on telegraph progress
+  const t = _state.phaseT / TELEGRAPH_TIME;
+  const pullSpeed = 1.5 + 3.0 * t;     // u/s — 1.5 → 4.5 over 3s
+  // Add inward velocity toward the boss
+  vel.x += (dx / dist) * pullSpeed;
+  vel.z += (dz / dist) * pullSpeed;
+}
+
+/**
  * Wipe the current cycle and despawn all pods. Call on boss death +
  * chapter teardown. Idempotent.
  */
 export function clearFreeze() {
   for (const pod of _state.pods) _disposePod(pod);
   _state.pods.length = 0;
+  // Dispose any in-flight debris particles
+  for (const d of _state.debris) {
+    if (d.mesh && d.mesh.parent) d.mesh.parent.remove(d.mesh);
+    d.geom && d.geom.dispose();
+    d.mat && d.mat.dispose();
+  }
+  _state.debris.length = 0;
+  _state.bossPos = null;
   _state.phase = 'idle';
   _state.phaseT = 0;
   if (_state.flashOverlay && _state.flashOverlay.parentNode) {
@@ -249,6 +300,81 @@ export function updateFreeze(dt) {
     pod.ringMat.opacity   = 0.65 + 0.30 * pulse;
     pod.baseMat.opacity   = 0.45 + 0.20 * pulse;
     pod.beacon.position.y = (POD_RADIUS + 0.2) + 0.15 * Math.sin(tNow * 3.0);
+  }
+
+  // Debris particles — visual half of the suction effect. During
+  // telegraph, spawn small cyan shards at the arena perimeter and
+  // drift them toward the locked boss position. Each particle is a
+  // tiny tinted box that shrinks + fades as it approaches the boss,
+  // disposing when life expires. Player sees a swirl of cyan being
+  // pulled into the boss from all sides — reinforces "the boss is
+  // sucking the world inward" while the player feels it on their
+  // own velocity.
+  if (_state.phase === 'telegraph' && _state.bossPos) {
+    // Spawn rate ramps with telegraph progress so the visual
+    // intensifies the same way the suction strength does.
+    const tProg = _state.phaseT / TELEGRAPH_TIME;
+    const spawnsPerFrame = 1 + Math.floor(tProg * 3);    // 1 → 4 per frame
+    for (let i = 0; i < spawnsPerFrame; i++) {
+      // Random angle around the boss, distance near the arena edge
+      const angle = Math.random() * Math.PI * 2;
+      const dist = ARENA - 6 - Math.random() * 8;        // 6-14u inside the edge
+      const sx = _state.bossPos.x + Math.cos(angle) * dist;
+      const sz = _state.bossPos.z + Math.sin(angle) * dist;
+      const sy = 0.4 + Math.random() * 1.6;
+      const debrisGeo = new THREE.BoxGeometry(0.18, 0.18, 0.18);
+      const debrisMat = new THREE.MeshBasicMaterial({
+        color: FREEZE_COLOR, transparent: true, opacity: 0.85,
+        depthWrite: false, blending: THREE.AdditiveBlending,
+        toneMapped: false,
+      });
+      const mesh = new THREE.Mesh(debrisGeo, debrisMat);
+      mesh.position.set(sx, sy, sz);
+      // Velocity pointing toward the boss with random tangential noise
+      const dx = _state.bossPos.x - sx;
+      const dz = _state.bossPos.z - sz;
+      const d = Math.sqrt(dx * dx + dz * dz) || 0.0001;
+      // Tangent direction (perpendicular) for orbital swirl
+      const tx = -dz / d;
+      const tz =  dx / d;
+      const inwardSpeed   = 6 + Math.random() * 4;
+      const tangentialSpd = (Math.random() - 0.5) * 4;
+      const vx = (dx / d) * inwardSpeed + tx * tangentialSpd;
+      const vz = (dz / d) * inwardSpeed + tz * tangentialSpd;
+      const vy = -1.0 + Math.random() * 0.5;             // gentle fall
+      const life = 0.7 + Math.random() * 0.4;
+      scene.add(mesh);
+      _state.debris.push({
+        mesh, mat: debrisMat, geom: debrisGeo,
+        vel: { x: vx, y: vy, z: vz },
+        life, maxLife: life,
+      });
+    }
+  }
+
+  // Tick debris regardless of phase — particles spawned during
+  // telegraph keep finishing their arc into the freeze flash.
+  for (let i = _state.debris.length - 1; i >= 0; i--) {
+    const d = _state.debris[i];
+    d.life -= dt;
+    if (d.life <= 0) {
+      // Dispose
+      if (d.mesh && d.mesh.parent) d.mesh.parent.remove(d.mesh);
+      d.geom && d.geom.dispose();
+      d.mat && d.mat.dispose();
+      _state.debris.splice(i, 1);
+      continue;
+    }
+    d.mesh.position.x += d.vel.x * dt;
+    d.mesh.position.y += d.vel.y * dt;
+    d.mesh.position.z += d.vel.z * dt;
+    // Tiny gravity
+    d.vel.y -= 1.5 * dt;
+    // Shrink + fade with life
+    const lifeT = d.life / d.maxLife;
+    const sc = 0.4 + 0.6 * lifeT;
+    d.mesh.scale.set(sc, sc, sc);
+    d.mat.opacity = 0.85 * lifeT;
   }
 
   // Phase machine. phaseT tracks "this frame is the first frame of

@@ -1029,6 +1029,31 @@ export function makeBoss(bossKey, tintHex, pos) {
   crown.rotation.y = Math.PI / 4;
   group.add(crown);
 
+  // ============== SCARLET_REAPER DEMON HORNS ==============
+  // Two black cone horns flanking the head, angled outward and slightly
+  // back. Red emissive rim so they read as menacing devil horns rather
+  // than just another spike on the crown. Only attached for the
+  // SCARLET_REAPER boss type — every other boss skips this block.
+  if (bossKey === 'SCARLET_REAPER') {
+    const _hornMat = new THREE.MeshStandardMaterial({
+      color: 0x111111, emissive: 0xff2e4d, emissiveIntensity: 1.4,
+      roughness: 0.4, metalness: 0.2,
+    });
+    const _hornGeom = new THREE.ConeGeometry(0.18, 1.1, 8);
+    const hornL = new THREE.Mesh(_hornGeom, _hornMat);
+    const hornR = new THREE.Mesh(_hornGeom, _hornMat);
+    // Position around the head (which sits at y~3.0 for boss-scale humanoid).
+    hornL.position.set(-0.42, 3.25, 0.05);
+    hornR.position.set(+0.42, 3.25, 0.05);
+    // Angle outward (rotate Z) so they fan from the temples, plus tilt
+    // back a touch (rotate X) for menace.
+    hornL.rotation.set(-0.18, 0, +0.55);
+    hornR.rotation.set(-0.18, 0, -0.55);
+    group.add(hornL);
+    group.add(hornR);
+  }
+  // ============== END SCARLET HORNS ==============
+
   // ============== X / Y / Z FACTION BRAND ==============
   // Pixel-art letter built from small emissive cubes glued to the boss
   // chest. Bosses 1-6 belong to one of three rival factions:

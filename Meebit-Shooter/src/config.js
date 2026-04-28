@@ -229,7 +229,11 @@ export const WEAPONS = {
     name: 'RAY GUN',
     // Beam ticks damage while held. fireRate controls damage-tick cadence.
     fireRate: 0.05,
-    damage: 12,                 // per tick (every 50ms) → ~240 dps sustained
+    // Damage tuned down 12→7 per playtester feedback. At 20 ticks/sec
+    // that's ~140 dps sustained — still the strongest single-target DPS
+    // in the game (raygun's identity) but no longer melts bosses faster
+    // than every other weapon combined.
+    damage: 7,
     bullets: 0, spread: 0, speed: 0,
     slot: 'raygun',
     color: 0x00ff66,
@@ -242,13 +246,21 @@ export const WEAPONS = {
     // Short-range cone that ticks damage every fireRate seconds while held.
     // Much shorter than raygun but hits a wedge of enemies in front.
     fireRate: 0.08,             // damage-tick cadence (~125ms)
-    damage: 10,                 // per-tick per-enemy
+    // Damage tuned down 10→5 per playtester feedback. At 12.5 ticks/sec
+    // that's ~62 dps per enemy — but flame hits a whole wedge of
+    // enemies at once, so total damage output against a crowd is still
+    // very strong. Single-target it now sits below raygun.
+    damage: 5,
     bullets: 0, spread: 0, speed: 0,
     slot: 'flamethrower',
     color: 0xff5522,
     isFlame: true,
-    flameRange: 11,             // units forward
-    flameAngle: 0.55,           // half-angle of the cone (radians) → ~63° wedge
+    // Range tuned down 11→7. The old reach let the flame hit enemies
+    // halfway across the arena; cone now reads as proper close-range.
+    flameRange: 7,
+    // Half-angle tuned down 0.55→0.40 (~46° wedge). User flagged the
+    // old wide cone as oversized. Tighter wedge rewards aim.
+    flameAngle: 0.40,
   },
   // Chapter 7's signature weapon. Two-mode design:
   //
@@ -483,10 +495,11 @@ export function getWaveDef(wave) {
       return {
         type: 'cannon-load',
         enemies: waveEnemyMix(wave, chapterIdx),
-        // Pandemonium baseline. waves.js ramps this from 14 to 30
-        // over the wave duration via S.cannonLoadWaveT — the value
-        // here is just the starting point if the ramp hasn't ticked.
-        spawnRate: 14,
+        // Reduced from 14 → 8 per playtester feedback that the
+        // wave overwhelms new players. Chapter 4 shares this wave
+        // type and gets the same softening; absolute pacing was
+        // aggressive even with more weapons available.
+        spawnRate: 8,
         chargesRequired: 4,
         cannonShotInterval: 15.0,
         cannonShotsTotal: 4,
