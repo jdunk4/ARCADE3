@@ -6,15 +6,15 @@
 // soundtrack while the player is in the pause menu.
 //
 // Modes (in cycle order):
-//   1. BARS       — vertical frequency bars across the bottom edge.
-//                   Spectrum analyzer bread-and-butter.
-//   2. WAVEFORM   — time-domain oscilloscope line traversing left
-//                   to right. Reads as the actual audio waveform.
-//   3. RADIAL     — bars projected outward from the canvas center
-//                   in a ring. Bass on the inside, treble on the
-//                   rim. PS1 SoundScope's trademark look.
-//   4. HEX GRID   — a 6×4 grid of hexagonal cells whose brightness
-//                   tracks frequency band amplitude. PS1-Tron vibe.
+//   1. BARS         — vertical frequency bars across the bottom edge.
+//                     Spectrum analyzer bread-and-butter.
+//   2. WAVEFORM     — time-domain oscilloscope line traversing left
+//                     to right. Reads as the actual audio waveform.
+//   3. MATRIX RAIN  — columns of falling katakana / digits, classic
+//                     Matrix style. Bass drives column fall speed,
+//                     treble brightens the leading head of each
+//                     stream, and overall amplitude spikes give the
+//                     entire rainfall a downward pulse on every beat.
 //
 // Public API (returned by createVisualizer):
 //   start()      — begins the rAF render loop
@@ -33,9 +33,12 @@ import { Audio } from './audio.js';
 const MODES = [
   { id: 'bars',      label: 'BARS' },
   { id: 'waveform',  label: 'WAVEFORM' },
-  { id: 'radial',    label: 'RADIAL' },
-  { id: 'hex',       label: 'HEX GRID' },
+  { id: 'matrix',    label: 'MATRIX RAIN' },
 ];
+
+// Matrix-rain glyph palette — classic katakana half-width + digits +
+// a pinch of latin. Picked once and indexed into during render.
+const MATRIX_GLYPHS = 'ｱｲｳｴｵｶｷｸｹｺｻｼｽｾｿﾀﾁﾂﾃﾄﾅﾆﾇﾈﾉﾊﾋﾌﾍﾎﾏﾐﾑﾒﾓﾔﾕﾖﾗﾘﾙﾚﾛﾜﾝ0123456789';
 
 /**
  * Build a visualizer controller bound to a canvas element.
@@ -140,100 +143,161 @@ export function createVisualizer({ canvas, getTint, getActive }) {
     ctx2d.shadowBlur = 0;
   }
 
-  // PS1-era radial — bars project from a center ring outward, one
-  // bar per band, color tracks frequency. The ring closes a circle
-  // so bass and treble bands meet across the top.
-  function drawRadial(w, h) {
+  // MATRIX RAIN — columns of falling katakana / digits driven by
+  // audio data. Per-column state is lazily initialized on first
+  // call and persists across frames so the streams flow smoothly
+  // even as data updates.
+  //
+  // Audio mapping:
+  //   - Each column's index maps to a frequency band. Loud bands
+  //     accelerate that column; quiet bands slow it almost to a
+  //     stop. Result: bass-heavy songs make the LEFT side of the
+  //     rain (low-frequency columns) cascade faster; treble-heavy
+  //     songs animate the RIGHT side.
+  //   - Treble RMS controls the leading-glyph brightness: more
+  //     high frequencies = whiter / hotter heads.
+  //   - A beat pulse — overall amplitude RMS, smoothed — gives
+  //     every column a temporary speed boost when drums hit, so
+  //     the whole rainfall pulses in time with the song.
+  //
+  // Visual:
+  //   - Column width matches the monospace font glyph width.
+  //   - Each column shows a vertical trail of glyphs above the
+  //     "head" position, fading from chapter tint down to black.
+  //   - The leading glyph is brighter (near-white) and shifts to
+  //     a fresh random glyph every frame for the iconic shimmer.
+  //   - Glyphs in the trail rotate to a new random char only
+  //     periodically per cell, not every frame, so the column
+  //     reads as falling text rather than a noise field.
+  let _matrixCols = null;
+  let _matrixFontPx = 14;
+  let _matrixLastW = -1;
+  function drawMatrix(w, h) {
     if (!analyser) return;
     analyser.getByteFrequencyData(freqBuf);
-    const cx = w * 0.5;
-    const cy = h * 0.5;
-    const innerR = Math.min(w, h) * 0.18;
-    const maxR = Math.min(w, h) * 0.46;
-    const BAR_COUNT = 96;
-    const binsPerBar = Math.max(1, Math.floor(freqBuf.length / BAR_COUNT));
-    ctx2d.lineWidth = 2;
-    for (let i = 0; i < BAR_COUNT; i++) {
-      let sum = 0;
-      for (let j = 0; j < binsPerBar; j++) sum += freqBuf[i * binsPerBar + j];
-      const v = sum / binsPerBar / 255;          // 0..1
-      const a = (i / BAR_COUNT) * Math.PI * 2 - Math.PI * 0.5;
-      const len = (maxR - innerR) * v;
-      const x1 = cx + Math.cos(a) * innerR;
-      const y1 = cy + Math.sin(a) * innerR;
-      const x2 = cx + Math.cos(a) * (innerR + len);
-      const y2 = cy + Math.sin(a) * (innerR + len);
-      ctx2d.strokeStyle = _tintCss;
-      ctx2d.globalAlpha = 0.35 + v * 0.65;
-      ctx2d.beginPath();
-      ctx2d.moveTo(x1, y1);
-      ctx2d.lineTo(x2, y2);
-      ctx2d.stroke();
-    }
-    ctx2d.globalAlpha = 1.0;
-    // Center disc — solid tint at faint alpha so the ring's negative
-    // space reads as a focal point.
-    ctx2d.fillStyle = _tintCss;
-    ctx2d.globalAlpha = 0.08;
-    ctx2d.beginPath();
-    ctx2d.arc(cx, cy, innerR - 4, 0, Math.PI * 2);
-    ctx2d.fill();
-    ctx2d.globalAlpha = 1.0;
-  }
+    analyser.getByteTimeDomainData(timeBuf);
 
-  // Hex grid — 6×4 cells of flat-top hexagons whose fill alpha
-  // tracks frequency band amplitude for that cell. Bands are
-  // partitioned linearly across the spectrum (cell 0 = bass, cell
-  // 23 = treble). PS1-Tron / Rez vibe.
-  function drawHex(w, h) {
-    if (!analyser) return;
-    analyser.getByteFrequencyData(freqBuf);
-    const COLS = 8;
-    const ROWS = 4;
-    const TOTAL = COLS * ROWS;
-    // Hex sizing — flat-top cell width = w / cols, height ≈ width * 0.866.
-    const hexW = (w - 12) / COLS;
-    const hexH = hexW * 0.866;
-    const startX = 6 + hexW * 0.5;
-    const startY = (h - hexH * ROWS - hexH * 0.4) * 0.5 + hexH * 0.5;
-    const binsPerCell = Math.max(1, Math.floor(freqBuf.length / TOTAL));
-    for (let row = 0; row < ROWS; row++) {
-      for (let col = 0; col < COLS; col++) {
-        const cellIdx = row * COLS + col;
-        let sum = 0;
-        for (let j = 0; j < binsPerCell; j++) sum += freqBuf[cellIdx * binsPerCell + j];
-        const v = sum / binsPerCell / 255;       // 0..1
-        // Stagger every other row by half a cell width — honeycomb.
-        const cx = startX + col * hexW + (row & 1 ? hexW * 0.5 : 0);
-        const cy = startY + row * hexH * 0.95;
-        // Hex outline (always visible at low alpha)
-        ctx2d.strokeStyle = _tintCss;
-        ctx2d.globalAlpha = 0.18;
-        ctx2d.lineWidth = 1.2;
-        _hexPath(cx, cy, hexW * 0.42);
-        ctx2d.stroke();
-        // Hex fill (alpha = amplitude)
-        if (v > 0.02) {
-          ctx2d.fillStyle = _tintCss;
-          ctx2d.globalAlpha = Math.min(1.0, v * 1.4);
-          _hexPath(cx, cy, hexW * 0.40);
-          ctx2d.fill();
-        }
+    // Lazy column setup — rebuild whenever the canvas width changes
+    // (rare) so the column count adapts to the rendered area.
+    if (_matrixCols === null || _matrixLastW !== w) {
+      _matrixLastW = w;
+      const cellW = _matrixFontPx;
+      const colCount = Math.max(8, Math.floor(w / cellW));
+      _matrixCols = new Array(colCount);
+      for (let i = 0; i < colCount; i++) {
+        _matrixCols[i] = {
+          // Start each column at a random vertical position so the
+          // rain doesn't visually "begin" the moment the visualizer
+          // opens — looks like it's been falling forever.
+          y: Math.random() * h,
+          speed: 30 + Math.random() * 40,    // base px/sec, modulated by audio
+          trailLen: 8 + Math.floor(Math.random() * 14),
+          // Glyph sequence — one glyph per row in the trail. Updated
+          // intermittently per cell so the text shimmers without
+          // becoming pure static.
+          glyphs: new Array(24).fill(0).map(
+            () => MATRIX_GLYPHS[(Math.random() * MATRIX_GLYPHS.length) | 0]
+          ),
+          // Per-cell glyph swap timer — when this counts to 0 the
+          // cell at index gets a new random glyph. Each column's
+          // cells refresh independently for the shimmer effect.
+          swapTimer: Math.random() * 0.3,
+        };
       }
     }
-    ctx2d.globalAlpha = 1.0;
-  }
 
-  function _hexPath(cx, cy, r) {
-    ctx2d.beginPath();
-    for (let i = 0; i < 6; i++) {
-      const a = (i / 6) * Math.PI * 2;
-      const x = cx + Math.cos(a) * r;
-      const y = cy + Math.sin(a) * r;
-      if (i === 0) ctx2d.moveTo(x, y);
-      else ctx2d.lineTo(x, y);
+    // Compute audio drivers.
+    //   bassRms  — average of the bottom 1/8 of the spectrum
+    //   trebleRms — average of the top 1/4 of the spectrum
+    //   amplitudeRms — overall energy (used as beat pulse)
+    const totalBins = freqBuf.length;
+    const bassEnd = Math.max(2, totalBins >> 3);
+    const trebleStart = totalBins - (totalBins >> 2);
+    let bassSum = 0, trebleSum = 0, allSum = 0;
+    for (let i = 0; i < bassEnd; i++) bassSum += freqBuf[i];
+    for (let i = trebleStart; i < totalBins; i++) trebleSum += freqBuf[i];
+    for (let i = 0; i < totalBins; i++) allSum += freqBuf[i];
+    const bassRms   = (bassSum / bassEnd) / 255;
+    const trebleRms = (trebleSum / (totalBins - trebleStart)) / 255;
+    const amplitudeRms = (allSum / totalBins) / 255;
+
+    // Frame delta. AnalyserNode doesn't give us dt so we approximate
+    // 60fps. Rain is forgiving — exact dt isn't critical.
+    const dt = 1 / 60;
+
+    // Set up the font once per frame.
+    ctx2d.font = `${_matrixFontPx}px ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace`;
+    ctx2d.textBaseline = 'top';
+
+    const cellH = _matrixFontPx + 2;
+    const cellW = _matrixFontPx;
+    const colCount = _matrixCols.length;
+    // Beat pulse — a 0..1 value that briefly spikes when amplitude
+    // is high. Multiplies into per-column speed for the whole-rain
+    // downward surge effect.
+    const beatBoost = 1 + amplitudeRms * 1.6;
+
+    for (let c = 0; c < colCount; c++) {
+      const col = _matrixCols[c];
+      // Map column index to a frequency bin so each column's
+      // amplitude differs based on the song's spectral content.
+      const binIdx = Math.floor((c / colCount) * totalBins);
+      const colAmp = freqBuf[binIdx] / 255;     // 0..1
+
+      // Per-column fall speed: base + amplitude-driven boost +
+      // beat pulse. Quiet columns drift; loud columns sprint.
+      const localSpeed = col.speed * (0.4 + colAmp * 1.4) * beatBoost;
+      col.y += localSpeed * dt;
+      // Wrap when head goes off bottom — restart slightly above
+      // the canvas with a fresh random delay so columns don't all
+      // wrap on the same frame (which would look like a flicker).
+      if (col.y > h + col.trailLen * cellH) {
+        col.y = -Math.random() * cellH * 8;
+        col.trailLen = 8 + Math.floor(Math.random() * 14);
+      }
+
+      // Glyph swap timer — refresh ONE random cell in this column
+      // each time the timer expires. Timer interval depends on
+      // amplitude so loud columns shimmer faster.
+      col.swapTimer -= dt * (1 + colAmp * 4);
+      if (col.swapTimer <= 0) {
+        col.swapTimer = 0.05 + Math.random() * 0.25;
+        const idx = (Math.random() * col.glyphs.length) | 0;
+        col.glyphs[idx] = MATRIX_GLYPHS[(Math.random() * MATRIX_GLYPHS.length) | 0];
+      }
+
+      // Draw the trail. Cell 0 is the leading head (brightest +
+      // re-randomized every frame for shimmer), then trail extends
+      // upward fading toward black.
+      const x = c * cellW;
+      // Leading head glyph — rerolled every frame. Treble drives
+      // its brightness toward white for the iconic "hot head."
+      const headGlyph = MATRIX_GLYPHS[(Math.random() * MATRIX_GLYPHS.length) | 0];
+      const headWhite = Math.min(1, 0.55 + trebleRms * 0.9);
+      // Mix between chapter tint and white based on headWhite.
+      const hr = Math.round(_tintRgb.r + (255 - _tintRgb.r) * headWhite);
+      const hg = Math.round(_tintRgb.g + (255 - _tintRgb.g) * headWhite);
+      const hb = Math.round(_tintRgb.b + (255 - _tintRgb.b) * headWhite);
+      ctx2d.fillStyle = `rgb(${hr}, ${hg}, ${hb})`;
+      ctx2d.shadowColor = _tintCss;
+      ctx2d.shadowBlur = 6;
+      ctx2d.fillText(headGlyph, x, col.y);
+      ctx2d.shadowBlur = 0;
+      // Trail
+      for (let t = 1; t < col.trailLen; t++) {
+        const ty = col.y - t * cellH;
+        if (ty < -cellH) break;
+        // Glyph picked from the persistent buffer for this row —
+        // cycles through the column's stable shimmer pool rather
+        // than all-random per frame.
+        const g = col.glyphs[(t * 17 + c * 11) % col.glyphs.length];
+        // Fade alpha from 1.0 just behind the head down to ~0.05
+        // at the tip of the trail.
+        const a = Math.max(0, 1 - t / col.trailLen);
+        ctx2d.fillStyle = `rgba(${_tintRgb.r}, ${_tintRgb.g}, ${_tintRgb.b}, ${a * 0.85})`;
+        ctx2d.fillText(g, x, ty);
+      }
     }
-    ctx2d.closePath();
   }
 
   // ---------- Loop ----------
@@ -255,18 +319,22 @@ export function createVisualizer({ canvas, getTint, getActive }) {
     if (canvas.width !== targetW || canvas.height !== targetH) {
       canvas.width = targetW;
       canvas.height = targetH;
+      // Force matrix-rain column rebuild on resize so the new
+      // width is honored by the next drawMatrix call.
+      _matrixLastW = -1;
     }
 
     // Trail-clear: paint a translucent black rect over the canvas
     // each frame instead of full clear. This gives the bars a
     // gentle motion blur trail (PS1-era CRT phosphor look) without
-    // any real blur filter. Trail strength tuned per mode — radial
-    // benefits from a longer trail, bars want a snappier reset.
+    // any real blur filter. Trail strength tuned per mode — bars
+    // want a snappier reset, waveform a ghosty trail, matrix the
+    // longest trail since the rain itself IS a trail effect.
     const mode = MODES[modeIdx];
     let trailAlpha;
     if (mode.id === 'bars') trailAlpha = 0.45;
     else if (mode.id === 'waveform') trailAlpha = 0.25;
-    else if (mode.id === 'radial') trailAlpha = 0.18;
+    else if (mode.id === 'matrix') trailAlpha = 0.12;     // long persistence for rain trails
     else trailAlpha = 0.35;
     ctx2d.fillStyle = `rgba(0, 0, 0, ${trailAlpha})`;
     ctx2d.fillRect(0, 0, canvas.width, canvas.height);
@@ -277,8 +345,7 @@ export function createVisualizer({ canvas, getTint, getActive }) {
     ctx2d.scale(dpr, dpr);
     if (mode.id === 'bars') drawBars(cssW, cssH);
     else if (mode.id === 'waveform') drawWaveform(cssW, cssH);
-    else if (mode.id === 'radial') drawRadial(cssW, cssH);
-    else if (mode.id === 'hex') drawHex(cssW, cssH);
+    else if (mode.id === 'matrix') drawMatrix(cssW, cssH);
     ctx2d.restore();
   }
 
