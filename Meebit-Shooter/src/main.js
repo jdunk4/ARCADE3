@@ -329,24 +329,34 @@ function ensureFlameMeshes() {
   // part is RIGHT at the player, so the weapon feels punchy up close.
   //
   // ConeGeometry(radius, height, radialSegments, heightSegments, openEnded).
-  // Default cone: tip at +Y, base at -Y. We translate so the BASE is at
-  // origin and the tip extends along +Y, then rotate so the TIP points
-  // at LOCAL +Z. Three.js's Object3D.lookAt() aligns local -Z with the
-  // target — so with the tip at +Z, after lookAt the TIP points BEHIND
-  // the muzzle (toward the player) and the BASE faces the target. That
-  // gives the megaphone silhouette the player wants: narrow point at
-  // the gun, wide flare at the far reach.
+  // Default cone: tip at +Y=0.5, base at -Y=-0.5.
   //
-  // I flip-flopped on this once: tried rotateX(-π/2) thinking we wanted
-  // a flamethrower-style "wide near, narrow far" shape, but playtester
-  // feedback was the opposite — they want the megaphone where the
-  // cone visibly OPENS UP toward enemies. Reverting to +π/2.
+  // GOAL: in object space, place TIP at origin and BASE at +Z=+1, so
+  // after lookAt() (which in this codebase aligns local +Z toward the
+  // target — proven by the rocket geometry: rocket exhaust at -Z=-0.45
+  // sits at the BACK of the rocket as it flies, meaning +Z is the
+  // direction of travel) the TIP stays at the muzzle and the BASE
+  // flares outward toward the target. That gives the megaphone
+  // silhouette the playtester sketched: narrow point at the gun, wide
+  // base at the far reach.
   //
-  // At runtime we scale Z by length, X/Y by base radius (the wide far
-  // end that meets the enemies).
+  // Construction:
+  //   1. rotateX(-π/2): sends +Y → -Z and -Y → +Z. So tip at +Y=0.5
+  //      lands at -Z=0.5; base at -Y=-0.5 lands at +Z=0.5.
+  //   2. translate(0, 0, 0.5): slides the whole cone forward by 0.5
+  //      along +Z. Tip lands at z=0 (origin); base lands at +Z=1.
+  //
+  // At runtime we scale Z by `length` (positive) so the base extends
+  // along +Z by `length` units. lookAt then sends +Z toward target,
+  // putting the BASE at the target end and the TIP at the muzzle.
+  //
+  // Three previous attempts had this orientation wrong because I kept
+  // assuming three.js Object3D.lookAt aligned -Z toward target (camera
+  // convention) but in this codebase's setup it's +Z. The rocket
+  // geometry confirmed +Z toward target.
   const flameGeo = new THREE.ConeGeometry(1, 1, 14, 1, true);
-  flameGeo.translate(0, 0.5, 0);                // base at origin, tip at +Y
-  flameGeo.rotateX(Math.PI / 2);                // base at origin, tip at +Z
+  flameGeo.rotateX(-Math.PI / 2);
+  flameGeo.translate(0, 0, 0.5);                // tip at origin, base at +Z=1
   flameOuterMat = new THREE.MeshBasicMaterial({
     color: 0xff6622, transparent: true, opacity: 0.75,
     side: THREE.DoubleSide, depthWrite: false,
