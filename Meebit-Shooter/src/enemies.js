@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { scene } from './scene.js';
 import { ENEMY_TYPES, BOSSES } from './config.js';
 import { buildInfectorMesh, buildRoachMesh } from './infector.js';
+import { S } from './state.js';
 
 export const enemies = [];
 export const enemyProjectiles = [];
@@ -308,6 +309,182 @@ function makeSpider(tintHex, scale) {
 
   group.scale.setScalar(scale);
   return { group, body, bodyMat, armL: legs[0], armR: legs[1], legL: legs[2], legR: legs[3], head, spiderLegs: legs };
+}
+
+// ============================================================================
+// ANT  — chapter-1 main enemy. Replaces zomeeb / sprinter on chapter 0.
+// ============================================================================
+//
+// Reference: photographic red ant + Lego-style voxel ant figurine. Three
+// chunky cubic body segments (head / thorax / abdomen), six legs in three
+// pairs along the body sides, two upward antennae, two angled mandibles,
+// two big eye dots. The HEAD and THORAX are deliberately oversized vs
+// the humanoid baseline per request — reads as chunky / aggressive.
+// All shapes are box geometry to keep the square voxel aesthetic.
+//
+// Walk anim is driven through the spiderLegs[] array — main.js already
+// loops that for any enemy with isSpider=true and applies a phase-offset
+// rotation.x to each leg group. We piggyback on that path by setting
+// isSpider=true at makeEnemy time when chapter 0 substitutes an ant for
+// a humanoid (see the dispatch below). isSpider only affects walk anim,
+// not collision or AI, so the ant still chases / contacts the player
+// like a regular humanoid.
+//
+// Returns the same {group, body, bodyMat, armL, armR, legL, legR, head,
+// spiderLegs} shape as makeSpider so the rest of makeEnemy / state code
+// is unchanged.
+function makeAnt(tintHex, scale) {
+  const group = new THREE.Group();
+  const tint = new THREE.Color(tintHex);
+  // Pull 3 darker shades for the body so segments read distinctly.
+  // Head darker than thorax, thorax darker than abdomen — reference
+  // image has slightly darker head, brighter thorax, glossy abdomen.
+  const headColor = tint.clone().multiplyScalar(0.55);
+  const thoraxColor = tint.clone().multiplyScalar(0.80);
+  const abdomenColor = tint.clone().multiplyScalar(0.95);
+
+  // ---- THORAX (the "big torso") ----
+  // Sits in the middle of the body, slightly lifted. Bigger than the
+  // humanoid torso (1.1 × 1.3 × 0.7) — this is 1.45 wide × 1.20 tall
+  // × 1.30 deep so it reads as the dominant chest-segment.
+  const bodyMat = new THREE.MeshStandardMaterial({
+    color: thoraxColor, emissive: tint, emissiveIntensity: 0.30, roughness: 0.85,
+  });
+  const body = new THREE.Mesh(new THREE.BoxGeometry(1.45, 1.20, 1.30), bodyMat);
+  body.position.set(0, 1.05, 0);
+  body.castShadow = true;
+  group.add(body);
+
+  // ---- HEAD ----
+  // Front of the body. Per request the head is BIG — 1.30 cube, larger
+  // than the humanoid 0.9 head. Angled slightly upward via a small
+  // tilt so the mandibles read forward-and-down like the reference.
+  const headMat = new THREE.MeshStandardMaterial({
+    color: headColor, emissive: tint, emissiveIntensity: 0.20, roughness: 0.85,
+  });
+  const head = new THREE.Mesh(new THREE.BoxGeometry(1.30, 1.20, 1.20), headMat);
+  head.position.set(0, 1.10, 1.20);
+  head.castShadow = true;
+  group.add(head);
+
+  // ---- ABDOMEN (rear segment) ----
+  // Slightly shorter than thorax; thinner at the back. Doesn't need
+  // to animate — purely silhouette.
+  const abdomenMat = new THREE.MeshStandardMaterial({
+    color: abdomenColor, emissive: tint, emissiveIntensity: 0.35, roughness: 0.75,
+  });
+  const abdomen = new THREE.Mesh(new THREE.BoxGeometry(1.20, 1.05, 1.45), abdomenMat);
+  abdomen.position.set(0, 1.00, -1.30);
+  abdomen.castShadow = true;
+  group.add(abdomen);
+
+  // ---- EYES ----
+  // Two large black dots on the head, sitting on the sides front-half
+  // for the predatory look from the reference.
+  const eyeMat = new THREE.MeshStandardMaterial({
+    color: 0x050505, roughness: 0.4, metalness: 0.0,
+  });
+  const eyeGeo = new THREE.BoxGeometry(0.22, 0.22, 0.04);
+  const eyeL = new THREE.Mesh(eyeGeo, eyeMat);
+  eyeL.position.set(-0.45, 1.30, 1.82);
+  group.add(eyeL);
+  const eyeR = new THREE.Mesh(eyeGeo, eyeMat);
+  eyeR.position.set(0.45, 1.30, 1.82);
+  group.add(eyeR);
+
+  // ---- MANDIBLES ----
+  // Two thin angled cubes jutting forward from the bottom of the head.
+  // Slight outward splay reads as ready-to-bite.
+  const mandibleMat = new THREE.MeshStandardMaterial({
+    color: 0x141414, roughness: 0.6, metalness: 0.1,
+  });
+  const mandibleGeo = new THREE.BoxGeometry(0.12, 0.18, 0.55);
+  const mandibleL = new THREE.Mesh(mandibleGeo, mandibleMat);
+  mandibleL.position.set(-0.32, 0.65, 2.00);
+  mandibleL.rotation.y = 0.30;
+  group.add(mandibleL);
+  const mandibleR = new THREE.Mesh(mandibleGeo, mandibleMat);
+  mandibleR.position.set(0.32, 0.65, 2.00);
+  mandibleR.rotation.y = -0.30;
+  group.add(mandibleR);
+
+  // ---- ANTENNAE ----
+  // Two thin upward boxes on top of the head. Bend slightly forward
+  // and outward — reads as a real ant antenna pair without curves.
+  const antennaMat = mandibleMat;     // share material
+  const antennaGeo = new THREE.BoxGeometry(0.08, 1.00, 0.08);
+  const antennaL = new THREE.Mesh(antennaGeo, antennaMat);
+  antennaL.position.set(-0.30, 2.20, 1.30);
+  antennaL.rotation.x = -0.25;        // tilt forward
+  antennaL.rotation.z = 0.18;         // splay outward
+  group.add(antennaL);
+  const antennaR = new THREE.Mesh(antennaGeo, antennaMat);
+  antennaR.position.set(0.30, 2.20, 1.30);
+  antennaR.rotation.x = -0.25;
+  antennaR.rotation.z = -0.18;
+  group.add(antennaR);
+
+  // ---- LEGS (six total, in three pairs) ----
+  // Each leg is a Group containing a thin upper segment + lower
+  // segment ("knee" implied by the join). The Group's rotation.x
+  // is animated by main.js's spider-leg walk loop. Black material
+  // matches the photo + figurine reference. Legs anchored OUTSIDE
+  // the body sides so the ant has a wide footprint silhouette.
+  const legMat = new THREE.MeshStandardMaterial({
+    color: 0x0a0a0a, roughness: 0.85, metalness: 0.05,
+  });
+  const upperGeo = new THREE.BoxGeometry(0.10, 0.10, 0.65);
+  const lowerGeo = new THREE.BoxGeometry(0.09, 0.65, 0.09);
+  const legs = [];
+  // Three pairs: front (near head), mid (under thorax), rear (near
+  // abdomen). x-side, z-along-body, ry-yaw-rotation (so each pair
+  // splays slightly forward / backward like a real ant).
+  const positions = [
+    [-0.78, 1.10, Math.PI * 0.18],   // front-left (forward yaw)
+    [ 0.78, 1.10, -Math.PI * 0.18],  // front-right
+    [-0.85, 0.10, 0],                // mid-left (perpendicular)
+    [ 0.85, 0.10, 0],                // mid-right
+    [-0.80, -0.90, -Math.PI * 0.20], // rear-left (back yaw)
+    [ 0.80, -0.90,  Math.PI * 0.20], // rear-right
+  ];
+  for (const [x, z, ry] of positions) {
+    const legGrp = new THREE.Group();
+    // Upper segment angles outward from the body; lower segment
+    // drops vertically from the "knee." Static within the group so
+    // group.rotation.x animates the whole assembly as a unit, like
+    // makeSpider does.
+    const upper = new THREE.Mesh(upperGeo, legMat);
+    upper.position.set(0, -0.05, 0.32);
+    upper.rotation.x = Math.PI / 3;       // slope down-and-out
+    upper.castShadow = true;
+    legGrp.add(upper);
+    const lower = new THREE.Mesh(lowerGeo, legMat);
+    lower.position.set(0, -0.50, 0.55);
+    lower.castShadow = true;
+    legGrp.add(lower);
+    // Anchor the leg group at body side, mid-height. The walk
+    // animation (main.js line ~4815) sets legGrp.rotation.x =
+    // sin(phase + idx * 0.8) * 0.5 — a swing range of ~0.5 rad
+    // gives the recognizable scuttle without legs intersecting
+    // the body.
+    legGrp.position.set(x, 0.95, z);
+    legGrp.rotation.y = ry;
+    group.add(legGrp);
+    legs.push(legGrp);
+  }
+
+  group.scale.setScalar(scale);
+  // armL / armR / legL / legR aliases let the ant slot into the same
+  // enemy state shape the engine reads. The walk-anim path uses
+  // spiderLegs[] for multi-leg creatures — once isSpider=true is set
+  // on the enemy in makeEnemy, only spiderLegs is read; the named
+  // aliases below are just defensive defaults so any code that
+  // dereferences e.armL doesn't NPE.
+  return {
+    group, body, bodyMat,
+    armL: legs[0], armR: legs[1], legL: legs[2], legR: legs[3],
+    head, spiderLegs: legs,
+  };
 }
 
 // ============================================================================
@@ -821,8 +998,23 @@ export function makeEnemy(typeKey, tintHex, pos) {
   const spec = ENEMY_TYPES[typeKey] || ENEMY_TYPES.zomeeb;
   const scale = 0.55 * spec.scale;
 
+  // Chapter 1 main-enemy substitution. On chapter 0 (INFERNO) the
+  // wave pool's zomeeb / sprinter humanoids are replaced by ants —
+  // matches the chapter's "infested wasteland" theme and gives the
+  // first chapter a distinct enemy silhouette from chapter 2+. The
+  // spec (speed, hp, damage, score, xp) stays unchanged so movement
+  // and combat behavior are identical to the humanoid version. Other
+  // types on chapter 1 (pumpkin, brute, etc.) are NOT substituted —
+  // pumpkinheads in particular are kept as-is per playtester request.
+  const _useAntForChapter1 =
+    (S && S.chapter === 0) &&
+    (typeKey === 'zomeeb' || typeKey === 'sprinter');
+
   let built;
-  if (typeKey === 'infector') {
+  if (_useAntForChapter1) {
+    built = makeAnt(tintHex, scale);
+  }
+  else if (typeKey === 'infector') {
     const m = buildInfectorMesh(tintHex, scale);
     built = { group: m.group, body: m.body, bodyMat: m.bodyMat };
     built._tendrils = m.tendrils;
@@ -866,7 +1058,10 @@ export function makeEnemy(typeKey, tintHex, pos) {
     phaseTimer: spec.phases ? 2 + Math.random() * 2 : 0,
     isFloater: typeKey === 'ghost',
     isExplosive: typeKey === 'pumpkin',
-    isSpider: typeKey === 'spider',
+    // isSpider drives the multi-leg walk-anim path in main.js. The
+    // chapter-1 ant has 6 legs in spiderLegs[] just like a spider,
+    // so we flip the same flag — same visual loop applies.
+    isSpider: typeKey === 'spider' || _useAntForChapter1,
     spiderLegs: built.spiderLegs || null,
     ghostTail: built.ghostTail || null,
     floatPhase: Math.random() * Math.PI * 2,
