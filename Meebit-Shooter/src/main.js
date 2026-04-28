@@ -331,22 +331,22 @@ function ensureFlameMeshes() {
   // ConeGeometry(radius, height, radialSegments, heightSegments, openEnded).
   // Default cone: tip at +Y, base at -Y. We translate so the BASE is at
   // origin and the tip extends along +Y, then rotate so the TIP points
-  // at LOCAL -Z. This is the opposite of what an intuitive read might
-  // suggest — three.js's Object3D.lookAt() aligns local -Z with the
-  // target (camera convention), so for the cone's TIP to point at the
-  // target after lookAt, the tip must be at -Z in object space.
+  // at LOCAL +Z. Three.js's Object3D.lookAt() aligns local -Z with the
+  // target — so with the tip at +Z, after lookAt the TIP points BEHIND
+  // the muzzle (toward the player) and the BASE faces the target. That
+  // gives the megaphone silhouette the player wants: narrow point at
+  // the gun, wide flare at the far reach.
   //
-  // Previous version used rotateX(+π/2) which put the tip at +Z; lookAt
-  // then sent the tip away from the target, leaving the BASE facing
-  // forward — a megaphone-shaped flame (narrow at muzzle, wide far out).
-  // Visually backwards. Fixed by rotating the other direction so the
-  // tip lands at -Z.
+  // I flip-flopped on this once: tried rotateX(-π/2) thinking we wanted
+  // a flamethrower-style "wide near, narrow far" shape, but playtester
+  // feedback was the opposite — they want the megaphone where the
+  // cone visibly OPENS UP toward enemies. Reverting to +π/2.
   //
-  // At runtime we scale Z by length, X/Y by BASE radius (the wide muzzle
-  // end at the player's nozzle).
+  // At runtime we scale Z by length, X/Y by base radius (the wide far
+  // end that meets the enemies).
   const flameGeo = new THREE.ConeGeometry(1, 1, 14, 1, true);
   flameGeo.translate(0, 0.5, 0);                // base at origin, tip at +Y
-  flameGeo.rotateX(-Math.PI / 2);               // base at origin, tip at -Z
+  flameGeo.rotateX(Math.PI / 2);                // base at origin, tip at +Z
   flameOuterMat = new THREE.MeshBasicMaterial({
     color: 0xff6622, transparent: true, opacity: 0.75,
     side: THREE.DoubleSide, depthWrite: false,

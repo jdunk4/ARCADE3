@@ -255,9 +255,11 @@ export const WEAPONS = {
     slot: 'flamethrower',
     color: 0xff5522,
     isFlame: true,
-    // Range tuned down 11→7. The old reach let the flame hit enemies
-    // halfway across the arena; cone now reads as proper close-range.
-    flameRange: 7,
+    // Range tuned 11→7→9 across iterations. Original 11 was too long
+    // (flame hit halfway across the arena). 7 felt clipped. 9 splits
+    // the difference — meaningful close-range pressure that still
+    // demands you commit to closing distance.
+    flameRange: 9,
     // Half-angle tuned down 0.55→0.40 (~46° wedge). User flagged the
     // old wide cone as oversized. Tighter wedge rewards aim.
     flameAngle: 0.40,
