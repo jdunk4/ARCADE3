@@ -28,6 +28,7 @@ import { scene } from './scene.js';
 import { CHAPTERS } from './config.js';
 import { hitBurst } from './effects.js';
 import { shake } from './state.js';
+import { Audio } from './audio.js';
 
 // ---- Tunables ----
 const ESCORT_RADIUS = 12.0;         // player must stay within this (u) — bumped from 8.5
@@ -56,14 +57,18 @@ const TRIM_GEO        = new THREE.BoxGeometry(3.0, 0.06, 0.08);
 // ---- Materials ----
 function _chassisMat() {
   return new THREE.MeshStandardMaterial({
-    color: 0x2c2f37, roughness: 0.6, metalness: 0.55,
-    emissive: 0x111418, emissiveIntensity: 0.1,
+    color: 0x2c2f37, roughness: 0.5, metalness: 0.75,
+    // Bumped 0.10 → 0.30 for the "shiny truck" pass — reads as
+    // polished gunmetal catching ambient light rather than dull paint.
+    emissive: 0x222730, emissiveIntensity: 0.30,
   });
 }
 function _cabMat(tint) {
   return new THREE.MeshStandardMaterial({
-    color: 0x3d4250, roughness: 0.5, metalness: 0.6,
-    emissive: tint, emissiveIntensity: 0.15,
+    color: 0x3d4250, roughness: 0.4, metalness: 0.75,
+    // Chapter-tinted glow on the cab — bumped 0.15 → 0.50 so the cab
+    // reads as the clear silhouette focal point of the truck.
+    emissive: tint, emissiveIntensity: 0.50,
   });
 }
 function _windowMat(tint) {
@@ -75,8 +80,10 @@ function _windowMat(tint) {
 }
 function _genBodyMat() {
   return new THREE.MeshStandardMaterial({
-    color: 0x4a4d56, roughness: 0.4, metalness: 0.85,
-    emissive: 0x1a1d24, emissiveIntensity: 0.18,
+    color: 0x4a4d56, roughness: 0.3, metalness: 0.90,
+    // Generator body bumped 0.18 → 0.45 so it reads as a powered piece
+    // of equipment rather than a dull box on the truck bed.
+    emissive: 0x33373f, emissiveIntensity: 0.45,
   });
 }
 function _genTopMat(tint) {
@@ -315,7 +322,25 @@ export function spawnEscortTruck(chapterIdx, fromPos, toPos) {
     playerInRadius: false,
     speed: TRUCK_SPEED,
     ringPulseT: 0,
+    // Engine rumble cooldown — counts down each tick. When it hits
+    // zero, Audio.truckEngine() fires and we reset to a small
+    // randomized interval. Faster cadence while the truck is rolling
+    // (~0.5s) than when idling (~1.2s) so the player audibly hears
+    // motion. Initial value 0.4 so the first rumble plays shortly
+    // after spawn rather than waiting a full interval.
+    engineRumbleT: 0.4,
+    // Tracks the previous frame's canMove state so we can detect
+    // false→true transitions (truck unstuck and starting to roll
+    // again) and play a one-shot Audio.truckRollStart() cue.
+    // Default false so spawn → first move triggers the cue once
+    // the player gets in radius.
+    lastCanMove: false,
   };
+  // Truck startup — chuffed engine ignition at spawn so the player
+  // hears the truck "come online" alongside the visual. Defensive
+  // wrap in case Audio isn't initialized yet (it usually is by the
+  // time waves have started, but tutorial paths spawn sooner).
+  try { Audio.truckStart && Audio.truckStart(); } catch (e) {}
   return _truck;
 }
 
@@ -404,6 +429,14 @@ export function updateEscortTruck(dt, playerPos, enemies) {
 
   const canMove = playerInRadius && !enemyBlocking;
   _truck.moving = canMove;
+  // Transition cue — false → true is "truck just got unstuck and is
+  // rolling forward again." Plays a one-shot gear-shift + engine
+  // engage sound. We don't fire this on every frame canMove holds
+  // true; only on the rising edge.
+  if (canMove && !_truck.lastCanMove) {
+    try { Audio.truckRollStart && Audio.truckRollStart(); } catch (e) {}
+  }
+  _truck.lastCanMove = canMove;
 
   // --- DRIVE RING + BUMPER-ZONE VISUALS ---
   _truck.ringPulseT += dt * 2.5;
@@ -441,6 +474,23 @@ export function updateEscortTruck(dt, playerPos, enemies) {
     _truck.group.position.y = Math.abs(Math.sin(_truck.bobT * 0.6)) * 0.025;
   }
 
+  // Engine rumble — recurring sound that sells the escort being
+  // an active vehicle. Faster cadence while moving (~0.5s) than
+  // when idling (~1.2s); not played at all once arrived. Volume
+  // is handled inside Audio.truckEngine() (kept low so it sits
+  // under combat sounds without dominating).
+  if (!_truck.arrived) {
+    _truck.engineRumbleT -= dt;
+    if (_truck.engineRumbleT <= 0) {
+      try { Audio.truckEngine && Audio.truckEngine(canMove); } catch (e) {}
+      // Randomize interval slightly so the rumble doesn't feel like
+      // a metronome.
+      _truck.engineRumbleT = canMove
+        ? (0.45 + Math.random() * 0.18)
+        : (1.10 + Math.random() * 0.30);
+    }
+  }
+
   // Arrival check
   const remaining = _truck.pathLen - _truck.progress;
   if (remaining < ARRIVAL_RADIUS && !_truck.arrived) {
@@ -460,6 +510,10 @@ export function updateEscortTruck(dt, playerPos, enemies) {
       }
     } catch (e) {}
     shake(0.5, 0.4);
+    // Truck arrival decompression — pneumatic hiss + heavy thud +
+    // metallic clank from the dock connector. Audio method already
+    // exists in audio.js; this is the call site that activates it.
+    try { Audio.truckDecompression && Audio.truckDecompression(); } catch (e) {}
     return true;       // signal: just arrived this frame
   }
   return false;

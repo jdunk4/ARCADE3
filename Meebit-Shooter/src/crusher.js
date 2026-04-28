@@ -51,25 +51,36 @@ const SPARKS_PORT_GEO = new THREE.SphereGeometry(0.18, 10, 8);
 // ---- Materials ----
 function _heavyMetalMat() {
   return new THREE.MeshStandardMaterial({
-    color: 0x4a4d56, roughness: 0.55, metalness: 0.85,
-    emissive: 0x1a1d24, emissiveIntensity: 0.15,
+    color: 0x4a4d56, roughness: 0.4, metalness: 0.95,
+    // Bumped 0.15 → 0.40 — reads as polished steel under low light
+    // rather than dull gray paint.
+    emissive: 0x33373f, emissiveIntensity: 0.40,
   });
 }
 function _baseMat() {
   return new THREE.MeshStandardMaterial({
-    color: 0x2a2c34, roughness: 0.95, metalness: 0.1,
+    color: 0x2a2c34, roughness: 0.85, metalness: 0.2,
+    // Adds a small emissive accent — was zero, now reads as a base
+    // pad picking up ambient tint rather than going pitch black in
+    // dark chapters.
+    emissive: 0x222730, emissiveIntensity: 0.20,
   });
 }
 function _hammerMat(tint) {
   return new THREE.MeshStandardMaterial({
-    color: 0x5a5d68, roughness: 0.4, metalness: 0.9,
-    emissive: tint, emissiveIntensity: 0.18,
+    color: 0x5a5d68, roughness: 0.3, metalness: 0.95,
+    // Big bump 0.18 → 0.55 on the hammer head — this is the focal
+    // visual element of the crusher and benefits most from the
+    // chapter-tinted glow.
+    emissive: tint, emissiveIntensity: 0.55,
   });
 }
 function _anvilMat() {
   return new THREE.MeshStandardMaterial({
-    color: 0x252830, roughness: 0.5, metalness: 0.7,
-    emissive: 0x301010, emissiveIntensity: 0.25,
+    color: 0x252830, roughness: 0.4, metalness: 0.85,
+    // Hot-anvil look — bumped 0.25 → 0.55 with a richer red glow so
+    // the impact zone reads as forge-heated metal.
+    emissive: 0x4a1818, emissiveIntensity: 0.55,
   });
 }
 function _anvilGlowMat(tint) {

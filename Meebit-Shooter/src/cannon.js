@@ -62,19 +62,24 @@ const CHARGE_ZONE_FILL_GEO = new THREE.CircleGeometry(CHARGE_ZONE_RADIUS, 48);
 function _padMat() {
   return new THREE.MeshStandardMaterial({
     color: 0x2a2c34, roughness: 0.9, metalness: 0.1,
-    emissive: 0x1a1c24, emissiveIntensity: 0.1,
+    emissive: 0x1a1c24, emissiveIntensity: 0.30,
   });
 }
 function _baseMat(tint) {
   return new THREE.MeshStandardMaterial({
-    color: 0x4a5060, roughness: 0.5, metalness: 0.7,
-    emissive: tint, emissiveIntensity: 0.18,
+    color: 0x4a5060, roughness: 0.45, metalness: 0.85,
+    // Chapter-tinted emissive at higher intensity so the base reads as
+    // a glowing turret core rather than dull metal. Bumped 0.18 → 0.55
+    // per playtester request to make the cannon feel "shinier."
+    emissive: tint, emissiveIntensity: 0.55,
   });
 }
 function _barrelMat() {
   return new THREE.MeshStandardMaterial({
-    color: 0x3a4050, roughness: 0.45, metalness: 0.85,
-    emissive: 0x222730, emissiveIntensity: 0.2,
+    color: 0x3a4050, roughness: 0.35, metalness: 0.95,
+    // Brighter emissive accent on the barrel — reads as polished
+    // gunmetal catching ambient light.
+    emissive: 0x444a55, emissiveIntensity: 0.50,
   });
 }
 function _slotDimMat() {
@@ -169,6 +174,17 @@ export function spawnCannon(chapterIdx) {
   // matches the chapter-2 server-warehouse charging zone style.
   const CORNER_RING_GEO = new THREE.RingGeometry(CORNER_RADIUS - 0.45, CORNER_RADIUS, 32);
   const CORNER_FILL_GEO = new THREE.CircleGeometry(CORNER_RADIUS, 32);
+  // OUTER HALO RING — bigger bullseye-style marker around each active
+  // corner. Matches the tutorial's _spawnTutorialZone radius-3 visual
+  // that the user said is much easier to spot than the native cannon
+  // corner. Slightly smaller (2.4) so adjacent corners don't overlap
+  // each other (corners are 5.6u apart, so 2 × 2.4 = 4.8 leaves a
+  // safe gap). Thick band (0.40u) for visibility. Sits OUTSIDE the
+  // inner ring to give a "target reticle" feel.
+  const CORNER_OUTER_RADIUS = 2.4;
+  const CORNER_OUTER_RING_GEO = new THREE.RingGeometry(
+    CORNER_OUTER_RADIUS - 0.40, CORNER_OUTER_RADIUS, 40,
+  );
   // Beacon sphere — small bright dot that sits on the corner pad and
   // bobs vertically. Toned down from the warehouse beacon (0.18 →
   // 0.14) so it reads as a target without dominating the shot.
@@ -204,6 +220,22 @@ export function spawnCannon(chapterIdx) {
     fill.visible = false;
     group.add(fill);
 
+    // Outer halo ring — bigger bullseye-style marker. Renders just
+    // above floor level (y=0.055) so it sits between fill (0.05) and
+    // ring (0.06) for clean depth-stacking. Visibility tracks the
+    // inner ring via setCornerActive.
+    const outerRingMat = new THREE.MeshBasicMaterial({
+      color: tint, transparent: true, opacity: 0.0,
+      side: THREE.DoubleSide, depthWrite: false,
+      blending: THREE.AdditiveBlending,
+      toneMapped: false,
+    });
+    const outerRing = new THREE.Mesh(CORNER_OUTER_RING_GEO, outerRingMat);
+    outerRing.rotation.x = -Math.PI / 2;
+    outerRing.position.set(off.x, 0.055, off.z);
+    outerRing.visible = false;
+    group.add(outerRing);
+
     // Center beacon — bright sphere that hovers above the pad and
     // bobs slightly. Visibility tracks the ring/fill so it only
     // appears for the active corner (waves.js drives via setActive
@@ -221,6 +253,7 @@ export function spawnCannon(chapterIdx) {
       offset: off,
       ring, ringMat,
       fill, fillMat,
+      outerRing, outerRingMat,
       beacon, beaconMat,
       active: false,        // currently chargeable
       consumed: false,      // shot fired — gone forever
@@ -634,6 +667,11 @@ export function updateCannon(dt) {
     // so the bob ties to the existing pulse cadence rather than
     // running on its own clock.
     const beaconBob = 0.6 + 0.18 * Math.sin(_cannon.chargePulse * 2.2);
+    // Outer-ring pulse offset 90° from the inner ring's pulse so the
+    // two-ring bullseye looks like layered breathing motion instead of
+    // a single fat synchronized blob. cos() of the same chargePulse
+    // gives that 90° offset.
+    const outerPulse = 0.5 + 0.5 * Math.cos(_cannon.chargePulse);
     for (const c of _cannon.corners) {
       // Ring
       if (c.consumed) {
@@ -645,6 +683,10 @@ export function updateCannon(dt) {
         if (c.fillMat.opacity > 0) {
           c.fillMat.opacity = Math.max(0, c.fillMat.opacity - dt * 2.0);
           if (c.fillMat.opacity <= 0) c.fill.visible = false;
+        }
+        if (c.outerRingMat && c.outerRingMat.opacity > 0) {
+          c.outerRingMat.opacity = Math.max(0, c.outerRingMat.opacity - dt * 2.0);
+          if (c.outerRingMat.opacity <= 0) c.outerRing.visible = false;
         }
         // Beacon hides immediately on consumption — the shot fired,
         // there's nothing to mark anymore.
@@ -661,6 +703,14 @@ export function updateCannon(dt) {
         const baseOpacity = c.progress > 0 ? 0.85 : 0.65;
         const pulseAmp = c.progress > 0 ? 0.25 : 0.30;
         c.ringMat.opacity = baseOpacity + pulse * pulseAmp;
+        // Outer halo ring — bigger bullseye marker. Slightly dimmer
+        // baseline than the inner ring (this is the wider less-precise
+        // beacon, the inner ring is the precise hit-target). Pulses
+        // out-of-phase with inner for breathing layered motion.
+        if (c.outerRing) {
+          c.outerRing.visible = true;
+          c.outerRingMat.opacity = 0.55 + outerPulse * 0.30;
+        }
         // Fill — scales with charge progress
         if (c.progress > 0) {
           c.fill.visible = true;
@@ -686,6 +736,10 @@ export function updateCannon(dt) {
         if (c.fillMat.opacity > 0) {
           c.fillMat.opacity = Math.max(0, c.fillMat.opacity - dt * 1.6);
           if (c.fillMat.opacity <= 0) c.fill.visible = false;
+        }
+        if (c.outerRingMat && c.outerRingMat.opacity > 0) {
+          c.outerRingMat.opacity = Math.max(0, c.outerRingMat.opacity - dt * 1.6);
+          if (c.outerRingMat.opacity <= 0) c.outerRing.visible = false;
         }
         if (c.beacon) c.beacon.visible = false;
       }

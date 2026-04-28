@@ -82,7 +82,7 @@ import { updateCannon, clearCannon } from './cannon.js';
 import { updateQueenHive, clearQueenHive, tickQueenShieldCollision, tryHitQueenShield, getOutermostDomeInfo, pingQueenShieldAt } from './queenHive.js';
 import { updateCrusher, clearCrusher } from './crusher.js';
 import { updateChargeCubes, clearChargeCubes } from './chargeCubes.js';
-import { clearEscortTruck, getTruckPos, getTruckCollisionCircles, updateEscortTruck } from './escortTruck.js';
+import { clearEscortTruck, getTruckPos, getTruckCollisionCircles, updateEscortTruck, isTruckArrived } from './escortTruck.js';
 import { updateServerWarehouse, clearServerWarehouse, getServerCollisionCircles } from './serverWarehouse.js';
 import { updateSafetyPod, clearSafetyPod, getPodCollisionCircles, getPodPos, getPodRadius } from './safetyPod.js';
 import { updateHiveLasers, clearHiveLasers } from './hiveLasers.js';
@@ -4556,7 +4556,13 @@ function updateEnemies(dt) {
     // Stable parity-based split using a hashed assignment that
     // sticks to the enemy for its lifetime.
     if (S.isEscortWave) {
-      const tp = getTruckPos();
+      // Only target the truck while it's still EN ROUTE. Once arrived,
+      // even though the truck mesh stays parked at the destination,
+      // gameplay has moved past escorting and enemies should redirect
+      // to the player. Without this guard, enemies pile up on the
+      // parked truck for the rest of the wave — player feedback:
+      // "enemies are still interested in the truck after it despawns."
+      const tp = (!isTruckArrived()) ? getTruckPos() : null;
       if (tp) {
         if (e._escortTarget === undefined) {
           // Assign once. Use enemy y-pos byte + x-pos byte as a stable hash.
