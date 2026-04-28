@@ -108,6 +108,9 @@ import {
   repelEnemyFromHazards, updateHazards, setHazardSpawningEnabled,
   setHazardStyle, tickHazardSpawning,
 } from './hazards.js';
+import {
+  paintFactionHazard, clearFactionPaint, updateFactionPaint, getActivePaintCount,
+} from './factionPaint.js';
 import * as tetrisStyle from './hazardsTetris.js';
 import * as galagaStyle from './hazardsGalaga.js';
 import * as minesweeperStyle from './hazardsMinesweeper.js';
@@ -3405,6 +3408,12 @@ function updatePlayer(dt) {
   //      ghosts trigger this, since damage tiles tick down gradually.
   const _hpBeforeHazard = S.tutorialMode ? S.hp : 0;
   hurtPlayerIfOnHazard(dt, player.pos, S, UI, Audio, shake);
+  // Faction paint hazards (boss-fight floor hazard, X/Y/Z letters).
+  // Sits next to the standard tile-hazard check so both share the
+  // same "before HP-die check" timing — a fatal paint touch will
+  // process the death pipeline this frame just like a fatal lethal
+  // tile would.
+  updateFactionPaint(dt, player.pos, S, UI, Audio, shake);
   if (S.tutorialMode && S.hp < _hpBeforeHazard) {
     tutorialOnHazardHit();
     if (_hpBeforeHazard > 0 && S.hp <= 0) {

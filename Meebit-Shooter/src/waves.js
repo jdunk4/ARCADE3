@@ -78,6 +78,7 @@ import {
 import { clearAllOres, updateOres, updateDepot, depotStatus, setDepotActive, setDepotRequired, setSuppressMegaOre, setOnAllOresConvergedHook } from './ores.js';
 import * as OresModule from './ores.js';
 import { spawnHazardsForWave, clearHazards, setHazardSpawningEnabled, tickHazardSpawning, setHazardRushMode } from './hazards.js';
+import { paintFactionHazard, clearFactionPaint, getActivePaintCount } from './factionPaint.js';
 import { setGalagaTargetCount, resetGalagaTargetCount, setGalagaOverdrive } from './hazardsGalaga.js';
 import { recolorCrowd } from './crowd.js';
 import {
@@ -1948,6 +1949,69 @@ function updateBossPattern(dt, boss) {
     return;   // broodmother doesn't run the standard summoner/cubestorm logic
   }
 
+  // ---------------------------------------------------------------
+  // FACTION PAINT CADENCE — applies to every faction boss (chapters
+  // 1-6 wave 5). Per the boss rework spec: 4 X/Y/Z paint hazards
+  // per fight, fired at HP thresholds 90 / 70 / 50 / 30%. Each fires
+  // exactly once. Idempotent — flag-guarded with paint90/70/50/30.
+  //
+  // Faction letter comes from the boss type:
+  //   X → BLAZE_WARDEN, TOXIC_MAW       (chapters 1, 4)
+  //   Y → SCARLET_REAPER, GLACIER_WRAITH (chapters 2, 5)
+  //   Z → SOLAR_TYRANT, NIGHT_HERALD     (chapters 3, 6)
+  // VESSEL_ZERO (broodmother, chapter 7) returned above and never
+  // reaches this code, so the null-letter case is handled.
+  const _factionLetter = (() => {
+    if (boss.type === 'BLAZE_WARDEN' || boss.type === 'TOXIC_MAW') return 'X';
+    if (boss.type === 'SCARLET_REAPER' || boss.type === 'GLACIER_WRAITH') return 'Y';
+    if (boss.type === 'SOLAR_TYRANT' || boss.type === 'NIGHT_HERALD') return 'Z';
+    return null;
+  })();
+  if (_factionLetter) {
+    const hpFracPaint = boss.hp / boss.hpMax;
+    const tint = CHAPTERS[(S.chapter || 0) % CHAPTERS.length].full.grid1;
+    if (!boss.paint90 && hpFracPaint < 0.90) {
+      boss.paint90 = true;
+      try { paintFactionHazard(_factionLetter, tint); } catch (e) {}
+    }
+    if (!boss.paint70 && hpFracPaint < 0.70) {
+      boss.paint70 = true;
+      try { paintFactionHazard(_factionLetter, tint); } catch (e) {}
+    }
+    if (!boss.paint50 && hpFracPaint < 0.50) {
+      boss.paint50 = true;
+      try { paintFactionHazard(_factionLetter, tint); } catch (e) {}
+    }
+    if (!boss.paint30 && hpFracPaint < 0.30) {
+      boss.paint30 = true;
+      try { paintFactionHazard(_factionLetter, tint); } catch (e) {}
+    }
+  }
+
+  // BLAZE_WARDEN unique mechanic — one-shot 30-pumpkinhead burst,
+  // staggered over ~1.5s so the spawns feel like a wave instead of
+  // a single-frame teleport-in (and so 30 simultaneous enemy
+  // creations don't spike the frame budget). Each tick spawns
+  // 4 minions every 0.2s for ~7 ticks until the burst completes.
+  if (boss.type === 'BLAZE_WARDEN') {
+    if (!boss.blazeBurstStarted) {
+      boss.blazeBurstStarted = true;
+      boss.blazeBurstRemaining = 30;
+      boss.blazeBurstNextAt = 0;       // fire first batch immediately
+      UI.toast && UI.toast('PUMPKINHEAD BURST', '#ff6a1a', 2000);
+    }
+    if (boss.blazeBurstRemaining > 0) {
+      boss.blazeBurstNextAt -= dt;
+      if (boss.blazeBurstNextAt <= 0) {
+        boss.blazeBurstNextAt = 0.2;
+        const batch = Math.min(4, boss.blazeBurstRemaining);
+        summonMinions(boss, batch, /*silent=*/true);
+        boss.blazeBurstRemaining -= batch;
+      }
+    }
+  }
+  // ---------------------------------------------------------------
+
   // Trigger at 50% HP one-time "panic" summon
   if (!boss.halfHpTriggered && boss.hp / boss.hpMax < 0.5) {
     boss.halfHpTriggered = true;
@@ -2034,7 +2098,7 @@ function _broodmotherPanic(boss, infectorCount, roachCount) {
   if (boss._vesselPulseBoost != null) boss._vesselPulseBoost = 2.5;
 }
 
-function summonMinions(boss, count) {
+function summonMinions(boss, count, silent) {
   const fullTheme = CHAPTERS[S.chapter % CHAPTERS.length].full;
   const chapterIdx = S.chapter % CHAPTERS.length;
   // Pick a minion type appropriate to the chapter
@@ -2056,9 +2120,14 @@ function summonMinions(boss, count) {
       hitBurst(new THREE.Vector3(x, 1.5, z), fullTheme.enemyTint, 8);
     }
   }
-  UI.toast('THE BOSS SUMMONS MINIONS', '#ff2e4d', 1500);
-  shake(0.2, 0.2);
-  Audio.waveStart();
+  // Toast + audio + shake suppressed when the caller is fanning out
+  // multiple staggered batches (e.g. BLAZE_WARDEN's 30-pumpkinhead
+  // burst). The caller fires a single big toast outside the loop.
+  if (!silent) {
+    UI.toast('THE BOSS SUMMONS MINIONS', '#ff2e4d', 1500);
+    shake(0.2, 0.2);
+    Audio.waveStart();
+  }
 }
 
 function rainCubes(boss, count) {
@@ -2692,6 +2761,11 @@ export function onEnemyKilled(enemy, killedInZone = false) {
     if (enemy.pos) {
       fireShockwave({ x: enemy.pos.x, y: 0.2, z: enemy.pos.z });
     }
+    // Wipe any active faction paint hazards. The boss can no longer
+    // paint new ones; existing painted letters (the mid-fight ones
+    // that landed earlier) shouldn't persist into the wave-end
+    // celebration. Idempotent — chapter 7 boss has no paint, no-op.
+    try { clearFactionPaint(); } catch (e) {}
     S.bossRef = null;
     S.bossFightStartTime = null;
     grantBossReward();

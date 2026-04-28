@@ -53,6 +53,7 @@ import { clearHiveLasers } from './hiveLasers.js';
 import { setCh2WarehouseSwap } from './waveProps.js';
 import { resetGalagaTargetCount, setGalagaOverdrive } from './hazardsGalaga.js';
 import { setHazardRushMode } from './hazards.js';
+import { clearFactionPaint } from './factionPaint.js';
 import { getCompound } from './waveProps.js';
 
 // Which chapter the current dormant-prop set belongs to. -1 means no set
@@ -312,6 +313,10 @@ export function teardownChapter() {
   clearServerWarehouse();
   clearCockroachBoss();
   clearHiveLasers();
+  // Faction paint hazards (boss wave-5 X/Y/Z floor letters). Cleared
+  // on boss death already; this is a defensive sweep for the case
+  // where the player dies mid-boss-fight or retreats from the chapter.
+  try { clearFactionPaint(); } catch (e) {}
   // Reset galaga active-bug count back to default (chapter 2 wave 3
   // bumps it; restore for clean state on chapter switch).
   resetGalagaTargetCount();
