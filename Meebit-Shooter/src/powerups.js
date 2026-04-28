@@ -878,6 +878,71 @@ function _injectStyles() {
       color: #888;
       text-align: center;
     }
+
+    /* ============================================================
+       MOBILE — keep all 3 cards SIDE BY SIDE per playtester request:
+       "On the choose power up at the end of each chapter we need
+       the 3 cards to be side by side. So maybe make them all smaller."
+       Default desktop layout has flex-wrap so 3 × 260px cards wrap
+       to 2+1 on narrow screens. We override to nowrap with shrunk
+       cards so they fit on one line on a phone.
+       ============================================================ */
+    @media (max-width: 900px), (pointer: coarse) {
+      #powerup-modal .pu-header {
+        font-size: 10px;
+        letter-spacing: 4px;
+        margin-bottom: 4px;
+      }
+      #powerup-modal .pu-title {
+        font-size: 24px;
+        letter-spacing: 2px;
+        margin-bottom: 14px;
+      }
+      #powerup-modal .pu-cards {
+        flex-wrap: nowrap;
+        gap: 8px;
+        padding: 0 6px;
+        max-width: 100vw;
+      }
+      #powerup-modal .pu-card {
+        width: 110px;
+        height: 155px;
+        flex: 0 0 110px;
+        border-radius: 8px;
+      }
+      #powerup-modal .pu-num {
+        font-size: 9px;
+        letter-spacing: 1px;
+        top: 4px; left: 5px;
+      }
+      #powerup-modal .pu-owned {
+        font-size: 8px;
+        letter-spacing: 1px;
+        padding: 1px 4px;
+        top: 4px; right: 5px;
+      }
+      #powerup-modal .pu-panel {
+        padding: 6px 6px 7px;
+      }
+      #powerup-modal .pu-card-title {
+        font-size: 11px;
+        letter-spacing: 1px;
+        margin-bottom: 2px;
+      }
+      #powerup-modal .pu-card-sub {
+        font-size: 9px;
+        letter-spacing: 0.3px;
+        line-height: 1.25;
+      }
+      #powerup-modal .pu-placeholder {
+        font-size: 56px;
+      }
+      #powerup-modal .pu-hint {
+        margin-top: 12px;
+        font-size: 9px;
+        letter-spacing: 2px;
+      }
+    }
   `;
   document.head.appendChild(_styleEl);
 }

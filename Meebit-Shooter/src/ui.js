@@ -1157,6 +1157,10 @@ export const UI = {
       }
     }
     document.getElementById('boss-bar').classList.remove('hidden');
+    // Tag the body so CSS can react — used to hide the score row on
+    // mobile when the boss bar is up (the two stack on top of each
+    // other and clobber each other's readability on a phone).
+    document.body.classList.add('boss-active');
   },
 
   // Blend a hex color toward white by `amt` (0..1). Used for boss-bar gradient sheen.
@@ -1174,6 +1178,7 @@ export const UI = {
 
   hideBossBar() {
     document.getElementById('boss-bar').classList.add('hidden');
+    document.body.classList.remove('boss-active');
   },
 
   showObjective(title, sub) {

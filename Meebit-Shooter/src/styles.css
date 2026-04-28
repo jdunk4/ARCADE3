@@ -928,24 +928,56 @@ canvas { display: block; cursor: var(--matrix-cursor); }
     right: 8px !important;
     font-size: 11px !important;
   }
-  /* Main-game objectives panel — was #objective-panel in the prior
-     mobile rule which didn't match anything (correct id is #objective).
-     Per playtester request: "make the objectives much smaller in the
-     top right hand corner." Aggressive shrink — narrower min-width,
-     smaller padding, smaller fonts, transform-scale on top. */
+
+  /* Main-game objectives panel — small in the top-right corner per
+     playtester: "make the objectives much smaller in top right hand
+     corner." Correct id is #objective (singular). transform-scale
+     gives proportional shrink without losing anti-aliasing on the
+     border + glow. */
   #objective {
     transform: scale(0.70) !important;
     transform-origin: top right !important;
     top: 12px !important;
     right: 8px !important;
     min-width: 140px !important;
-    max-width: 200px !important;
+    max-width: 220px !important;
     padding: 6px 10px !important;
     gap: 6px !important;
   }
   #objective .obj-icon { font-size: 18px !important; }
   #objective .obj-title { font-size: 11px !important; letter-spacing: 1.5px !important; }
   #objective .obj-sub { font-size: 9px !important; letter-spacing: 0.5px !important; }
+
+  /* Boss wave — hide the score/chapter/wave/kills strip so the
+     boss bar has the top of the screen to itself. Per playtester:
+     "remove the score bar only for wave 5 [boss wave]. With both
+     it bleeds into the visibility on mobile." Class is toggled
+     by UI.showBossBar / UI.hideBossBar. */
+  body.boss-active #hud-top { display: none !important; }
+
+  /* Boss bar — shrink the name and the bar itself so it doesn't
+     dominate a phone screen. Was 22px name + 20px bar, now 14 + 10. */
+  #boss-bar {
+    width: 80vw !important;
+    top: 56px !important;
+  }
+  #boss-bar .boss-name {
+    font-size: 14px !important;
+    letter-spacing: 4px !important;
+    margin-bottom: 4px !important;
+  }
+  #boss-bar .boss-bar-outer {
+    height: 10px !important;
+  }
+
+  /* Cannon-charge text doesn't reflow as the percent climbs.
+     Earlier the integer "73%" → "100%" gain made the line wrap on
+     narrow phones, the wrap caused a visible flash every percent
+     increment. Per playtester: "the percentage in the objective
+     bar slowly trickles up and some of the text moves or pops to
+     the next line. It flashed enough to catch my attention." */
+  #objective .obj-title { white-space: nowrap !important; }
+  #objective .obj-sub { white-space: nowrap !important; overflow: hidden; text-overflow: ellipsis; }
 
   /* Joystick — smaller visible ring, pulled to corner */
   #joystick {
