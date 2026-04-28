@@ -2052,6 +2052,52 @@ function updateBossPattern(dt, boss) {
       } catch (e) { console.warn('[TOXIC_MAW puddle]', e); }
     }
   }
+
+  // ---------------------------------------------------------------
+  // SCARLET_REAPER unique mechanic — two waves of 50 red devils.
+  // Wave 1 fires at fight start, wave 2 fires when the boss drops
+  // below 50% HP. Each wave staggers 5 devils every 0.3s for ~10
+  // ticks (3 seconds of active spawning per wave) to avoid the
+  // framerate spike of 50 simultaneous enemy creations and to read
+  // as a flowing spawn rather than instantaneous teleport-in.
+  //
+  // The forceTypes=['red_devil'] override on summonMinions ensures
+  // pure devils — without it we'd get the chapter-2 mix that
+  // includes vampires + sprinters mixed in with the devils.
+  if (boss.type === 'SCARLET_REAPER') {
+    // Wave 1 — kickoff burst on first frame
+    if (!boss.devilWave1Started) {
+      boss.devilWave1Started = true;
+      boss.devilWave1Remaining = 50;
+      boss.devilWave1NextAt = 0;          // fire first batch immediately
+      UI.toast && UI.toast('FIRST DEVIL SWARM · 50 INCOMING', '#ff2e4d', 2200);
+    }
+    if (boss.devilWave1Remaining > 0) {
+      boss.devilWave1NextAt -= dt;
+      if (boss.devilWave1NextAt <= 0) {
+        boss.devilWave1NextAt = 0.3;
+        const batch = Math.min(5, boss.devilWave1Remaining);
+        summonMinions(boss, batch, /*silent=*/true, ['red_devil']);
+        boss.devilWave1Remaining -= batch;
+      }
+    }
+    // Wave 2 — 50% HP trigger. Same staggered cadence.
+    if (!boss.devilWave2Started && boss.hp / boss.hpMax < 0.5) {
+      boss.devilWave2Started = true;
+      boss.devilWave2Remaining = 50;
+      boss.devilWave2NextAt = 0;
+      UI.toast && UI.toast('SECOND DEVIL SWARM · 50 MORE', '#ff2e4d', 2200);
+    }
+    if (boss.devilWave2Started && boss.devilWave2Remaining > 0) {
+      boss.devilWave2NextAt -= dt;
+      if (boss.devilWave2NextAt <= 0) {
+        boss.devilWave2NextAt = 0.3;
+        const batch = Math.min(5, boss.devilWave2Remaining);
+        summonMinions(boss, batch, /*silent=*/true, ['red_devil']);
+        boss.devilWave2Remaining -= batch;
+      }
+    }
+  }
   // ---------------------------------------------------------------
 
   // Trigger at 50% HP one-time "panic" summon
@@ -2140,12 +2186,16 @@ function _broodmotherPanic(boss, infectorCount, roachCount) {
   if (boss._vesselPulseBoost != null) boss._vesselPulseBoost = 2.5;
 }
 
-function summonMinions(boss, count, silent) {
+function summonMinions(boss, count, silent, forceTypes) {
   const fullTheme = CHAPTERS[S.chapter % CHAPTERS.length].full;
   const chapterIdx = S.chapter % CHAPTERS.length;
-  // Pick a minion type appropriate to the chapter
+  // Caller can override the chapter-default minion types. Used by
+  // SCARLET_REAPER's red-devil swarm spec to force `['red_devil']`
+  // instead of the chapter-2 mix that includes vampires/sprinters.
   let minionTypes;
-  if (chapterIdx === 0) minionTypes = ['sprinter', 'pumpkin'];
+  if (Array.isArray(forceTypes) && forceTypes.length) {
+    minionTypes = forceTypes;
+  } else if (chapterIdx === 0) minionTypes = ['sprinter', 'pumpkin'];
   else if (chapterIdx === 1) minionTypes = ['vampire', 'red_devil', 'sprinter'];
   else if (chapterIdx === 2) minionTypes = ['wizard', 'sprinter'];
   else if (chapterIdx === 3) minionTypes = ['goospitter', 'sprinter'];
