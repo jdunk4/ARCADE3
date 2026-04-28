@@ -100,6 +100,20 @@ class AudioEngine {
     // C-drone (ambient bed under the phone ring)
     this._cDroneEl = null;
     this._cDronePending = false;
+
+    // Music visualizer plumbing — lazily wired only when something
+    // (pause-menu visualizer) requests an analyser. Connecting an
+    // HTMLAudioElement to a MediaElementSourceNode silences its
+    // direct output and routes audio through Web Audio instead, so
+    // this is a one-way switch we only flip if we have to.
+    //   _analyser        — shared AnalyserNode, FFT 1024
+    //   _trackSources    — Map<HTMLAudioElement, MediaElementAudioSourceNode>
+    //                      so we never double-connect (a second source
+    //                      on the same element throws InvalidStateError)
+    //   _analyserEnabled — true once at least one source has been hooked
+    this._analyser = null;
+    this._trackSources = new Map();
+    this._analyserEnabled = false;
   }
 
   init() {
@@ -931,6 +945,118 @@ class AudioEngine {
       this._beep({ type: 'sawtooth', freqStart: 180, freqEnd: 40, dur: 0.35, gainStart: 0.5 });  // thud
       this._beep({ type: 'square', freqStart: 2800, freqEnd: 600, dur: 0.08, gainStart: 0.18 }); // high click
     }, 2800);
+  }
+
+  // ----------------------------------------------------------------
+  // VISUALIZER ANALYSER (pause-menu music visualizer)
+  // ----------------------------------------------------------------
+
+  /**
+   * Lazily build (or return the existing) AnalyserNode hooked into
+   * the soundtrack output. Caller passes nothing; gets back the
+   * analyser ready to read getByteFrequencyData / getByteTimeDomainData.
+   *
+   * Wiring on first call:
+   *   1. Build a single shared AnalyserNode (FFT 1024 → 512 bins)
+   *   2. Create a MediaElementAudioSourceNode for every track that
+   *      has been built so far, route source → analyser → masterGain
+   *   3. Mark the engine as analyser-enabled so any future track
+   *      (built by init() if it runs again) gets the same routing
+   *
+   * Connecting a MediaElementSource to an HTMLAudioElement silences
+   * the element's direct output — audio now flows through Web Audio
+   * instead. We connect the analyser to masterGain so playback
+   * continues at the user-controlled volume.
+   *
+   * Returns null if the AudioContext failed to initialize (browser
+   * doesn't support Web Audio).
+   */
+  getOrCreateAnalyser() {
+    if (this._analyser) return this._analyser;
+    if (!this.ctx) this.init();
+    if (!this.ctx) return null;
+    try {
+      const analyser = this.ctx.createAnalyser();
+      analyser.fftSize = 1024;       // 512 frequency bins, smooth at 60fps
+      analyser.smoothingTimeConstant = 0.8;
+      this._analyser = analyser;
+      this._analyserEnabled = true;
+      // Hook every existing track into the analyser. Subsequent tracks
+      // (if init runs again) hit the same hook in _hookTrackToAnalyser.
+      for (const el of this._trackEls) this._hookTrackToAnalyser(el);
+      // Also hook the phone ring + C-drone if they exist — they're not
+      // music but the visualizer is harmless on them.
+      if (this._phoneRingEl) this._hookTrackToAnalyser(this._phoneRingEl);
+      if (this._cDroneEl) this._hookTrackToAnalyser(this._cDroneEl);
+      return analyser;
+    } catch (e) {
+      console.warn('[audio] analyser setup failed', e);
+      return null;
+    }
+  }
+
+  /**
+   * Connect one HTMLAudioElement to the shared analyser via a
+   * MediaElementAudioSourceNode. Idempotent — if this element has
+   * already been wrapped in a source we skip (the browser would
+   * otherwise throw InvalidStateError).
+   *
+   * Routing: element → MediaElementSource → AnalyserNode → masterGain
+   * masterGain is then connected to ctx.destination by init().
+   */
+  _hookTrackToAnalyser(el) {
+    if (!this._analyser || !el) return;
+    if (this._trackSources.has(el)) return;
+    try {
+      const source = this.ctx.createMediaElementSource(el);
+      source.connect(this._analyser);
+      this._analyser.connect(this.masterGain);
+      this._trackSources.set(el, source);
+    } catch (e) {
+      // Most common cause: this element was already wrapped in a
+      // source somewhere else, or CORS / cross-origin issues on a
+      // file:// load. Visualizer just won't show data for this track.
+      console.warn('[audio] could not hook track to analyser', e);
+    }
+  }
+
+  /**
+   * Snapshot of the currently-playing soundtrack track. Returns
+   * { name, currentTime, duration } or null if no track is active.
+   * The visualizer reads this every frame to drive the progress
+   * bar and track-name label.
+   *
+   * `name` is derived from the file path — strips path + extension
+   * and pretty-prints common patterns (e.g. "Arena I" stays as is,
+   * "TheOtherSide" → "The Other Side"). Pure presentation.
+   */
+  getCurrentTrackInfo() {
+    if (this._currentTrackIdx < 0) return null;
+    const el = this._trackEls[this._currentTrackIdx];
+    if (!el) return null;
+    const path = SOUNDTRACK_FILES[this._currentTrackIdx] || '';
+    const filename = path.split('/').pop().replace(/\.mp3$/i, '');
+    return {
+      name: this._prettyTrackName(filename),
+      currentTime: el.currentTime || 0,
+      duration: el.duration || 0,
+      paused: !!el.paused,
+    };
+  }
+
+  /**
+   * Pretty-print a track filename. Inserts spaces before camelCase
+   * boundaries ("TheOtherSide" → "The Other Side") and trims runs
+   * of whitespace. Filenames already containing spaces or numerals
+   * (e.g. "Arena I") pass through unchanged.
+   */
+  _prettyTrackName(s) {
+    if (!s) return '';
+    if (/\s/.test(s)) return s;     // already spaced — leave it
+    return s
+      .replace(/([a-z])([A-Z])/g, '$1 $2')
+      .replace(/\s+/g, ' ')
+      .trim();
   }
 }
 

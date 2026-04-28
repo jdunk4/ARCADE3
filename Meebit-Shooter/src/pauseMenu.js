@@ -2,15 +2,30 @@
 // SFX volume, Music volume, and a mute toggle. Also displays RESUME /
 // QUIT buttons.
 //
+// Desktop only: a PS1-style music visualizer / SoundScope sits above
+// the volume sliders. Reads the soundtrack via Web Audio AnalyserNode
+// (lazily wired in audio.js) and renders frequency/waveform data in
+// the active chapter tint. Click cycles modes (bars / waveform /
+// radial / hex). Hidden on mobile via the .desktop-only class +
+// pause-menu media query.
+//
 // Markup is injected at runtime so no index.html changes are required
 // beyond including this file in the module graph.
 
 import { Audio } from './audio.js';
+import { createVisualizer } from './musicVisualizer.js';
+import { S } from './state.js';
+import { CHAPTERS } from './config.js';
 
 let rootEl = null;
 let isVisible = false;
 let onResumeFn = null;
 let onQuitFn = null;
+let visualizer = null;          // controller from createVisualizer
+let progressFillEl = null;      // <div> inside the progress track
+let trackNameEl = null;         // <span> showing current track name
+let trackTimeEl = null;         // <span> showing "1:23 / 4:56"
+let modeLabelEl = null;         // <span> showing "BARS" etc
 
 function buildMarkup() {
   const el = document.createElement('div');
@@ -20,6 +35,20 @@ function buildMarkup() {
     <div class="pause-panel">
       <h1>PAUSED</h1>
       <h2>SYSTEM HALTED</h2>
+
+      <div class="pause-visualizer-block desktop-only">
+        <div class="pause-vis-frame" id="pause-vis-frame" title="Click to change visualizer">
+          <canvas id="pause-vis-canvas"></canvas>
+          <span class="pause-vis-mode" id="pause-vis-mode">BARS</span>
+        </div>
+        <div class="pause-vis-meta">
+          <span class="pause-vis-track" id="pause-vis-track">—</span>
+          <span class="pause-vis-time" id="pause-vis-time">0:00 / 0:00</span>
+        </div>
+        <div class="pause-vis-progress">
+          <div class="pause-vis-progress-fill" id="pause-vis-progress-fill"></div>
+        </div>
+      </div>
 
       <div class="pause-row">
         <label for="vol-music">\ud83c\udfb5 SOUNDTRACK</label>
@@ -126,6 +155,85 @@ function injectStyles() {
       width: 20px; height: 20px;
       accent-color: var(--matrix-green, #00ff66);
       cursor: pointer;
+    }
+    .pause-visualizer-block {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      margin-bottom: 4px;
+    }
+    .pause-vis-frame {
+      position: relative;
+      width: 100%;
+      height: 110px;
+      background: #000;
+      border: 1px solid rgba(0, 255, 102, 0.3);
+      box-shadow: inset 0 0 18px rgba(0, 0, 0, 0.7);
+      cursor: pointer;
+      overflow: hidden;
+      transition: border-color 0.15s ease;
+    }
+    .pause-vis-frame:hover {
+      border-color: rgba(0, 255, 102, 0.55);
+    }
+    .pause-vis-frame canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+    }
+    .pause-vis-mode {
+      position: absolute;
+      top: 6px;
+      right: 8px;
+      font-family: 'Impact', monospace;
+      font-size: 10px;
+      letter-spacing: 2px;
+      color: rgba(255, 255, 255, 0.55);
+      text-shadow: 0 0 4px rgba(0, 0, 0, 0.9);
+      pointer-events: none;
+      user-select: none;
+    }
+    .pause-vis-meta {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      font-family: 'Courier New', monospace;
+      font-size: 11px;
+      letter-spacing: 1px;
+      color: var(--matrix-green, #00ff66);
+    }
+    .pause-vis-track {
+      flex: 1;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      padding-right: 12px;
+    }
+    .pause-vis-time {
+      font-size: 10px;
+      color: rgba(0, 255, 102, 0.7);
+      min-width: 76px;
+      text-align: right;
+    }
+    .pause-vis-progress {
+      width: 100%;
+      height: 3px;
+      background: rgba(0, 255, 102, 0.12);
+      overflow: hidden;
+    }
+    .pause-vis-progress-fill {
+      height: 100%;
+      width: 0%;
+      background: var(--matrix-green, #00ff66);
+      box-shadow: 0 0 6px rgba(0, 255, 102, 0.6);
+      transition: width 0.15s linear;
+    }
+    /* Hide visualizer block on mobile — it's PC-only per spec.
+       The mobile media query at the bottom of pause-menu-styles
+       handles this, but we add a defense-in-depth rule on the
+       container too in case the class system fails. */
+    @media (max-width: 900px), (pointer: coarse) {
+      .pause-visualizer-block { display: none; }
     }
     .pause-actions {
       display: flex; gap: 14px; justify-content: center;
@@ -253,6 +361,71 @@ function ensureReady() {
   wireInputs();
 }
 
+// Track-info refresh interval — bumps the progress bar fill width
+// and the time readout every 250ms while the menu is visible. The
+// canvas itself updates at full rAF rate via the visualizer; this
+// just handles the slow-moving meta UI which doesn't need a frame
+// budget.
+let _metaIntervalId = null;
+
+function _refreshMeta() {
+  const info = Audio.getCurrentTrackInfo();
+  if (!info) {
+    if (trackNameEl) trackNameEl.textContent = '—';
+    if (trackTimeEl) trackTimeEl.textContent = '0:00 / 0:00';
+    if (progressFillEl) progressFillEl.style.width = '0%';
+    return;
+  }
+  if (trackNameEl) trackNameEl.textContent = info.name || '—';
+  const cur = _formatTime(info.currentTime);
+  const dur = _formatTime(info.duration);
+  if (trackTimeEl) trackTimeEl.textContent = `${cur} / ${dur}`;
+  if (progressFillEl && info.duration > 0) {
+    const pct = Math.min(100, Math.max(0, (info.currentTime / info.duration) * 100));
+    progressFillEl.style.width = pct.toFixed(2) + '%';
+  }
+}
+
+function _formatTime(sec) {
+  if (!isFinite(sec) || sec < 0) sec = 0;
+  const m = Math.floor(sec / 60);
+  const s = Math.floor(sec - m * 60);
+  return `${m}:${s.toString().padStart(2, '0')}`;
+}
+
+function _ensureVisualizer() {
+  if (visualizer) return visualizer;
+  const canvas = document.getElementById('pause-vis-canvas');
+  const frame  = document.getElementById('pause-vis-frame');
+  modeLabelEl   = document.getElementById('pause-vis-mode');
+  trackNameEl   = document.getElementById('pause-vis-track');
+  trackTimeEl   = document.getElementById('pause-vis-time');
+  progressFillEl = document.getElementById('pause-vis-progress-fill');
+  if (!canvas || !frame) return null;
+  visualizer = createVisualizer({
+    canvas,
+    // Read chapter tint live — if the player triggers a mid-game
+    // chapter transition while paused (rare but possible), the
+    // color follows. Falls back to the first chapter's tint if
+    // S.chapter isn't in range yet.
+    getTint: () => {
+      const idx = (typeof S.chapter === 'number') ? S.chapter : 0;
+      return CHAPTERS[idx % CHAPTERS.length].full.grid1;
+    },
+    getActive: () => isVisible,
+  });
+  // Click cycles modes. Using mousedown rather than click so the
+  // change registers immediately on press (PS1 disc-swap feel).
+  frame.addEventListener('mousedown', (e) => {
+    if (!visualizer) return;
+    visualizer.nextMode();
+    if (modeLabelEl) modeLabelEl.textContent = visualizer.getMode();
+    e.preventDefault();
+  });
+  if (modeLabelEl) modeLabelEl.textContent = visualizer.getMode();
+  return visualizer;
+}
+
 export function show() {
   ensureReady();
   // Refresh slider values in case the user changed things elsewhere
@@ -273,12 +446,30 @@ export function show() {
 
   rootEl.classList.remove('hidden');
   isVisible = true;
+
+  // Bring up the visualizer. Lazy-build on first show so the
+  // canvas + DOM nodes are guaranteed to exist (ensureReady ran
+  // above). Only desktop devices show the block, but we let the
+  // visualizer code run regardless — the canvas being hidden via
+  // CSS doesn't change the rAF cost meaningfully and avoids a
+  // viewport-width branch here.
+  _ensureVisualizer();
+  if (visualizer) visualizer.start();
+  _refreshMeta();
+  if (_metaIntervalId === null) {
+    _metaIntervalId = setInterval(_refreshMeta, 250);
+  }
 }
 
 export function hide() {
   if (!rootEl) return;
   rootEl.classList.add('hidden');
   isVisible = false;
+  if (visualizer) visualizer.stop();
+  if (_metaIntervalId !== null) {
+    clearInterval(_metaIntervalId);
+    _metaIntervalId = null;
+  }
 }
 
 export function isOpen() { return isVisible; }
