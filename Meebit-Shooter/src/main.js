@@ -40,6 +40,7 @@ import {
   disableFog, restoreFog,
   boostTutorialLighting, restoreTutorialLighting,
   getTutorialFloorColorAt, getTutorialCellInfo,
+  getTileBevelMaskTexture,
 } from './tutorial.js';
 import {
   startTutorialController, stopTutorialController,
@@ -2681,7 +2682,19 @@ let _tutMeebitLight = null;
 let _tutMeebitFillLight = null;     // constant-white fill so meebit isn't dark on saturated tiles
 let _tutCellSize = 0;             // remembered to detect first build
 let _tutCellTargetColor = new THREE.Color(0xffffff);
-function _updateTutorialFloorGlow() {
+// Cell-cross animation state. Tracks the col/row the highlight is
+// currently painting. When the player crosses into a new cell we
+// trigger:
+//   - opacity fade: drops to ~0.55 then climbs back to 1.0 over ~0.45s
+//   - Y-lift:       rises from 0.01 to 0.045 then settles to 0.018
+// The pop reads as the new tile rising to greet the player rather
+// than a hard snap. _tutCellAnimT is seconds since the last
+// cell-cross; counts up indefinitely once past the animation length.
+let _tutCurCol = -1;
+let _tutCurRow = -1;
+let _tutCellAnimT = 0;
+const _TUT_CELL_ANIM_LEN = 0.45;     // seconds for fade+lift to finish
+function _updateTutorialFloorGlow(dt) {
   if (!player || !player.pos) return;
   const info = getTutorialCellInfo(player.pos.x, player.pos.z);
   if (!info) {
@@ -2689,77 +2702,69 @@ function _updateTutorialFloorGlow() {
     if (_tutCellMesh) _tutCellMesh.visible = false;
     if (_tutMeebitLight) _tutMeebitLight.visible = false;
     if (_tutMeebitFillLight) _tutMeebitFillLight.visible = false;
+    _tutCurCol = _tutCurRow = -1;
     return;
   }
 
   if (!_tutCellMesh) {
     const geo = new THREE.PlaneGeometry(1, 1);
+    // Bevel-shape mask: same rounded-corner + bevel pattern as the
+    // floor tiles. Used as alphaMap so the highlight's silhouette
+    // and bevel lines match the underlying tile exactly. The mask's
+    // brightness gradient ALSO multiplies the color (since we set
+    // material.color to the cell color and the mask is white-ish
+    // gradient), so the highlight gets a free top-left highlight +
+    // bottom-right shadow that mirrors the floor bevel.
+    const bevelMask = getTileBevelMaskTexture();
     const mat = new THREE.MeshBasicMaterial({
       color: 0xffffff,
       transparent: true,
-      // Fully opaque — the saturated highlight color completely
-      // replaces the floor texture in the active cell, so there's
-      // no underlying texel noise muddying the hue. The cells look
-      // like solid blocks of pure colour, not slightly-brighter
-      // versions of the rainbow texture.
+      // Slight base translucency so the underlying floor tile shows
+      // through faintly, blending the highlight color with the
+      // floor texture rather than completely overpainting it. The
+      // animation drives this between ~0.55 (mid-fade) and 1.0
+      // (settled).
       opacity: 1.0,
-      // NormalBlending so the colour is painted directly. Additive
-      // blending was tried earlier and read as "soft / washed out"
-      // because at high opacity it brightens everything toward a
-      // uniform glow.
+      // Use the bevel mask as both color modulator (via .map) and
+      // shape (via .alphaMap). One single texture does both jobs:
+      // the color channel multiplies tint with the bevel highlights
+      // and shadows, the alpha channel clips to the rounded shape.
+      map: bevelMask,
+      alphaMap: bevelMask,
       blending: THREE.NormalBlending,
       depthWrite: false,
       side: THREE.DoubleSide,
     });
     const mesh = new THREE.Mesh(geo, mat);
     mesh.rotation.x = -Math.PI / 2;
-    // Lifted just barely above the floor (y=0.01) — BELOW everything
-    // else that paints the floor: hazard tiles (y=0.03), tetris
-    // shadows (y=0.02), cannon corner rings (y=0.05–0.06), escort
-    // goal pad rings (y=0.05–0.06), Minesweeper bomb icons, etc.
-    // Combined with a very low renderOrder, this guarantees the
-    // highlight reads as the FLOOR's color and any hazard / charge
-    // indicator on the same cell sits visually on top of it.
-    mesh.position.y = 0.01;
-    // renderOrder = -1 so the highlight quad is drawn before any
-    // other transparent ground decals that default to renderOrder 0.
-    // Without this, transparent draw order is determined by camera
-    // distance + creation order, and the highlight could end up
-    // ABOVE older transparents like the cannon charge ring.
+    mesh.position.y = 0.018;
     mesh.renderOrder = -1;
     scene.add(mesh);
     _tutCellMesh = mesh;
     _tutCellMat = mat;
   }
   if (!_tutMeebitLight) {
-    // TWO lights stacked on the player:
-    //   1. _tutMeebitFillLight — plain white fill. Always-on
-    //      illumination that brightens the meebit regardless of
-    //      what tile color the rainbow light is painting. Without
-    //      this the meebit reads as DARK on saturated tiles
-    //      (e.g. a deep blue tile leaves red parts of the meebit
-    //      unlit because there's no red in the tile light).
-    //   2. _tutMeebitLight — colored point light, tile-tinted.
-    //      Adds the rainbow personality on top of the fill.
-    //
-    // Both parented to player.obj so they track movement
-    // automatically.
     const fill = new THREE.PointLight(0xffffff, 1.6, 7.0, 1.4);
-    fill.position.set(0, 1.6, 0);     // slightly above chest
+    fill.position.set(0, 1.6, 0);
     if (player.obj) player.obj.add(fill);
     else scene.add(fill);
     _tutMeebitFillLight = fill;
 
     const light = new THREE.PointLight(0xffffff, 3.0, 8.0, 1.6);
-    light.position.set(0, 1.0, 0);    // chest height
+    light.position.set(0, 1.0, 0);
     if (player.obj) player.obj.add(light);
     else scene.add(light);
     _tutMeebitLight = light;
   }
 
+  // Highlight quad sized 1:1 with the cell — was 0.94× before
+  // (slight inset) but per playtester request it should be
+  // "exactly the same size of the floor tile it represents". The
+  // bevel mask's own internal inset already creates the visible
+  // grout gap, so the geometry stays 1.0×.
   if (_tutCellSize !== info.size) {
     _tutCellSize = info.size;
-    _tutCellMesh.scale.set(info.size * 0.94, info.size * 0.94, 1);
+    _tutCellMesh.scale.set(info.size, info.size, 1);
   }
   _tutCellMesh.visible = true;
   _tutCellMesh.position.x = info.x;
@@ -2767,11 +2772,38 @@ function _updateTutorialFloorGlow() {
   if (_tutMeebitLight) _tutMeebitLight.visible = true;
   if (_tutMeebitFillLight) _tutMeebitFillLight.visible = true;
 
-  // info.color is already at max saturation + high lightness
-  // (getTutorialGlowColorAt does the HSL pump to s=1.0, l=0.55).
-  // Just lerp toward it — no need for a second saturation pass.
+  // Detect cell crossing — kick off the fade + lift animation when
+  // the player walks onto a different (col, row).
+  if (info.col !== _tutCurCol || info.row !== _tutCurRow) {
+    _tutCurCol = info.col;
+    _tutCurRow = info.row;
+    _tutCellAnimT = 0;
+  }
+  if (_tutCellAnimT < _TUT_CELL_ANIM_LEN) {
+    _tutCellAnimT = Math.min(_TUT_CELL_ANIM_LEN, _tutCellAnimT + (dt || 0.016));
+  }
+  // Animation curve: a single-cycle 0→1 sine bump.
+  // t01 goes 0..1 across the animation length.
+  // bump = 4*t*(1-t) is a unit parabola peaking at t=0.5.
+  const t01 = _tutCellAnimT / _TUT_CELL_ANIM_LEN;
+  const bump = 4 * t01 * (1 - t01);
+  // Fade: opacity dips to 0.55 mid-animation, recovers to 1.0.
+  // Without animation (t01 = 1): opacity = 1.0.
+  const FADE_LOW = 0.55;
+  const opacity = 1.0 - bump * (1.0 - FADE_LOW);
+  _tutCellMat.opacity = opacity;
+  // Lift: y rises from settled 0.018 → 0.045 at peak, returns to
+  // settled. Subtle physical pop without the highlight detaching
+  // visually from the floor.
+  const SETTLED_Y = 0.018;
+  const PEAK_Y    = 0.045;
+  _tutCellMesh.position.y = SETTLED_Y + bump * (PEAK_Y - SETTLED_Y);
+
+  // Color migration. info.color is already at max saturation + high
+  // lightness via getTutorialGlowColorAt. Smooth lerp so adjacent
+  // cells of similar hue don't pop, but the cell-cross animation
+  // above gives a clear "I changed cells" cue regardless.
   _tutCellTargetColor.setHex(info.color);
-  // Smooth lerp for cell crossings — graceful migration, not pop.
   _tutCellMat.color.lerp(_tutCellTargetColor, 0.25);
   if (_tutMeebitLight) _tutMeebitLight.color.lerp(_tutCellTargetColor, 0.25);
 }
@@ -3212,7 +3244,7 @@ function animate() {
       // match the rainbow tile underneath. Lazy-built on first tutorial
       // frame; tracks player.pos every frame; recolors using the
       // tutorial floor's bilinear sampler.
-      _updateTutorialFloorGlow();
+      _updateTutorialFloorGlow(dt);
       // Tutorial overdrive request — the OVERDRIVE lesson sets this
       // flag the moment the player's streak crosses 25 (vs the usual
       // 100 in the main game). We honor it once and clear; the lesson

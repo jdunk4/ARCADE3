@@ -406,6 +406,107 @@ function buildRainbowTexture() {
 }
 
 // ---------------------------------------------------------------------
+// Tile bevel mask — a single small canvas texture shaped like one
+// rounded-corner beveled tile. White on transparent. Used by the
+// player's under-foot highlight so the highlight is the same shape
+// (rounded rect with diagonal bevel highlight + shadow) as the floor
+// tiles themselves. The shape's shape-of-tile alpha + bevel
+// brightening means a flat plane mesh tinted to the cell color
+// reads as a tile rising out of the floor.
+//
+// Built once and cached. Same proportions as the floor-tile bevel
+// drawn in buildRainbowTexture (12% corner radius, soft diagonal
+// highlight/shadow gradient). Pixel size kept moderate (256) since
+// the highlight covers ~5u world space and aniso filters smooth it.
+// ---------------------------------------------------------------------
+let _tileBevelMaskTex = null;
+export function getTileBevelMaskTexture() {
+  if (_tileBevelMaskTex) return _tileBevelMaskTex;
+  const size = 256;
+  const c = document.createElement('canvas');
+  c.width = c.height = size;
+  const ctx = c.getContext('2d');
+  // Transparent background — alpha outside the rounded shape stays 0.
+  ctx.clearRect(0, 0, size, size);
+
+  const inset = 4;                           // matches floor TILE_INSET ratio
+  const tx = inset, ty = inset;
+  const tw = size - inset * 2;
+  const th = size - inset * 2;
+  const radius = Math.floor(tw * 0.12);
+
+  // Rounded rect path
+  ctx.beginPath();
+  ctx.moveTo(tx + radius, ty);
+  ctx.arcTo(tx + tw, ty,         tx + tw, ty + th,   radius);
+  ctx.arcTo(tx + tw, ty + th,    tx,      ty + th,   radius);
+  ctx.arcTo(tx,      ty + th,    tx,      ty,        radius);
+  ctx.arcTo(tx,      ty,         tx + tw, ty,        radius);
+  ctx.closePath();
+  // Fill with pure white — the material.color set on the highlight
+  // mesh will multiply this to the cell color at sample time.
+  ctx.fillStyle = '#ffffff';
+  ctx.fill();
+
+  // Bevel: clip to the rounded shape and overlay the same diagonal
+  // highlight/shadow gradient as the floor tiles. The gradient is
+  // baked into the white channel — it'll multiply against material
+  // color to produce a brighter top-left and darker bottom-right
+  // edge on the highlight.
+  ctx.save();
+  ctx.beginPath();
+  ctx.moveTo(tx + radius, ty);
+  ctx.arcTo(tx + tw, ty,         tx + tw, ty + th,   radius);
+  ctx.arcTo(tx + tw, ty + th,    tx,      ty + th,   radius);
+  ctx.arcTo(tx,      ty + th,    tx,      ty,        radius);
+  ctx.arcTo(tx,      ty,         tx + tw, ty,        radius);
+  ctx.closePath();
+  ctx.clip();
+  const grad = ctx.createLinearGradient(tx, ty, tx + tw, ty + th);
+  grad.addColorStop(0.00, 'rgba(255,255,255,0.30)');
+  grad.addColorStop(0.50, 'rgba(255,255,255,0.00)');
+  grad.addColorStop(1.00, 'rgba(0,0,0,0.30)');
+  ctx.fillStyle = grad;
+  ctx.fillRect(tx, ty, tw, th);
+  ctx.restore();
+
+  // Inner highlight stroke (top + left)
+  ctx.save();
+  ctx.lineWidth = 4;
+  ctx.lineCap = 'round';
+  ctx.strokeStyle = 'rgba(255,255,255,0.70)';
+  ctx.beginPath();
+  ctx.moveTo(tx, ty + th - radius);
+  ctx.lineTo(tx, ty + radius);
+  ctx.arcTo(tx, ty, tx + radius, ty, radius);
+  ctx.lineTo(tx + tw - radius, ty);
+  ctx.stroke();
+  ctx.restore();
+
+  // Inner shadow stroke (right + bottom)
+  ctx.save();
+  ctx.lineWidth = 4;
+  ctx.lineCap = 'round';
+  ctx.strokeStyle = 'rgba(0,0,0,0.45)';
+  ctx.beginPath();
+  ctx.moveTo(tx + tw, ty + radius);
+  ctx.lineTo(tx + tw, ty + th - radius);
+  ctx.arcTo(tx + tw, ty + th, tx + tw - radius, ty + th, radius);
+  ctx.lineTo(tx + radius, ty + th);
+  ctx.stroke();
+  ctx.restore();
+
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.magFilter = THREE.LinearFilter;
+  tex.minFilter = THREE.LinearMipmapLinearFilter;
+  tex.anisotropy = 4;
+  tex.needsUpdate = true;
+  _tileBevelMaskTex = tex;
+  return tex;
+}
+
+// ---------------------------------------------------------------------
 // Apply / restore the floor material. We don't replace the mesh — just
 // swap the texture on the existing groundMat. That keeps shadows, fog,
 // and lighting all unchanged structurally; we just push the floor's
@@ -457,11 +558,21 @@ export function applyTutorialFloor() {
   Scene.groundMat.metalness = 0.0;
   Scene.groundMat.needsUpdate = true;
 
-  // Leave the chapter grid overlay at its native opacity. The texture
-  // is sized so each rainbow tile is a 2×2 block of game grid cells —
-  // letting the overlay draw on top adds a subtle subdivision that
-  // visually anchors the floor to the same grid the rest of the game
-  // uses for collisions and movement.
+  // Hide the chapter grid overlay during tutorial. The GridHelper is
+  // a 40×40 subdivision (2.5u per cell) used by hazard alignment in
+  // chapters 2-7, but the rainbow tutorial tiles are 20×20 — so the
+  // grid lines fall through the middle of every tile, creating the
+  // "smaller subdivisions" the player sees. Per playtester: those
+  // gridlines don't light up with the colored tiles or align with
+  // the bevels. The bevel + grout gap on the rounded rainbow tiles
+  // already self-separates visually, so the grid overlay is pure
+  // noise during tutorial. We zero its opacity instead of removing
+  // it from the scene since restoreNormalFloor expects the helper
+  // to be present.
+  if (Scene.gridHelper && Scene.gridHelper.material) {
+    Scene.gridHelper.material.opacity = 0;
+    Scene.gridHelper.material.needsUpdate = true;
+  }
 }
 
 export function restoreNormalFloor() {
