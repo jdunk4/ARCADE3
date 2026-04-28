@@ -856,7 +856,11 @@ canvas { display: block; cursor: var(--matrix-cursor); }
 
 /* ====== MOBILE ====== */
 .mobile-only { display: none; }
-@media (max-width: 900px), (pointer: coarse) {
+@media (pointer: coarse),
+       (any-pointer: coarse),
+       (max-width: 1024px),
+       (hover: none),
+       (max-height: 600px) {
   .mobile-only { display: block; }
   #controls { display: none; }
   /* Smaller score so it doesn't dominate the top of the screen */
@@ -945,9 +949,9 @@ canvas { display: block; cursor: var(--matrix-cursor); }
      POSITIONING: sits at the CENTER of the revolver wheel — the
      wheel slots arrange radially around it. Per playtester:
        "the fire button should be the centerpiece of the revolver."
-     Wheel container is at bottom:115 right:14 with size 130×130, so
-     its center is at bottom:180 right:79. A 70px fire button
-     centered there sits at bottom:145 right:44.
+     Wheel container is at bottom:16 right:14 with size 130×130, so
+     its center is at bottom:81 right:79. A 70px fire button
+     centered there sits at bottom:46 right:44.
 
      z-index 25 puts the button above the slot ring (slots at ~2)
      and above the wheel container (40) so the player's finger
@@ -960,7 +964,7 @@ canvas { display: block; cursor: var(--matrix-cursor); }
   #fire-btn {
     display: flex !important;
     position: fixed !important;
-    bottom: 145px !important;
+    bottom: 46px !important;
     right: 44px !important;
     width: 70px !important;
     height: 70px !important;

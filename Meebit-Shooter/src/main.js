@@ -3658,12 +3658,15 @@ function updatePlayer(dt) {
     // Project a virtual aim point ~30u in front of the player along
     // the joystick direction. We only need the direction; the
     // distance is arbitrary as long as it's > 0.
-    // Screen Y grows DOWN, world Z grows AWAY-FROM-CAMERA (which is
-    // generally toward the back of the arena from the camera's
-    // perspective). dy > 0 (thumb dragged down on screen) → player
-    // wants to aim toward NEGATIVE world Z. So we negate dy.
+    //
+    // Y axis: dragging thumb UP on screen → dy < 0 (screen Y grows
+    // down) → we want the aim to go UP relative to the player on
+    // the playscreen, which in this camera's world frame is +Z
+    // (NOT -Z as I originally assumed). So dirZ = dy directly.
+    // Tested empirically per playtester report: "shoot up direction
+    // it shoots down" — that meant my prior negation was wrong.
     const dirX = aimJoyState.dx;
-    const dirZ = -aimJoyState.dy;
+    const dirZ = aimJoyState.dy;
     const m = Math.sqrt(dirX * dirX + dirZ * dirZ);
     if (m > 0.001) {
       targetX = player.pos.x + (dirX / m) * 30;

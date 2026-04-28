@@ -510,16 +510,39 @@ export const UI = {
           display: none !important;
         }
 
-        /* Container — sit in bottom-right corner. This is a PC
-           browser game; no mobile FIRE-button clearance needed. */
+        /* Container — sit in bottom-right corner on DESKTOP. The
+           mobile MQ further down overrides this. CRITICAL — wrapped
+           in the desktop guard (matching the .mobile-only force-hide)
+           so that on mobile devices that don't trigger the mobile MQ
+           for any reason (e.g., large phone in landscape exceeding
+           900px while reporting pointer:fine) this desktop rule
+           doesn't leak through and put the wheel at the wrong
+           position. */
+        @media (pointer: fine) and (hover: hover) and (min-width: 901px) {
+          #inventory {
+            position: fixed !important;
+            bottom: 24px !important;
+            right: 24px !important;
+            left: auto !important;
+            transform: none !important;
+            width: 240px !important;
+            height: 240px !important;
+            background: none !important;
+            padding: 0 !important;
+            gap: 0 !important;
+            display: block !important;
+            pointer-events: none;
+            z-index: 40;
+          }
+        }
+        /* Mobile / fallback baseline — applies when the desktop MQ
+           above doesn't match. Mirrors the desktop layout for
+           layout-agnostic properties (background, padding, display)
+           but leaves position open for the mobile MQ to set. */
         #inventory {
           position: fixed !important;
-          bottom: 24px !important;
-          right: 24px !important;
           left: auto !important;
           transform: none !important;
-          width: 240px !important;
-          height: 240px !important;
           background: none !important;
           padding: 0 !important;
           gap: 0 !important;
@@ -660,17 +683,31 @@ export const UI = {
         /* ============================================================
            MOBILE MEDIA QUERY — shrinks the wheel and reflow the HUD
            so the playscreen isn't smooshed.
+           Trigger is INCLUSIVE: any of these means "treat as mobile."
+             - (pointer: coarse)         — primary touch device
+             - (any-pointer: coarse)     — has any touch surface
+             - (max-width: 1024px)       — narrow viewport, even on landscape phones
+             - (hover: none)             — can't hover (touch-only)
+             - (max-height: 600px)       — short viewports (landscape phones)
+           Without this breadth, large landscape phones (e.g., iPhone
+           Pro Max ~932px wide) could fail the original (max-width:
+           900px) AND report pointer:fine in some browser configs,
+           leaking desktop CSS to mobile.
            ============================================================ */
-        @media (pointer: coarse), (max-width: 900px) {
+        @media (pointer: coarse),
+               (any-pointer: coarse),
+               (max-width: 1024px),
+               (hover: none),
+               (max-height: 600px) {
           /* Wheel container — slightly smaller than the desktop 240px,
              still bottom-right but lifted clear of the big fire button
-             which sits at bottom:20px right:14px (80px wide on mobile).
-             The wheel STACKS ABOVE the fire button now (bottom:115)
-             rather than sitting beside it — earlier horizontal layout
-             had the wheel covering the fire button on narrow phones,
-             which is what caused the "lost the fire button" report. */
+             which sits CENTERED on the wheel as the centerpiece per
+             playtester request. Position is anchored at the BOTTOM
+             RIGHT corner — bottom:16 right:14 puts the wheel snug
+             against the screen corner so the player can rest their
+             thumb naturally on the fire button without reaching. */
           #inventory {
-            bottom: 115px !important;     /* clears the fire button (20 + 80 + 15px gap) */
+            bottom: 16px !important;
             right: 14px !important;
             width: 130px !important;
             height: 130px !important;
