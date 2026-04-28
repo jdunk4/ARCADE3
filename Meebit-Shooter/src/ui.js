@@ -343,6 +343,81 @@ export const UI = {
       grenadeRow.appendChild(grenadeText);
       invEl.appendChild(grenadeRow);
 
+      // ----- Pause button (mobile-friendly) -----
+      // Tap-to-pause for mobile players who don't have an Escape key.
+      // Also visible on desktop — harmless extra button. Dispatches a
+      // 'mw:toggle-pause' event main.js listens for to invoke the
+      // existing _togglePauseKey() entry point.
+      const pauseRow = document.createElement('div');
+      pauseRow.id = 'inv-row-pause';
+      pauseRow.style.cssText = [
+        'display: flex',
+        'align-items: center',
+        'gap: 8px',
+        'padding: 6px 10px 6px 6px',
+        'background: rgba(0, 0, 0, 0.55)',
+        'border: 2px solid rgba(200, 200, 200, 0.55)',
+        'border-radius: 8px',
+        'box-shadow: 0 0 10px rgba(200, 200, 200, 0.20)',
+        'cursor: pointer',
+        'pointer-events: auto',
+        '-webkit-tap-highlight-color: transparent',
+        'user-select: none',
+      ].join(';');
+      const pauseIcon = document.createElement('span');
+      pauseIcon.style.cssText = 'display: inline-block; width: 28px; height: 28px; flex-shrink: 0;';
+      pauseIcon.innerHTML = '<svg viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" width="28" height="28">'
+        + '<rect x="9"  y="6" width="5" height="20" rx="1" fill="#dddddd" stroke="#888" stroke-width="0.5"/>'
+        + '<rect x="18" y="6" width="5" height="20" rx="1" fill="#dddddd" stroke="#888" stroke-width="0.5"/>'
+        + '</svg>';
+      const pauseText = document.createElement('span');
+      pauseText.style.cssText = [
+        'color: #cccccc',
+        'font-size: 14px',
+        'letter-spacing: 2px',
+        'font-family: \'Impact\', monospace',
+        'min-width: 38px',
+        'text-align: center',
+      ].join(';');
+      pauseText.textContent = 'PAUSE';
+      pauseRow.appendChild(pauseIcon);
+      pauseRow.appendChild(pauseText);
+      // Tap handler — dispatch an event main.js listens for. Mirrors
+      // the potion / grenade tap pattern below.
+      const onPauseTap = (ev) => {
+        window.dispatchEvent(new CustomEvent('mw:toggle-pause'));
+        if (ev) ev.preventDefault();
+      };
+      pauseRow.addEventListener('touchstart', onPauseTap, { passive: false });
+      pauseRow.addEventListener('click', onPauseTap);
+      invEl.appendChild(pauseRow);
+
+      // ----- Make potion + grenade chips tappable -----
+      // The inv-widget container has pointer-events:none so it doesn't
+      // intercept bullets clicking through it on desktop; we re-enable
+      // on the individual rows. Tap dispatches a custom event main.js
+      // listens for to invoke tryUsePotion / tryThrowGrenade — same
+      // entry points as the H / G keyboard handlers. Mobile players
+      // can now heal and throw grenades with just taps.
+      potionRow.style.cursor = 'pointer';
+      potionRow.style.pointerEvents = 'auto';
+      potionRow.style.webkitTapHighlightColor = 'transparent';
+      grenadeRow.style.cursor = 'pointer';
+      grenadeRow.style.pointerEvents = 'auto';
+      grenadeRow.style.webkitTapHighlightColor = 'transparent';
+      const onPotionTap = (ev) => {
+        window.dispatchEvent(new CustomEvent('mw:use-potion'));
+        if (ev) ev.preventDefault();
+      };
+      const onGrenadeTap = (ev) => {
+        window.dispatchEvent(new CustomEvent('mw:throw-grenade'));
+        if (ev) ev.preventDefault();
+      };
+      potionRow.addEventListener('touchstart', onPotionTap, { passive: false });
+      potionRow.addEventListener('click', onPotionTap);
+      grenadeRow.addEventListener('touchstart', onGrenadeTap, { passive: false });
+      grenadeRow.addEventListener('click', onGrenadeTap);
+
       document.body.appendChild(invEl);
     }
 

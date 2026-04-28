@@ -1539,6 +1539,22 @@ window.addEventListener('mw:select-weapon', (e) => {
   UI.toast(WEAPONS[w].name, '#' + WEAPONS[w].color.toString(16).padStart(6, '0'));
 });
 
+// Mobile-friendly action taps. Mirror the H / G / Escape keyboard
+// paths so taps and key presses run identical sequences. Tutorial
+// bookkeeping (tutorialOnPotionConsumed, _togglePauseKey returning
+// without S.running, etc) is preserved by calling the same entry
+// points the keyboard handler uses.
+window.addEventListener('mw:use-potion', () => {
+  const consumed = tryUsePotion();
+  if (consumed && S.tutorialMode) tutorialOnPotionConsumed();
+});
+window.addEventListener('mw:throw-grenade', () => {
+  tryThrowGrenade();
+});
+window.addEventListener('mw:toggle-pause', () => {
+  _togglePauseKey();
+});
+
 const raycaster = new THREE.Raycaster();
 const aimPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
 const mouseNDC = new THREE.Vector2();

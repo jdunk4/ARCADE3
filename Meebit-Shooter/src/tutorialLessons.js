@@ -1174,6 +1174,37 @@ export function renderChecklist(_pulseLatestDone) {
   // playscreen. Desktop keeps the full rolling checklist.
   const isMobile = window.matchMedia('(max-width: 900px), (pointer: coarse)').matches;
 
+  // Swap desktop keyboard/mouse language to mobile touch language
+  // when rendering the mobile view. Per playtester: "tap the icons"
+  // instead of "press H/G", "joystick" instead of "WASD", "press
+  // FIRE" instead of "hold LEFT MOUSE". Phrase-level swaps so we
+  // don't have to fork all lesson definitions. Only the public-
+  // facing hints get rewritten; lesson labels and progress strings
+  // stay as authored.
+  function _localizeHint(text) {
+    if (!isMobile || !text) return text;
+    return text
+      // Movement
+      .replace(/Walk with WASD/gi, 'Walk with the joystick')
+      .replace(/\bWASD\b/g, 'joystick')
+      // Fire
+      .replace(/hold LEFT MOUSE/gi, 'press FIRE')
+      .replace(/HOLD LEFT MOUSE/g, 'PRESS FIRE')
+      .replace(/LEFT MOUSE/g, 'FIRE')
+      // Weapon cycling
+      .replace(/Press 2 \/ 3 \/ 4 \/ 5 \/ 6 to cycle weapons\./gi,
+               'Tap a weapon slot on the wheel to switch.')
+      .replace(/Press 2 \/ 3 \/ 4 \/ 5 \/ 6/gi, 'Tap a weapon slot')
+      // Heal / grenade
+      .replace(/Press H to heal/gi, 'Tap the potion icon to heal')
+      .replace(/[Pp]ress H\b/g, 'tap the potion icon')
+      .replace(/G to throw the grenade/gi, 'tap the grenade icon to throw it')
+      .replace(/[Pp]ress G\b/g, 'tap the grenade icon')
+      // Dash (Space) — keep simple swap in case future lessons mention it
+      .replace(/SPACE to dash/gi, 'tap the joystick edge to dash')
+      .replace(/[Pp]ress SPACE\b/g, 'tap the joystick edge');
+  }
+
   if (isMobile) {
     // Compact mobile view — single active lesson + progress count.
     const total = _lessons.length;
@@ -1193,7 +1224,7 @@ export function renderChecklist(_pulseLatestDone) {
       html += '</div>';
       if (active.hint) {
         html += '<div style="margin:4px 0 0 0;font-size:10px;color:#aaa;letter-spacing:0.5px;line-height:1.35;font-family:Arial,sans-serif;">';
-        html += active.hint;
+        html += _localizeHint(active.hint);
         html += '</div>';
       }
     } else if (_activeIdx >= total) {
