@@ -26,6 +26,7 @@
 //   clearFogRing()
 
 import * as THREE from 'three';
+import { attribute } from 'three/tsl';
 import { scene } from './scene.js';
 import { CHAPTERS } from './config.js';
 
@@ -92,26 +93,18 @@ export function initFogRing() {
   }
   ringGeo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
 
-  const ringMat = new THREE.ShaderMaterial({
-    uniforms: {},
-    vertexShader: `
-      attribute float vRingTAttr;
-      varying float vRingT;
-      void main() {
-        vRingT = vRingTAttr;
-        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-      }
-    `,
-    fragmentShader: `
-      varying float vRingT;
-      void main() {
-        gl_FragColor = vec4(0.0, 0.0, 0.0, vRingT);
-      }
-    `,
+  const ringMat = new THREE.MeshBasicNodeMaterial({
+    color: 0x000000,
     transparent: true,
     side: THREE.DoubleSide,
     depthWrite: false,
   });
+  // Per-vertex t value (0 at inner radius, 1 at outer radius) drives
+  // the alpha. We attach the t value as a custom attribute on the
+  // geometry below, then read it in the opacityNode via attribute().
+  // Same effect as the old ShaderMaterial path, but using TSL nodes
+  // since WebGPURenderer doesn't support ShaderMaterial.
+  ringMat.opacityNode = attribute('vRingTAttr');
 
   // Build a per-vertex float attribute (vRingTAttr) carrying t.
   // 0 at inner radius, 1 at outer radius. We've already computed t per

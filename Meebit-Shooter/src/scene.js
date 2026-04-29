@@ -11,7 +11,23 @@ export const CAMERA_OFFSET = new THREE.Vector3(0, 17, 11);
 camera.position.copy(CAMERA_OFFSET);
 camera.lookAt(0, 0, 0);
 
-export const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+// --- RENDERER: WebGPURenderer with forceWebGL backend ---
+// We pulled in three.js 0.184's unified WebGPU+WebGL bundle (three.webgpu.min.js)
+// so we can use TSL (Three Shading Language) — the new node-based shader
+// system. forceWebGL: true tells the renderer to compile TSL nodes down
+// to GLSL and run on the WebGL2 backend, which is universally supported
+// (WebGPU adoption is still uneven on mobile + older browsers as of 2026).
+//
+// The renderer must be initialized via `await renderer.init()` BEFORE the
+// first `render()` call. Init is async because the WebGPU backend
+// negotiates with the GPU adapter; on the WebGL backend it's still async
+// but resolves quickly. We expose `initRenderer()` so main.js can
+// await it before kicking off the animation loop.
+export const renderer = new THREE.WebGPURenderer({
+  antialias: true,
+  powerPreference: 'high-performance',
+  forceWebGL: true,
+});
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.shadowMap.enabled = true;
@@ -19,6 +35,15 @@ renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.05;
+
+// Async init handle. main.js calls `await initRenderer()` before its
+// first frame. Idempotent — subsequent calls return the same promise.
+let _rendererInitPromise = null;
+export function initRenderer() {
+  if (_rendererInitPromise) return _rendererInitPromise;
+  _rendererInitPromise = renderer.init();
+  return _rendererInitPromise;
+}
 
 window.addEventListener('resize', () => {
   camera.aspect = window.innerWidth / window.innerHeight;

@@ -32,7 +32,7 @@ import * as SkeletonUtils from 'three/addons/utils/SkeletonUtils.js';
   };
 })();
 
-import { scene, camera, renderer, CAMERA_OFFSET, applyTheme, Scene, enterChapter7Atmosphere, exitChapter7Atmosphere, updateFlashlight } from './scene.js';
+import { scene, camera, renderer, CAMERA_OFFSET, applyTheme, Scene, enterChapter7Atmosphere, exitChapter7Atmosphere, updateFlashlight, initRenderer } from './scene.js';
 import {
   isTutorialActive, setTutorialActive,
   applyTutorialFloor, restoreNormalFloor,
@@ -2510,7 +2510,11 @@ function startTutorial() {
   // rocket/flame collision paths in the per-frame loop pick them
   // up automatically — those paths are loosened to fire when
   // S.tutorialMode is true, so damage flows straight into the
-  // existing damageSpawner / destroySpawner pipeline.
+  // existing damageSpawner / destroySpawner pipeline. NOT shielded —
+  // the hex-shield treatment shows up later in the cannon lesson via
+  // the queen domes; auto-shielding these decorative hives would lock
+  // them as undestroyable since there's no drop-shield mechanic
+  // hooked up here.
   spawners.push(spawnPortal(-12,  10, 0));     // hive variant (idx 0 % 3 = 0)
   spawners.push(spawnPortal(  0,  14, 1));     // pyramid variant
   spawners.push(spawnPortal( 12,  10, 2));     // UFO variant
@@ -5793,7 +5797,23 @@ function collectPickup(p) {
   }
 }
 
-animate();
+// Kick off the animation loop. WebGPURenderer requires renderer.init()
+// to resolve before the first .render() call — calling render on an
+// uninitialized WebGPURenderer silently produces a black screen with
+// no error. initRenderer() is idempotent and resolves quickly on the
+// WebGL backend (forceWebGL: true) which is what we're using.
+import { loadShieldTexture } from './shieldShader.js';
+(async () => {
+  try {
+    await initRenderer();
+  } catch (e) {
+    console.error('[renderer init failed]', e);
+  }
+  // Async — kick off shield hex texture load in parallel with first
+  // frame render. Falls back to plain glow shield until loaded.
+  loadShieldTexture();
+  animate();
+})();
 
 // --- CONSOLE BANNER ---
 // Matrix-themed ASCII-art boot banner printed to the DevTools console so
