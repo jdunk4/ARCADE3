@@ -110,9 +110,33 @@ const _VARIANT_CONFIG = {
 // =====================================================================
 // SHARED GEOMETRY
 // =====================================================================
-const _BASE_GEO     = new THREE.CylinderGeometry(0.65, 0.85, 0.55, 16);
-const _PILLAR_GEO   = new THREE.CylinderGeometry(0.22, 0.22, 0.45, 12);
-const _HEAD_GEO     = new THREE.BoxGeometry(0.95, 0.55, 0.85);
+// Layout (matches the reference photo):
+//   • 4-armed star base — octagonal central hub with 4 long
+//     triangular foot pads at 90° intervals (front/back/left/right).
+//   • Stepped pyramidal plinth — two octagonal tiers of progressively
+//     smaller radius stacked on top of the base hub.
+//   • Cylindrical swivel post sitting on the top tier.
+//   • Box-shaped armored head with vertical louver vents on its
+//     sides + a small sensor housing on top with a red lens.
+//   • Twin parallel cannon barrels emerging from a yoke at the front.
+const _BASE_HUB_GEO     = new THREE.CylinderGeometry(0.72, 0.78, 0.32, 8);
+const _BASE_FOOT_GEO    = new THREE.BoxGeometry(0.65, 0.16, 1.30);
+const _BASE_FOOT_PAD_GEO = new THREE.BoxGeometry(0.85, 0.10, 0.55);
+const _PLINTH_LO_GEO    = new THREE.CylinderGeometry(0.62, 0.72, 0.20, 8);
+const _PLINTH_HI_GEO    = new THREE.CylinderGeometry(0.50, 0.58, 0.18, 8);
+const _PILLAR_GEO       = new THREE.CylinderGeometry(0.30, 0.32, 0.34, 12);
+const _HEAD_GEO         = new THREE.BoxGeometry(0.95, 0.80, 1.05);
+// Sensor housing on top — small protruding nub.
+const _SENSOR_HOUSING_GEO = new THREE.BoxGeometry(0.36, 0.18, 0.50);
+const _SENSOR_LENS_GEO    = new THREE.CircleGeometry(0.10, 16);
+// Side louver vent — thin vertical strip applied to side of head.
+const _HEAD_LOUVER_GEO  = new THREE.BoxGeometry(0.04, 0.55, 0.04);
+// Yoke that holds the twin barrels — short box at the front of the head.
+const _YOKE_GEO         = new THREE.BoxGeometry(0.55, 0.42, 0.30);
+
+// MG / antitank variants want twin barrels; tesla and flame stay
+// single-barrel for visual identity. We build twin barrels for those
+// that opt in via barrelStyle === 'twin'.
 
 const _activeTurrets = [];
 const _activeTracers = [];                 // mg + tesla visuals
@@ -124,49 +148,60 @@ const _activeFlames  = [];                 // flame turret particles
 // =====================================================================
 export function spawnTurret(pos, tint, variantId) {
   const cfg = _VARIANT_CONFIG[variantId] || _VARIANT_CONFIG.mg;
+  // Color palette — uniformly olive-green like the reference. Each
+  // variant gets the same body but a distinct emissive accent on the
+  // sensor lens + barrel emissive (chapter tint or fixed per variant).
+  const OLIVE_BODY = 0x55624a;        // olive military green
+  const OLIVE_TRIM = 0x6c7861;        // slightly lighter green for raised trim
+  const STEEL_TRIM = 0x8c8e90;        // brushed-steel grey for foot pads + barrels
   const accentHex = cfg.accentHex != null ? cfg.accentHex : tint;
   const accentColor = new THREE.Color(accentHex);
   const tintColor = new THREE.Color(tint);
 
   const root = new THREE.Group();
-  // Drop animation — start above target.
   // Spawn buried; ticked up to ground level over TURRET_RISE_DURATION.
   // Reads as the turret deploying out of the floor.
   root.position.set(pos.x, -TURRET_RISE_DEPTH, pos.z);
 
-  // ---- BASE ----
-  const baseMat = new THREE.MeshStandardMaterial({
-    color: cfg.bodyHex,
-    emissive: accentColor,
-    emissiveIntensity: 0.20,
+  // Materials.
+  const bodyMat = new THREE.MeshStandardMaterial({
+    color: OLIVE_BODY,
+    roughness: 0.65,
+    metalness: 0.45,
+  });
+  const trimMat = new THREE.MeshStandardMaterial({
+    color: OLIVE_TRIM,
     roughness: 0.55,
-    metalness: 0.75,
+    metalness: 0.55,
   });
-  const base = new THREE.Mesh(_BASE_GEO, baseMat);
-  base.position.y = 0.27;
-  root.add(base);
-
-  // Pillar (short pole that the swiveling head sits on).
-  const pillar = new THREE.Mesh(_PILLAR_GEO, baseMat);
-  pillar.position.y = 0.78;
-  root.add(pillar);
-
-  // ---- HEAD (swivel group) ----
-  const head = new THREE.Group();
-  head.position.y = 1.10;
-  root.add(head);
-
-  const headMat = new THREE.MeshStandardMaterial({
-    color: cfg.headHex,
+  const steelMat = new THREE.MeshStandardMaterial({
+    color: STEEL_TRIM,
+    roughness: 0.40,
+    metalness: 0.85,
+  });
+  const louverMat = new THREE.MeshStandardMaterial({
+    color: 0x2a2c34,
+    roughness: 0.55,
+    metalness: 0.65,
+  });
+  const barrelMat = new THREE.MeshStandardMaterial({
+    color: 0x2a2c34,
     emissive: accentColor,
-    emissiveIntensity: 0.30,
-    roughness: 0.45,
-    metalness: 0.80,
+    emissiveIntensity: 0.15,
+    roughness: 0.50,
+    metalness: 0.90,
   });
-  const headMesh = new THREE.Mesh(_HEAD_GEO, headMat);
-  head.add(headMesh);
-
-  // Eye / sensor — additive sphere on the head front.
+  const lensMat = new THREE.MeshBasicMaterial({
+    color: 0xff3030,                  // bright red sensor (matches photo)
+    transparent: true,
+    opacity: 0.95,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+    toneMapped: false,
+  });
+  // Variant-color highlight (used on the eye for chapter-tinted
+  // hint of which variant this is — kept faint so the body still
+  // reads as olive-green).
   const eyeMat = new THREE.MeshBasicMaterial({
     color: accentColor,
     transparent: true,
@@ -175,31 +210,138 @@ export function spawnTurret(pos, tint, variantId) {
     depthWrite: false,
     toneMapped: false,
   });
-  const eye = new THREE.Mesh(new THREE.SphereGeometry(0.10, 10, 8), eyeMat);
-  eye.position.set(0, 0.12, 0.42);
+
+  // ---- 4-ARMED STAR BASE ----
+  // Hub.
+  const hub = new THREE.Mesh(_BASE_HUB_GEO, bodyMat);
+  hub.position.y = 0.16;
+  root.add(hub);
+  // Foot arms — 4 of them at cardinal angles.
+  for (let i = 0; i < 4; i++) {
+    const a = (i / 4) * Math.PI * 2;
+    // Foot beam.
+    const foot = new THREE.Mesh(_BASE_FOOT_GEO, bodyMat);
+    foot.position.set(Math.cos(a) * 0.95, 0.10, Math.sin(a) * 0.95);
+    foot.rotation.y = -a + Math.PI / 2;
+    root.add(foot);
+    // Foot pad cap (steel) at the far end.
+    const pad = new THREE.Mesh(_BASE_FOOT_PAD_GEO, steelMat);
+    pad.position.set(Math.cos(a) * 1.65, 0.08, Math.sin(a) * 1.65);
+    pad.rotation.y = -a + Math.PI / 2;
+    root.add(pad);
+  }
+
+  // ---- STEPPED PLINTH ----
+  // Two octagonal tiers stacked on top of the hub.
+  const plinthLo = new THREE.Mesh(_PLINTH_LO_GEO, bodyMat);
+  plinthLo.position.y = 0.42;
+  root.add(plinthLo);
+  const plinthHi = new THREE.Mesh(_PLINTH_HI_GEO, trimMat);
+  plinthHi.position.y = 0.61;
+  root.add(plinthHi);
+
+  // ---- SWIVEL POST (rotates with the head) ----
+  // Post is tall enough to put the head's pivot point above the plinth.
+  const pillar = new THREE.Mesh(_PILLAR_GEO, steelMat);
+  pillar.position.y = 0.87;
+  root.add(pillar);
+
+  // ---- HEAD (swivel group) ----
+  const head = new THREE.Group();
+  head.position.y = 1.20;
+  root.add(head);
+
+  // Main head box.
+  const headMesh = new THREE.Mesh(_HEAD_GEO, bodyMat);
+  head.add(headMesh);
+  // Trim plate on top of the head (slightly raised lid).
+  const lidGeo = new THREE.BoxGeometry(0.85, 0.06, 0.95);
+  const lid = new THREE.Mesh(lidGeo, trimMat);
+  lid.position.y = 0.43;
+  head.add(lid);
+
+  // ---- SIDE LOUVER VENTS ----
+  // 4 vertical louver strips on each side of the head. Cheap visual
+  // detail — small dark slats inset against the body color.
+  for (const sx of [-0.49, 0.49]) {
+    for (let j = 0; j < 4; j++) {
+      const louver = new THREE.Mesh(_HEAD_LOUVER_GEO, louverMat);
+      louver.position.set(sx, -0.06, -0.32 + j * 0.18);
+      head.add(louver);
+    }
+  }
+
+  // ---- SENSOR HOUSING + RED LENS (top of head) ----
+  // Small protruding nub on top with a red sensor lens facing
+  // forward. Reads as a target-acquisition optic.
+  const sensorHousing = new THREE.Mesh(_SENSOR_HOUSING_GEO, trimMat);
+  sensorHousing.position.set(0, 0.50, 0.20);
+  head.add(sensorHousing);
+  const lensFrame = new THREE.Mesh(
+    new THREE.RingGeometry(0.08, 0.13, 16),
+    new THREE.MeshStandardMaterial({ color: 0x1c1d22, roughness: 0.35, metalness: 0.85, side: THREE.DoubleSide }),
+  );
+  lensFrame.position.set(0, 0.50, 0.46);
+  head.add(lensFrame);
+  const lens = new THREE.Mesh(_SENSOR_LENS_GEO, lensMat);
+  lens.position.set(0, 0.50, 0.461);
+  head.add(lens);
+
+  // ---- VARIANT-COLOR HINT EYE ----
+  // Small additive sphere on the front face of the head (below the
+  // sensor) tinted to the variant accent color so each variant still
+  // has a faint tell.
+  const eye = new THREE.Mesh(new THREE.SphereGeometry(0.07, 10, 8), eyeMat);
+  eye.position.set(0, 0.10, 0.54);
   head.add(eye);
 
-  // Barrel — variant-specific geometry. Always points along +Z in
-  // local space; head rotation aims the whole assembly.
-  const barrelMat = new THREE.MeshStandardMaterial({
-    color: cfg.headHex,
-    emissive: accentColor,
-    emissiveIntensity: 0.30,
-    roughness: 0.50,
-    metalness: 0.85,
-  });
-  const barrel = new THREE.Mesh(cfg.barrelGeo, barrelMat);
-  barrel.rotation.x = Math.PI / 2;
-  barrel.position.set(0, -0.05, cfg.barrelOffset);
-  head.add(barrel);
+  // ---- BARREL YOKE + BARRELS ----
+  // The yoke is a small box at the front-bottom of the head; barrels
+  // emerge from it. For 'twin' variants we mount two barrels side-by-
+  // side; otherwise a single central barrel.
+  const yoke = new THREE.Mesh(_YOKE_GEO, steelMat);
+  yoke.position.set(0, -0.18, 0.55);
+  head.add(yoke);
 
-  // Muzzle marker — Group at barrel tip used as fire origin.
-  const muzzle = new THREE.Group();
-  muzzle.position.set(0, -0.05, cfg.barrelOffset + 0.85);
-  head.add(muzzle);
+  // Determine twin or single by variant id. MG and antitank get twin
+  // barrels (matches the photo's twin-cannon feel); tesla and flame
+  // stay single-barrel for visual identity.
+  const isTwin = (variantId === 'mg' || variantId === 'antitank');
+  // Build barrels.
+  let primaryMuzzle;
+  if (isTwin) {
+    // Two barrels side by side using the variant's barrel geometry.
+    const offsets = [-0.13, 0.13];
+    let i = 0;
+    let upperZ = null, lowerZ = null;
+    for (const ox of offsets) {
+      const b = new THREE.Mesh(cfg.barrelGeo, barrelMat);
+      b.rotation.x = Math.PI / 2;
+      // Stagger barrel z-offset slightly so they read as upper/lower
+      // (matches the reference's offset twin barrels).
+      const zJitter = i === 0 ? 0.05 : -0.02;
+      b.position.set(ox, -0.18, cfg.barrelOffset + zJitter);
+      head.add(b);
+      if (i === 0) upperZ = cfg.barrelOffset + zJitter;
+      i++;
+    }
+    // Muzzle anchor — between the two barrels, at the upper barrel's
+    // tip so tracer FX line up cleanly.
+    primaryMuzzle = new THREE.Group();
+    primaryMuzzle.position.set(0, -0.18, cfg.barrelOffset + 0.92);
+    head.add(primaryMuzzle);
+  } else {
+    const b = new THREE.Mesh(cfg.barrelGeo, barrelMat);
+    b.rotation.x = Math.PI / 2;
+    b.position.set(0, -0.18, cfg.barrelOffset);
+    head.add(b);
+    primaryMuzzle = new THREE.Group();
+    primaryMuzzle.position.set(0, -0.18, cfg.barrelOffset + 0.85);
+    head.add(primaryMuzzle);
+  }
+  const muzzle = primaryMuzzle;
 
-  // Tesla coil ornament — extra geometry on the tesla variant for
-  // visual identity (a small additive sphere on top of the head).
+  // Tesla coil ornament — additive sphere atop the head for tesla.
   if (variantId === 'tesla') {
     const coilMat = new THREE.MeshBasicMaterial({
       color: accentColor,
@@ -210,17 +352,18 @@ export function spawnTurret(pos, tint, variantId) {
       toneMapped: false,
     });
     const coil = new THREE.Mesh(new THREE.SphereGeometry(0.18, 12, 8), coilMat);
-    coil.position.set(0, 0.40, 0);
+    coil.position.set(0, 0.78, 0);
     head.add(coil);
   }
 
   scene.add(root);
 
   const t = {
-    root, base, baseMat, pillar,
-    head, headMat, eye, eyeMat,
-    barrel, barrelMat,
+    root,
+    head,
+    eye, eyeMat,
     muzzle,
+    bodyMat, trimMat, steelMat, louverMat, barrelMat, lensMat,
     variant: variantId,
     cfg,
     tint,
@@ -698,10 +841,15 @@ function _destroyTurret(t) {
 
 function _disposeTurret(t) {
   if (t.root.parent) scene.remove(t.root);
-  if (t.baseMat) t.baseMat.dispose();
-  if (t.headMat) t.headMat.dispose();
-  if (t.eyeMat) t.eyeMat.dispose();
+  // New field set introduced when the turret was rebuilt to match
+  // the reference photo. Dispose every material we created on spawn.
+  if (t.bodyMat) t.bodyMat.dispose();
+  if (t.trimMat) t.trimMat.dispose();
+  if (t.steelMat) t.steelMat.dispose();
+  if (t.louverMat) t.louverMat.dispose();
   if (t.barrelMat) t.barrelMat.dispose();
+  if (t.lensMat) t.lensMat.dispose();
+  if (t.eyeMat) t.eyeMat.dispose();
 }
 
 // =====================================================================

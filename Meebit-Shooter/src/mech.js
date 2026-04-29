@@ -62,8 +62,8 @@ const MECH_MG_DAMAGE     = 22;
 const MECH_MG_RANGE      = 28.0;
 const MECH_ENTER_RANGE   = 2.8;        // walk this close to enter
 const MECH_PILOT_RADIUS  = 1.8;        // collision radius while piloting
-const MECH_RISE_DEPTH    = 5.0;        // mechs start buried this deep
-const MECH_RISE_DURATION = 1.10;       // seconds of rise animation
+const MECH_RISE_DEPTH    = 7.0;        // mechs start buried this deep (sized for tall MAV-ULB silhouette)
+const MECH_RISE_DURATION = 1.20;       // seconds of rise animation
 // Legacy aliases — code paths elsewhere reference DROP_HEIGHT /
 // DROP_DURATION; keep names in sync so I don't have to rename
 // references through the file.
@@ -101,14 +101,55 @@ function _splashDamagePlayer(epicenter, radius, maxDmg) {
 // =====================================================================
 // SHARED GEOMETRY
 // =====================================================================
+// ---- LEGS (reverse-knee bipedal stance, MAV-ULB style) ----
+// Thigh segment (mounts to hip, angled back). Shin segment (angled
+// forward from knee). Foot claw at the bottom. Knee bulb covers the
+// joint. Reverse-knee silhouette is built by tilting thigh + shin
+// the opposite way and offsetting the knee forward of the hip.
+const _THIGH_GEO       = new THREE.BoxGeometry(0.55, 1.10, 0.70);
+const _THIGH_PLATE_GEO = new THREE.BoxGeometry(0.65, 1.05, 0.20);   // armor plate strapped to thigh face
+const _KNEE_GEO        = new THREE.SphereGeometry(0.42, 12, 10);
+const _SHIN_GEO        = new THREE.BoxGeometry(0.45, 1.20, 0.50);
+const _SHIN_PLATE_GEO  = new THREE.BoxGeometry(0.55, 1.10, 0.18);
+const _FOOT_TOE_GEO    = new THREE.BoxGeometry(0.20, 0.30, 0.45);   // clawed toes
+// Legacy aliases — old code refers to _LEG_GEO; we leave them in
+// place so we can keep the variant builder + walk animation hooks
+// working unmodified. New leg group construction uses the segments
+// above; legacy is kept as fallback only.
 const _LEG_GEO       = new THREE.BoxGeometry(0.6, 1.6, 0.6);
-const _FOOT_GEO      = new THREE.BoxGeometry(0.85, 0.20, 1.05);
-const _HIP_GEO       = new THREE.BoxGeometry(2.3, 0.45, 1.0);
-const _TORSO_GEO     = new THREE.BoxGeometry(2.2, 1.8, 1.6);
-const _COCKPIT_GEO   = new THREE.BoxGeometry(1.4, 0.9, 1.1);
-const _COCKPIT_GLASS_GEO = new THREE.BoxGeometry(1.3, 0.5, 0.05);
+const _FOOT_GEO      = new THREE.BoxGeometry(0.85, 0.20, 1.20);
+
+// ---- HIP / TORSO / COCKPIT ----
+// Wide armored hull with side vents and a "sensor" cyclops port up
+// front. Cockpit canopy on top.
+const _HIP_GEO       = new THREE.BoxGeometry(2.50, 0.55, 1.20);
+const _TORSO_GEO     = new THREE.BoxGeometry(2.30, 1.50, 1.80);
+const _TORSO_FACE_GEO = new THREE.BoxGeometry(1.60, 0.85, 0.10);    // front-face inset panel
+const _SIDE_VENT_GEO = new THREE.BoxGeometry(0.10, 0.16, 0.55);     // rectangle vent slats
+const _SENSOR_PORT_GEO = new THREE.CylinderGeometry(0.22, 0.22, 0.08, 16);
+const _SENSOR_LENS_GEO = new THREE.CircleGeometry(0.16, 16);
+const _COCKPIT_GEO       = new THREE.BoxGeometry(1.40, 0.55, 1.40);
+const _COCKPIT_GLASS_GEO = new THREE.BoxGeometry(1.30, 0.32, 0.05);
+
+// ---- SHOULDERS / PAULDRONS ----
+// Wide angular pauldron block on each side of the torso. Each has a
+// small mounted box on top (read as a sensor / floodlight pod) plus
+// a short antenna sticking up. Photo shows pauldrons that are about
+// as deep as the torso and slightly taller than the cockpit.
+const _PAULDRON_GEO         = new THREE.BoxGeometry(1.10, 1.00, 1.50);
+const _PAULDRON_TOP_GEO     = new THREE.BoxGeometry(0.55, 0.30, 0.85);
+const _PAULDRON_ANTENNA_GEO = new THREE.CylinderGeometry(0.04, 0.04, 0.55, 6);
 const _ARM_GEO       = new THREE.BoxGeometry(0.4, 1.4, 0.4);
 const _SHOULDER_GEO  = new THREE.SphereGeometry(0.45, 12, 8);
+
+// ---- TOP MAST + ANTENNA ----
+// Tall articulated mast rising from the centerline behind the
+// cockpit. Photo shows a base block, vertical pole, and a glowing
+// blue strip near the top.
+const _MAST_BASE_GEO  = new THREE.BoxGeometry(0.30, 0.30, 0.30);
+const _MAST_POLE_GEO  = new THREE.CylinderGeometry(0.05, 0.05, 1.30, 8);
+const _MAST_LIGHT_GEO = new THREE.BoxGeometry(0.16, 0.40, 0.06);
+
 // Right shoulder: missile pod (visible cluster of rocket tubes).
 const _MISSILE_POD_GEO = new THREE.BoxGeometry(1.0, 0.7, 1.4);
 const _MISSILE_TUBE_GEO = new THREE.CylinderGeometry(0.10, 0.10, 1.2, 8);
@@ -168,19 +209,32 @@ export function spawnMech(pos, tint, variantId) {
   root.position.set(pos.x, -MECH_RISE_DEPTH, pos.z);
 
   const tintColor = new THREE.Color(tint || 0xff5520);
+  // MAV-ULB military palette — darker olive-grey hull with steel
+  // trim. We keep an emissive tint hint so chapter color still bleeds
+  // through (matches the rest of the stratagem suite's light-tint
+  // policy) but the body itself is uniformly military, not chapter-
+  // tinted hull paint.
+  const HULL_COLOR  = 0x4d534b;        // dark olive-grey
+  const TRIM_COLOR  = 0x2c2e30;        // near-black trim
+  const STEEL_COLOR = 0x6b6e71;        // raised armor highlight
   const hullMat = new THREE.MeshStandardMaterial({
-    color: 0x4a4d54,
+    color: HULL_COLOR,
     emissive: tintColor,
-    emissiveIntensity: 0.20,
-    roughness: 0.40,
-    metalness: 0.85,
+    emissiveIntensity: 0.10,
+    roughness: 0.55,
+    metalness: 0.70,
   });
   const trimMat = new THREE.MeshStandardMaterial({
-    color: 0x2a2c34,
+    color: TRIM_COLOR,
     emissive: tintColor,
-    emissiveIntensity: 0.30,
-    roughness: 0.55,
-    metalness: 0.75,
+    emissiveIntensity: 0.20,
+    roughness: 0.60,
+    metalness: 0.55,
+  });
+  const steelMat = new THREE.MeshStandardMaterial({
+    color: STEEL_COLOR,
+    roughness: 0.45,
+    metalness: 0.85,
   });
   const glassMat = new THREE.MeshStandardMaterial({
     color: 0xfff3d0,
@@ -198,73 +252,201 @@ export function spawnMech(pos, tint, variantId) {
     depthWrite: false,
     toneMapped: false,
   });
+  // Bright red sensor lens (always red on the MAV-ULB regardless of
+  // chapter tint — reads as the cyclops eye).
+  const lensMat = new THREE.MeshBasicMaterial({
+    color: 0xff3030,
+    transparent: true,
+    opacity: 0.95,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+    toneMapped: false,
+  });
+  // Mast indicator strip — chapter-tinted blue-ish glow.
+  const mastLightMat = new THREE.MeshBasicMaterial({
+    color: 0x60c8ff,
+    transparent: true,
+    opacity: 0.95,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+    toneMapped: false,
+  });
 
-  // ---- LEGS ----
-  // Bipedal stance. Legs animate during walk via per-frame tickLegs.
-  const legL = new THREE.Group();
-  const legLMesh = new THREE.Mesh(_LEG_GEO, hullMat);
-  legLMesh.position.y = 0.0;
-  legL.add(legLMesh);
-  const footL = new THREE.Mesh(_FOOT_GEO, trimMat);
-  footL.position.y = -0.85;
-  legL.add(footL);
-  legL.position.set(-0.55, 1.0, 0);
+  // ---- LEGS (reverse-knee bipedal) ----
+  // Each leg is a Group rotating from the hip joint. Inside the
+  // group: thigh segment (angled back) → knee bulb → shin segment
+  // (angled forward) → foot plate + toe claw. The walk-cycle code
+  // rotates legL.rotation.x and legR.rotation.x; that hinges the
+  // entire leg from the hip, which still reads correctly with the
+  // new segmented build.
+  function _buildLeg(side) {
+    const leg = new THREE.Group();
+    // Thigh — angled slightly back (negative pitch). Position the
+    // mesh so the rotation pivot is the top of the thigh.
+    const thigh = new THREE.Mesh(_THIGH_GEO, hullMat);
+    thigh.position.y = -0.55;
+    thigh.rotation.x = -0.20;       // angled back from hip
+    leg.add(thigh);
+    // Thigh side-armor plate, with chapter-tinted accent strip on
+    // top edge for MAV-ULB caution-stripe feel.
+    const thighPlate = new THREE.Mesh(_THIGH_PLATE_GEO, steelMat);
+    thighPlate.position.set(side * 0.30, -0.55, 0.05);
+    thighPlate.rotation.x = -0.20;
+    leg.add(thighPlate);
+    // Knee bulb — sits at the bend point. Offset forward so the bend
+    // is visibly in front of the hip line (reverse-knee silhouette).
+    const knee = new THREE.Mesh(_KNEE_GEO, trimMat);
+    knee.position.set(0, -1.10, 0.30);
+    leg.add(knee);
+    // Shin — angled forward (positive pitch) so it leans back
+    // toward the foot, matching the bird-leg stance.
+    const shin = new THREE.Mesh(_SHIN_GEO, hullMat);
+    shin.position.set(0, -1.78, 0.10);
+    shin.rotation.x = 0.18;
+    leg.add(shin);
+    const shinPlate = new THREE.Mesh(_SHIN_PLATE_GEO, steelMat);
+    shinPlate.position.set(side * 0.22, -1.78, 0.22);
+    shinPlate.rotation.x = 0.18;
+    leg.add(shinPlate);
+    // Foot — flat plate the mech stands on.
+    const foot = new THREE.Mesh(_FOOT_GEO, trimMat);
+    foot.position.set(0, -2.30, 0.20);
+    leg.add(foot);
+    // Toe claws — three small boxes at the front of the foot.
+    for (const offX of [-0.30, 0, 0.30]) {
+      const toe = new THREE.Mesh(_FOOT_TOE_GEO, trimMat);
+      toe.position.set(offX, -2.32, 0.55);
+      leg.add(toe);
+    }
+    return leg;
+  }
+  const legL = _buildLeg(-1);
+  legL.position.set(-0.65, 2.30, 0);
   root.add(legL);
-
-  const legR = new THREE.Group();
-  const legRMesh = new THREE.Mesh(_LEG_GEO, hullMat);
-  legR.add(legRMesh);
-  const footR = new THREE.Mesh(_FOOT_GEO, trimMat);
-  footR.position.y = -0.85;
-  legR.add(footR);
-  legR.position.set(0.55, 1.0, 0);
+  const legR = _buildLeg(1);
+  legR.position.set(0.65, 2.30, 0);
   root.add(legR);
 
-  // ---- HIPS ----
+  // ---- HIP ----
+  // Wide angular block sitting between the legs.
   const hip = new THREE.Mesh(_HIP_GEO, trimMat);
-  hip.position.y = 1.95;
+  hip.position.y = 2.45;
   root.add(hip);
+  // Hip armor lip (small step on top of the hip).
+  const hipLip = new THREE.Mesh(
+    new THREE.BoxGeometry(2.30, 0.20, 1.05),
+    steelMat,
+  );
+  hipLip.position.y = 2.78;
+  root.add(hipLip);
 
   // ---- TORSO ----
-  // Torso is a separate group so it can rotate independently of the
-  // legs (aim direction = torso yaw).
+  // Torso sits above the hip and rotates independently (aim group).
   const torso = new THREE.Group();
-  torso.position.y = 3.05;
+  torso.position.y = 3.70;
   root.add(torso);
 
   const torsoMesh = new THREE.Mesh(_TORSO_GEO, hullMat);
   torso.add(torsoMesh);
 
-  // Cockpit on top of torso — chapter-tinted glass for the canopy.
+  // Front-face inset panel — recessed plate that reads as the
+  // "MARINES 524" badge on the photo. Just visual; no text.
+  const torsoFace = new THREE.Mesh(_TORSO_FACE_GEO, trimMat);
+  torsoFace.position.set(0, 0.10, 0.91);
+  torso.add(torsoFace);
+
+  // Cyclops sensor port on the front-center of the torso.
+  const sensorRing = new THREE.Mesh(_SENSOR_PORT_GEO, steelMat);
+  sensorRing.rotation.x = Math.PI / 2;     // face forward
+  sensorRing.position.set(0, 0.10, 0.93);
+  torso.add(sensorRing);
+  const sensorLens = new THREE.Mesh(_SENSOR_LENS_GEO, lensMat);
+  sensorLens.position.set(0, 0.10, 0.97);
+  torso.add(sensorLens);
+
+  // Side cooling vents — 3 horizontal slats per side.
+  for (const sx of [-1.16, 1.16]) {
+    for (let j = 0; j < 3; j++) {
+      const vent = new THREE.Mesh(_SIDE_VENT_GEO, trimMat);
+      vent.position.set(sx, 0.10 + (j - 1) * 0.22, 0.45);
+      torso.add(vent);
+    }
+  }
+
+  // Cockpit canopy (smaller now — pauldrons make the silhouette).
   const cockpit = new THREE.Mesh(_COCKPIT_GEO, trimMat);
-  cockpit.position.set(0, 1.05, 0.1);
+  cockpit.position.set(0, 1.05, 0.0);
   torso.add(cockpit);
-  // Glass plate.
   const glass = new THREE.Mesh(_COCKPIT_GLASS_GEO, glassMat);
-  glass.position.set(0, 1.05, 0.65);
+  glass.position.set(0, 1.10, 0.71);
   torso.add(glass);
 
+  // ---- TOP MAST ----
+  // Tall vertical pole rising from the back-center of the torso roof.
+  const mastBase = new THREE.Mesh(_MAST_BASE_GEO, trimMat);
+  mastBase.position.set(0, 1.35, -0.40);
+  torso.add(mastBase);
+  const mastPole = new THREE.Mesh(_MAST_POLE_GEO, steelMat);
+  mastPole.position.set(0, 2.15, -0.40);
+  torso.add(mastPole);
+  const mastLight = new THREE.Mesh(_MAST_LIGHT_GEO, mastLightMat);
+  mastLight.position.set(0, 2.65, -0.40);
+  torso.add(mastLight);
+
+  // ---- PAULDRONS (wide angular shoulder blocks) ----
+  // Photo shows pauldrons sitting outboard of the torso, taller than
+  // the cockpit but slightly forward-set. Each has a sensor / light
+  // box mounted on top + a small antenna.
+  function _buildPauldron(side) {
+    const pauldron = new THREE.Group();
+    const block = new THREE.Mesh(_PAULDRON_GEO, hullMat);
+    pauldron.add(block);
+    // Top-mounted sensor / floodlight box.
+    const top = new THREE.Mesh(_PAULDRON_TOP_GEO, trimMat);
+    top.position.set(0, 0.65, 0);
+    pauldron.add(top);
+    // Front-facing flood lens on the top box.
+    const flood = new THREE.Mesh(
+      new THREE.CircleGeometry(0.10, 12),
+      mastLightMat,
+    );
+    flood.position.set(0, 0.65, 0.43);
+    pauldron.add(flood);
+    // Short antenna sticking up from the back-inner corner.
+    const ant = new THREE.Mesh(_PAULDRON_ANTENNA_GEO, steelMat);
+    ant.position.set(side * -0.18, 1.05, -0.30);
+    pauldron.add(ant);
+    // Side armor plate facing outward.
+    const sidePlate = new THREE.Mesh(
+      new THREE.BoxGeometry(0.05, 0.85, 1.20),
+      steelMat,
+    );
+    sidePlate.position.set(side * 0.58, -0.10, 0);
+    pauldron.add(sidePlate);
+    return pauldron;
+  }
+  const pauldronL = _buildPauldron(-1);
+  pauldronL.position.set(-1.30, 0.20, 0);
+  torso.add(pauldronL);
+  const pauldronR = _buildPauldron(1);
+  pauldronR.position.set(1.30, 0.20, 0);
+  torso.add(pauldronR);
+
   // ---- ARMS ----
-  // Build groups; the variant decides what hangs off them. Each arm
-  // exposes a Group with optional .userData.muzzle group used as the
-  // weapon fire origin.
+  // Arms hang off the bottom-outer corners of the pauldrons. Variant
+  // builders attach the variant-specific weapon / hand under the arm
+  // group.
   const armL = new THREE.Group();
-  armL.position.set(-1.40, 0.2, 0);
+  armL.position.set(-1.55, -0.20, 0);
   torso.add(armL);
-  const armLMesh = new THREE.Mesh(_ARM_GEO, hullMat);
+  const armLMesh = new THREE.Mesh(_ARM_GEO, trimMat);
   armL.add(armLMesh);
-  const shoulderL = new THREE.Mesh(_SHOULDER_GEO, trimMat);
-  shoulderL.position.y = 0.7;
-  armL.add(shoulderL);
 
   const armR = new THREE.Group();
-  armR.position.set(1.40, 0.2, 0);
+  armR.position.set(1.55, -0.20, 0);
   torso.add(armR);
-  const armRMesh = new THREE.Mesh(_ARM_GEO, hullMat);
+  const armRMesh = new THREE.Mesh(_ARM_GEO, trimMat);
   armR.add(armRMesh);
-  const shoulderR = new THREE.Mesh(_SHOULDER_GEO, trimMat);
-  shoulderR.position.y = 0.7;
-  armR.add(shoulderR);
 
   // Build variant-specific arm content. Each builder returns
   // { primaryMuzzle, secondaryMuzzle } — Groups whose getWorldPosition
@@ -295,7 +477,7 @@ export function spawnMech(pos, tint, variantId) {
   });
   const prompt = new THREE.Sprite(promptMat);
   prompt.scale.set(3.6, 0.9, 1);
-  prompt.position.y = 5.6;
+  prompt.position.y = 7.4;
   prompt.visible = false;
   root.add(prompt);
 
@@ -402,6 +584,36 @@ function _buildArmsMinigun(armL, armR, hullMat, trimMat, tintColor) {
   const muzzle = new THREE.Group();
   muzzle.position.set(0, -1.0, 1.9);
   armL.add(muzzle);
+
+  // Hanging ammo belt — chain of small linked boxes drooping from
+  // the housing rear-bottom toward the floor, then curving back up
+  // into a feed slot on the housing. 8 links along a sag curve.
+  // Matches the conspicuous brass-belt detail on the MAV-ULB photo.
+  {
+    const beltMat = new THREE.MeshStandardMaterial({
+      color: 0xb29548,        // brass / dark gold
+      roughness: 0.55,
+      metalness: 0.85,
+    });
+    const linkGeo = new THREE.BoxGeometry(0.08, 0.10, 0.05);
+    const N = 8;
+    for (let i = 0; i < N; i++) {
+      const t = i / (N - 1);          // 0..1
+      // Sag curve: starts at housing rear (z=-0.20, y=-1.0), drops
+      // to bottom of the sag at (z=0.0, y=-1.85), curves back to a
+      // feed inlet on the side (z=0.20, y=-1.05).
+      const z = -0.20 + t * 0.40;
+      const sag = -Math.sin(t * Math.PI) * 0.85;
+      const y = -1.05 + sag;
+      const x = 0.32;                // outboard side of the housing
+      const link = new THREE.Mesh(linkGeo, beltMat);
+      link.position.set(x, y, z);
+      // Rotate link so it tilts along the curve direction.
+      const ang = -Math.cos(t * Math.PI) * 0.45;
+      link.rotation.x = ang;
+      armL.add(link);
+    }
+  }
 
   // Right: same missile pod as before.
   const pod = new THREE.Mesh(_MISSILE_POD_GEO, trimMat);
