@@ -31,7 +31,6 @@ import { hitBurst } from './effects.js';
 import { shake, S } from './state.js';
 import { getTriangleFor } from './triangles.js';
 import { spawners, spawnPortal, clearAllPortals } from './spawners.js';
-import { getHexTilingTexture } from './dormantProps.js';
 
 // ---- Tunables ----
 // Queen is much bigger than a normal hive — visible from any angle,
@@ -56,28 +55,13 @@ function _domeMat(tint, layerIdx) {
   // Outer layer most opaque (most "armored-looking"), inner layers
   // progressively dimmer so the player can see SOMETHING through
   // them and read "there are more shields beneath."
-  // Bumped opacity + emissive intensity from earlier values so the
-  // hex texture pattern reads as a clear force-field surface rather
-  // than a faint wash through a translucent dome.
+  // Bumped opacity + emissive intensity so the dome reads as a
+  // glowing force-field surface, not a faint translucent wash.
+  // (Earlier iterations tried a hex texture overlay; user feedback
+  // said it didn't read at distance so we stripped it. Glow stays.)
   const baseOpacity = 0.62 - layerIdx * 0.06;       // 0.62, 0.56, 0.50, 0.44
   const emissiveBoost = 0.95 - layerIdx * 0.10;     // 0.95, 0.85, 0.75, 0.65
-  // Apply the same hex tiling texture used by the spawner shields
-  // so the queen's domes match the visual language of the rest of
-  // the game's shields. Each layer gets its own clone of the texture
-  // with a slightly different repeat count so the hex patterns
-  // don't perfectly stack into a single visual line — outer layer
-  // has the most hexes (densest), inner the fewest. Reads as nested
-  // force-field layers rather than a single shield.
-  const hexTex = getHexTilingTexture().clone();
-  hexTex.needsUpdate = true;
-  hexTex.wrapS = hexTex.wrapT = THREE.RepeatWrapping;
-  // Scale repeat by layer so each dome's pattern is distinguishable.
-  // Outer (large radius) = more repeats so hexes stay visually small.
-  // Inner (smaller radius) = fewer repeats so hexes stay readable.
-  const repeatBase = 6 - layerIdx;     // 6, 5, 4, 3 horizontal
-  hexTex.repeat.set(repeatBase, Math.max(2, repeatBase - 2));
   return new THREE.MeshStandardMaterial({
-    map: hexTex,
     color: tint,
     transparent: true,
     opacity: baseOpacity,
