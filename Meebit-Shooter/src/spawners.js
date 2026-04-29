@@ -6,6 +6,7 @@ import { getTriangleFor } from './triangles.js';
 import { enemies } from './enemies.js';
 import { spawnPyramidPortal, tickPyramidDamage, launchPyramid, tickPyramidLaunch } from './pyramidSpawner.js';
 import { spawnUfoPortal, tickUfoDamage, explodeUfo } from './ufoSpawner.js';
+import { updateMushroomClouds, clearMushroomClouds } from './mushroomCloud.js';
 
 export const spawners = [];
 
@@ -589,6 +590,12 @@ function destroySpawner(spawner) {
 }
 
 export function updateSpawners(dt) {
+  // Tick any active mushroom clouds. Clouds outlive their spawner —
+  // by the time the cloud is animating, the UFO has already been
+  // removed from the spawners array, so this lives at the top of
+  // updateSpawners rather than inside the per-spawner loop.
+  updateMushroomClouds(dt);
+
   // Global retraction tick — invoked from waves.js startHiveRetraction()
   // before wave 4 starts. Every hive (destroyed-and-collapsed OR still
   // standing) sinks into the ground over 2s.
@@ -758,6 +765,9 @@ export function clearAllPortals() {
     if (s.obj.parent) scene.remove(s.obj);
   }
   spawners.length = 0;
+  // Tear down any active mushroom clouds so a game restart doesn't
+  // leave drifting clouds in the next run.
+  clearMushroomClouds();
 }
 
 // Pick a random NON-destroyed portal to spawn an enemy from.

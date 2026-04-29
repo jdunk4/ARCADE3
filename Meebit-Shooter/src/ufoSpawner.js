@@ -67,6 +67,7 @@ import { scene } from './scene.js';
 import { SPAWNER_CONFIG, HIVE_CONFIG, CHAPTERS } from './config.js';
 import { getCrackTexture } from './spawnerFx.js';
 import { hitBurst } from './effects.js';
+import { spawnMushroomCloud } from './mushroomCloud.js';
 
 // ---- Hull material constants ----
 // Cool gunmetal — reads as fabricated craft, not organic. The chapter
@@ -689,10 +690,13 @@ function _shedNextPanel(s) {
 }
 
 // =====================================================================
-// UFO DESTRUCTION — bigger explosion than the wasp-nest variant.
+// UFO DESTRUCTION — bigger explosion than the wasp-nest variant +
+// animated mushroom cloud rising from the ground. The standard
+// collapse animation in spawners.js takes the saucer body away over
+// ~0.17s, which times perfectly with the cloud's flash phase so the
+// cloud reads as consuming/replacing the saucer. The cloud itself
+// then runs for ~3.8s on its own lifecycle.
 // Called from destroySpawner in spawners.js when structureType==='ufo'.
-// Returns true if the caller should skip the standard collapse animation
-// (we handle it here with a fall-from-sky finale).
 // =====================================================================
 export function explodeUfo(s) {
   if (!s) return;
@@ -707,6 +711,16 @@ export function explodeUfo(s) {
   setTimeout(() => hitBurst(pos, 0xffaa00, 40), 60);
   setTimeout(() => hitBurst(pos, 0xff5520, 32), 130);
   setTimeout(() => hitBurst(pos, 0xff3cac, 24), 220);
+
+  // Mushroom cloud — spawned at GROUND level (not hover level) so
+  // the stem rises naturally from the floor. The cloud is its own
+  // free-standing scene object with an independent ~3.8s lifecycle
+  // (ticked by updateMushroomClouds() in spawners.js); it survives
+  // long after the saucer's collapse animation removes the body
+  // from the scene.
+  const groundPos = new THREE.Vector3(s.pos.x, 0, s.pos.z);
+  try { spawnMushroomCloud(groundPos, s.tint); } catch (e) { console.warn('[ufo cloud]', e); }
+
   // Shed every remaining trim piece on death so the explosion has
   // visible debris.
   if (s.sheddable && s.shedNext < s.sheddable.length) {
