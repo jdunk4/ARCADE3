@@ -29,6 +29,8 @@
 import * as THREE from 'three';
 import { scene } from './scene.js';
 import { SPAWNER_CONFIG, HIVE_CONFIG, CHAPTERS } from './config.js';
+import { buildLightningBolt, tickLightningBolts } from './spawnerFx.js';
+import { hitBurst } from './effects.js';
 
 // ---- Stone material constants ----
 // Dark stone with a faint warm undertone — reads as ancient weathered
@@ -256,11 +258,22 @@ export function spawnPyramidPortal(x, z, chapterIdx) {
     eggs,
     eggsAlive: eggs.length,
     capMat,
-    // The shared stone material + its baseline color, used by
-    // _updateHiveDamageColor in spawners.js to lerp toward black as
-    // HP drops. Must be the actual material + actual original color.
+    // Pyramids skip the "darken on damage" path (they BRIGHTEN
+    // instead) — null nestOriginalColor causes _updateHiveDamageColor
+    // to early-return, and tickPyramidDamage handles emissive ramp.
     nestMat: stoneMat,
-    nestOriginalColor: new THREE.Color(_STONE_COLOR),
+    nestOriginalColor: null,
+    // Pyramid-specific FX state — read by tickPyramidDamage and
+    // launchPyramid in spawners.js.
+    stoneMat,
+    obelisk,
+    obeliskMat,
+    glyphMat,
+    lightningBolts: [],             // active lightning bolts (caller-owned)
+    lightningTimer: 0,              // seconds until next sky-strike
+    launching: false,               // true after destroy: pyramid is taking off
+    launchT: 0,                     // seconds since launch began
+    thrusterMeshes: [],              // populated by launchPyramid
     hp: SPAWNER_CONFIG.spawnerHp || 180,
     hpMax: SPAWNER_CONFIG.spawnerHp || 180,
     hitFlash: 0,
@@ -273,4 +286,248 @@ export function spawnPyramidPortal(x, z, chapterIdx) {
     // informational.
     structureType: 'pyramid',
   };
+}
+
+// =====================================================================
+// PYRAMID-SPECIFIC DAMAGE FX
+// =====================================================================
+// Called every frame from spawners.js updateSpawners() for any spawner
+// with structureType === 'pyramid'. Drives:
+//   - Brightness ramp: stone emissive intensity climbs from 0.20 (full
+//     HP) toward ~3.0 (near death). Obelisk's already-bright emissive
+//     climbs even further. The pyramid doesn't darken on damage; it
+//     glows hotter and hotter until it self-destructs.
+//   - Periodic sky lightning: every few seconds when below 70% HP, a
+//     bolt strikes the obelisk tip from straight up. Frequency scales
+//     with damage so it crackles constantly near death.
+//   - Lightning bolt list tick: fades + removes expired bolts.
+// =====================================================================
+const _SKY_STRIKE_HEIGHT = 28;     // bolt origin Y in world space (above pyramid)
+
+export function tickPyramidDamage(s, dt, ratio) {
+  if (!s) return;
+
+  // Brightness ramp. Damage dmg in [0..1].
+  const dmg = 1 - ratio;
+  // Stone seam emissive: 0.20 (calm) → 3.0 (overloaded).
+  if (s.stoneMat) {
+    s.stoneMat.emissiveIntensity = 0.20 + dmg * 2.80;
+  }
+  // Obelisk capstone — already bright; pump higher. The existing
+  // pulse code in spawners.js drives ringMat (= obeliskMat) on hit
+  // flashes; we add a steady-state ramp on top of that.
+  if (s.obeliskMat && s.hitFlash <= 0) {
+    s.obeliskMat.emissiveIntensity = 2.0 + dmg * 4.0;
+  }
+  // Glyph plates — also push brighter so the runes blaze near death.
+  // (The per-egg pulse code in spawners.js sets emissiveIntensity
+  // based on ratio; we additionally bump the SHARED glyphMat which
+  // the still-capped plates use.)
+  if (s.glyphMat) {
+    s.glyphMat.emissiveIntensity = 2.4 + dmg * 2.0;
+  }
+
+  // Sky-strike lightning. Frequency ramps with damage. Below 70% HP
+  // we start striking; near 0 HP they fire every ~0.4s.
+  if (s.launching) return;            // launchPyramid handles its own bolts
+  if (dmg > 0.30) {
+    s.lightningTimer = (s.lightningTimer || 0) - dt;
+    if (s.lightningTimer <= 0) {
+      _spawnSkyStrike(s);
+      // Interval: 2.5s at 70% damage → 0.4s at 100% damage.
+      s.lightningTimer = 2.5 - (dmg - 0.30) * 3.0;
+    }
+  }
+
+  // Tick active bolts.
+  if (s.lightningBolts && s.lightningBolts.length) {
+    tickLightningBolts(dt, s.lightningBolts);
+  }
+}
+
+// Drop a lightning bolt from sky onto the obelisk tip.
+function _spawnSkyStrike(s) {
+  // Obelisk world position. Tip is at the top of the cone — local
+  // y at obelisk.position.y + obelisk geometry's height/2.
+  const tipLocal = new THREE.Vector3();
+  s.obelisk.getWorldPosition(tipLocal);
+  // Obelisk geometry is a 1.6u tall cone; world tip is +0.8 above
+  // its center on Y.
+  tipLocal.y += 0.8;
+  const skyTop = new THREE.Vector3(
+    tipLocal.x + (Math.random() - 0.5) * 1.2,
+    tipLocal.y + _SKY_STRIKE_HEIGHT,
+    tipLocal.z + (Math.random() - 0.5) * 1.2,
+  );
+  const bolt = buildLightningBolt(skyTop, tipLocal, s.tint, 2);
+  scene.add(bolt.mesh);
+  s.lightningBolts.push(bolt);
+  // Brief impact flash + small spark on the obelisk tip.
+  hitBurst(tipLocal, s.tint, 5);
+  hitBurst(tipLocal, 0xffffff, 3);
+  // Pump obelisk hitFlash so its emissive spikes — reuses the existing
+  // ringMat hit-flash machinery in spawners.js updateSpawners.
+  s.hitFlash = Math.max(s.hitFlash, 0.18);
+}
+
+// =====================================================================
+// PYRAMID DESTRUCTION — instead of collapsing, the pyramid grows
+// thrusters at its base, charges with lightning, then blasts off into
+// the sky. Returns truthy so the caller skips the standard scale-down
+// collapse.
+// =====================================================================
+const _THRUSTER_GEO = new THREE.ConeGeometry(0.55, 1.4, 14, 1, true);
+
+export function launchPyramid(s) {
+  if (!s) return;
+  s.launching = true;
+  s.launchT = 0;
+
+  // Spawn 4 thruster cones under the base, pointing downward, with
+  // additive blending for a flame-jet look. We attach them to the
+  // outer group (not nestBody) so they don't inherit the body sway.
+  const thrusterMat = new THREE.MeshBasicMaterial({
+    color: s.tint,
+    transparent: true,
+    opacity: 0.85,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+    toneMapped: false,
+  });
+  // White-hot core inside each thruster.
+  const coreMat = new THREE.MeshBasicMaterial({
+    color: 0xffffff,
+    transparent: true,
+    opacity: 0.95,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+    toneMapped: false,
+  });
+
+  const positions = [
+    [ 0.9, 0,  0.9],
+    [-0.9, 0,  0.9],
+    [ 0.9, 0, -0.9],
+    [-0.9, 0, -0.9],
+  ];
+  for (const [x, _y, z] of positions) {
+    const t = new THREE.Mesh(_THRUSTER_GEO, thrusterMat);
+    t.position.set(x, -0.3, z);
+    t.rotation.x = Math.PI;          // flip cone tip down
+    s.obj.add(t);
+    s.thrusterMeshes.push(t);
+    // Inner white core, smaller cone.
+    const c = new THREE.Mesh(_THRUSTER_GEO, coreMat);
+    c.position.set(x, -0.2, z);
+    c.scale.setScalar(0.6);
+    c.rotation.x = Math.PI;
+    s.obj.add(c);
+    s.thrusterMeshes.push(c);
+  }
+
+  // Charge burst — a few rapid lightning bolts striking the obelisk
+  // from all directions to telegraph the launch.
+  const tipPos = new THREE.Vector3();
+  s.obelisk.getWorldPosition(tipPos);
+  tipPos.y += 0.8;
+  for (let i = 0; i < 6; i++) {
+    const a = (i / 6) * Math.PI * 2;
+    const start = new THREE.Vector3(
+      tipPos.x + Math.cos(a) * 6,
+      tipPos.y + 4 + Math.random() * 3,
+      tipPos.z + Math.sin(a) * 6,
+    );
+    const b = buildLightningBolt(start, tipPos, s.tint, 3);
+    scene.add(b.mesh);
+    s.lightningBolts.push(b);
+  }
+
+  // Ignition burst at the base.
+  hitBurst(new THREE.Vector3(s.pos.x, 0.4, s.pos.z), s.tint, 24);
+  hitBurst(new THREE.Vector3(s.pos.x, 0.4, s.pos.z), 0xffffff, 16);
+}
+
+// Per-frame tick during the pyramid's launch sequence. Returns true
+// once the pyramid has fully cleared the arena and should be removed
+// from the scene.
+//
+// Phases (approx, in seconds since launch start):
+//   0.00 – 0.50   CHARGE: stationary, additional lightning bolts +
+//                 hitBursts; thrusters pulse.
+//   0.50 – 1.00   IGNITION: starts moving up slowly with a wobble.
+//   1.00 – 3.00   ASCENT: accelerates upward until offscreen.
+//   3.00          DESPAWN: caller removes from scene.
+//
+export function tickPyramidLaunch(s, dt) {
+  if (!s.launching) return false;
+  s.launchT += dt;
+  const t = s.launchT;
+
+  // Update bolts list every phase.
+  if (s.lightningBolts && s.lightningBolts.length) {
+    tickLightningBolts(dt, s.lightningBolts);
+  }
+
+  if (t < 0.5) {
+    // CHARGE — fire occasional bolts, shake the body.
+    if (Math.random() < 0.35) {
+      const tip = new THREE.Vector3();
+      s.obelisk.getWorldPosition(tip);
+      tip.y += 0.8;
+      const start = new THREE.Vector3(
+        tip.x + (Math.random() - 0.5) * 8,
+        tip.y + 4 + Math.random() * 4,
+        tip.z + (Math.random() - 0.5) * 8,
+      );
+      const b = buildLightningBolt(start, tip, s.tint, 2);
+      scene.add(b.mesh);
+      s.lightningBolts.push(b);
+    }
+    // Tremble.
+    if (s.nestBody) {
+      s.nestBody.position.x = (Math.random() - 0.5) * 0.06;
+      s.nestBody.position.z = (Math.random() - 0.5) * 0.06;
+    }
+    // Thruster flicker.
+    for (const tm of s.thrusterMeshes) {
+      tm.scale.y = 1.0 + (Math.random() - 0.5) * 0.4;
+    }
+  } else if (t < 1.0) {
+    // IGNITION — start lifting + thrusters at full burn.
+    const f = (t - 0.5) / 0.5;        // 0..1
+    s.obj.position.y = f * f * 1.0;    // gentle parabolic start
+    if (s.nestBody) {
+      s.nestBody.position.x = (Math.random() - 0.5) * 0.04 * (1 - f);
+      s.nestBody.position.z = (Math.random() - 0.5) * 0.04 * (1 - f);
+    }
+    // Lengthen thrusters as they "ramp up".
+    for (let i = 0; i < s.thrusterMeshes.length; i++) {
+      s.thrusterMeshes[i].scale.y = 1.0 + f * 1.5 + (Math.random() - 0.5) * 0.2;
+    }
+  } else {
+    // ASCENT — rapid acceleration upward.
+    const ascentT = t - 1.0;
+    // y = 1.0 (from ignition) + integrated acceleration over time.
+    // Use a quadratic so the takeoff reads as accelerating.
+    s.obj.position.y = 1.0 + ascentT * ascentT * 30;
+    // Slight roll for visual flair.
+    s.obj.rotation.y += dt * 1.2;
+    // Continued thruster flicker.
+    for (const tm of s.thrusterMeshes) {
+      tm.scale.y = 2.0 + (Math.random() - 0.5) * 0.5;
+    }
+    // Occasional plume burst as it rises.
+    if (Math.random() < 0.25) {
+      hitBurst(
+        new THREE.Vector3(s.pos.x, s.obj.position.y - 1.0, s.pos.z),
+        s.tint, 4
+      );
+    }
+  }
+
+  // Done flag — by t=3.0 the pyramid is high enough that we can
+  // safely despawn.
+  return t >= 3.0;
 }

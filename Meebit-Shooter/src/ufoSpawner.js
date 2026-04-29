@@ -65,6 +65,8 @@
 import * as THREE from 'three';
 import { scene } from './scene.js';
 import { SPAWNER_CONFIG, HIVE_CONFIG, CHAPTERS } from './config.js';
+import { getCrackTexture } from './spawnerFx.js';
+import { hitBurst } from './effects.js';
 
 // ---- Hull material constants ----
 // Cool gunmetal — reads as fabricated craft, not organic. The chapter
@@ -209,11 +211,46 @@ export function spawnUfoPortal(x, z, chapterIdx) {
 
   // ---- BOTTOM-UP HULL CONSTRUCTION ----
 
+  // Sheddable panel pieces — collected as we build. In the late
+  // damage stage these break off one-by-one and tumble away. Order
+  // chosen so the LEAST silhouette-defining pieces drop first
+  // (trim caps, bevels) and the MAIN tiers stay attached longest.
+  const sheddable = [];
+
+  // Crack overlay material — one shared material whose opacity is
+  // ramped per-frame by tickUfoDamage in spawners.js. Starts at
+  // opacity 0 (invisible) and ramps to ~0.85 as HP drops. The same
+  // crack texture is mapped to overlay meshes parented to each
+  // major hull surface, sized 1.01× their host so they hover just
+  // above the hull face without z-fighting.
+  const crackTex = getCrackTexture();
+  const crackMat = new THREE.MeshBasicMaterial({
+    map: crackTex,
+    alphaMap: crackTex,
+    color: 0x000000,        // black cracks read clearly on metallic gunmetal
+    transparent: true,
+    opacity: 0,             // ramped by tickUfoDamage
+    depthWrite: false,
+    side: THREE.DoubleSide,
+    toneMapped: false,
+  });
+  // Helper: attach a crack overlay as a child of a hull mesh,
+  // scaled slightly larger so it sits just outside the surface.
+  // Uses the same geometry as the host (cheap, exact silhouette
+  // match) and the shared crackMat (one opacity update covers all).
+  function _addCrack(host, scale = 1.012) {
+    const overlay = new THREE.Mesh(host.geometry, crackMat);
+    overlay.scale.setScalar(scale);
+    host.add(overlay);
+    return overlay;
+  }
+
   // Belly lens — rounded underside.
   const belly = new THREE.Mesh(_BELLY_GEO, hullMat);
   belly.position.y = -0.18;
   belly.castShadow = true;
   saucerBody.add(belly);
+  _addCrack(belly);
 
   // Engine vent + inner glow rings on the underside center. Additive
   // blending against the dim underside for a self-illuminated appearance
@@ -261,6 +298,7 @@ export function spawnUfoPortal(x, z, chapterIdx) {
   lowerHull.position.y = -0.18;
   lowerHull.castShadow = true;
   saucerBody.add(lowerHull);
+  _addCrack(lowerHull);
 
   // Equator accent band — chapter-tinted bright ring at saucer's
   // widest point. The main color element on the silhouette.
@@ -285,23 +323,29 @@ export function spawnUfoPortal(x, z, chapterIdx) {
   tier1.position.y = 0.45;
   tier1.castShadow = true;
   saucerBody.add(tier1);
+  _addCrack(tier1);
   const tier1Trim = new THREE.Mesh(_TIER1_TRIM_GEO, trimMat);
   tier1Trim.position.y = 0.59;
   saucerBody.add(tier1Trim);
+  sheddable.push(tier1Trim);
 
   const tier2 = new THREE.Mesh(_TIER2_GEO, hullMat);
   tier2.position.y = 0.73;
   saucerBody.add(tier2);
+  _addCrack(tier2);
   const tier2Trim = new THREE.Mesh(_TIER2_TRIM_GEO, trimMat);
   tier2Trim.position.y = 0.87;
   saucerBody.add(tier2Trim);
+  sheddable.push(tier2Trim);
 
   const tier3 = new THREE.Mesh(_TIER3_GEO, hullMat);
   tier3.position.y = 1.00;
   saucerBody.add(tier3);
+  _addCrack(tier3);
   const tier3Trim = new THREE.Mesh(_TIER3_TRIM_GEO, trimMat);
   tier3Trim.position.y = 1.14;
   saucerBody.add(tier3Trim);
+  sheddable.push(tier3Trim);
 
   // Cockpit collar — narrow ring at dome base.
   const collarMat = new THREE.MeshStandardMaterial({
@@ -351,21 +395,25 @@ export function spawnUfoPortal(x, z, chapterIdx) {
   dish.position.y = 2.13;
   dish.rotation.x = Math.PI;     // flip so cone wide end points down
   saucerBody.add(dish);
+  sheddable.push(dish);
 
   // Mast.
   const mast = new THREE.Mesh(_MAST_GEO, trimMat);
   mast.position.y = 2.55;
   saucerBody.add(mast);
+  sheddable.push(mast);
 
   // Two perpendicular cross-arms ~2/3 up the mast — sensor stubs.
   const stub1 = new THREE.Mesh(_STUB_GEO, trimMat);
   stub1.position.y = 2.45;
   stub1.rotation.z = Math.PI / 2;     // horizontal
   saucerBody.add(stub1);
+  sheddable.push(stub1);
   const stub2 = new THREE.Mesh(_STUB_GEO, trimMat);
   stub2.position.y = 2.55;
   stub2.rotation.x = Math.PI / 2;     // perpendicular to stub1
   saucerBody.add(stub2);
+  sheddable.push(stub2);
 
   // Tip beacon.
   const beaconMat = new THREE.MeshBasicMaterial({
@@ -507,7 +555,17 @@ export function spawnUfoPortal(x, z, chapterIdx) {
     eggsAlive: eggs.length,
     capMat,
     nestMat: hullMat,
-    nestOriginalColor: new THREE.Color(_HULL_COLOR),
+    // UFOs use crack overlays + panel-shedding instead of color
+    // darkening — _updateHiveDamageColor early-returns when
+    // nestOriginalColor is null. tickUfoDamage in spawners.js
+    // drives the crack and shed FX from the same per-hit path.
+    nestOriginalColor: null,
+    // UFO-specific FX state — read by tickUfoDamage in spawners.js.
+    crackMat,                       // shared overlay; opacity ramps with damage
+    sheddable,                      // ordered list of detachable trim pieces
+    shedNext: 0,                    // index into sheddable; advances on milestone
+    shedFlying: [],                 // pieces currently airborne after detach
+    spinAccum: 0,                   // accumulated rotation.y, for damage-driven spin
     hp: SPAWNER_CONFIG.spawnerHp || 180,
     hpMax: SPAWNER_CONFIG.spawnerHp || 180,
     hitFlash: 0,
@@ -517,4 +575,144 @@ export function spawnUfoPortal(x, z, chapterIdx) {
     tint,
     structureType: 'ufo',
   };
+}
+
+// =====================================================================
+// UFO-SPECIFIC DAMAGE FX
+// =====================================================================
+// Called every frame from spawners.js updateSpawners() for any spawner
+// with structureType === 'ufo'. Drives:
+//   - Damage-driven spin: rotation rate ramps from 0 at full HP to
+//     ~3 rad/sec at 0 HP. The saucer wobbles as it spins via the
+//     existing sway tick (which is also dt-scaled), so the two read
+//     as a coherent destabilization.
+//   - Crack opacity: ramps from 0 (full HP) to 0.85 (0 HP) so the
+//     hull progressively shows damage instead of darkening.
+//   - Panel shedding: at HP < 60% / 40% / 20%, one trim piece detaches
+//     and tumbles away. Pieces fall on a parabolic arc and disappear
+//     after ~1.4s.
+//
+// Caller passes the current HP ratio (0..1) so we don't recompute it.
+// dt is per-frame seconds.
+export function tickUfoDamage(s, dt, ratio) {
+  if (!s || s.destroyed) return;
+
+  // Spin rate ramps quadratically — gentle at first, dramatic near death.
+  const dmg = 1 - ratio;
+  const spinRate = dmg * dmg * 3.0;     // 0..3 rad/sec
+  if (s.nestBody) {
+    s.spinAccum = (s.spinAccum || 0) + spinRate * dt;
+    s.nestBody.rotation.y = s.spinAccum;
+  }
+
+  // Crack opacity ramp. Hold at 0 for the first 20% of damage so an
+  // intact-looking UFO doesn't show fake cracks; ramp linearly after.
+  if (s.crackMat) {
+    const crackStart = 0.20;            // start cracking after 20% damage
+    const crackProg = Math.max(0, (dmg - crackStart) / (1 - crackStart));
+    s.crackMat.opacity = crackProg * 0.85;
+  }
+
+  // Milestone shedding — drop a trim piece each time HP crosses
+  // 60% / 40% / 20%. Sheddable list ordered LEAST→MOST silhouette-
+  // important, so dish + stubs go first, trim caps follow.
+  const milestones = [0.6, 0.4, 0.2];
+  while (
+    s.sheddable && s.shedNext < s.sheddable.length &&
+    s.shedNext < milestones.length &&
+    ratio <= milestones[s.shedNext]
+  ) {
+    _shedNextPanel(s);
+    s.shedNext++;
+  }
+
+  // Tick airborne pieces — parabolic fall + tumble + opacity fade.
+  if (s.shedFlying && s.shedFlying.length) {
+    for (let i = s.shedFlying.length - 1; i >= 0; i--) {
+      const p = s.shedFlying[i];
+      p.t += dt;
+      // Position update — initial velocity + gravity.
+      p.mesh.position.x += p.vx * dt;
+      p.mesh.position.y += p.vy * dt;
+      p.mesh.position.z += p.vz * dt;
+      p.vy -= 12 * dt;                  // gravity
+      p.mesh.rotation.x += p.spinX * dt;
+      p.mesh.rotation.z += p.spinZ * dt;
+      if (p.t > 1.4) {
+        if (p.mesh.parent) p.mesh.parent.remove(p.mesh);
+        s.shedFlying.splice(i, 1);
+      }
+    }
+  }
+}
+
+// Detach the next sheddable piece, fling it outward + upward, and add
+// it to the airborne list for the per-frame tick to manage. Reparents
+// the piece from saucerBody to the parent group so it falls in world
+// space without inheriting the saucer's spin.
+function _shedNextPanel(s) {
+  const piece = s.sheddable[s.shedNext];
+  if (!piece) return;
+  // Compute current world position before reparenting so we can
+  // preserve continuity.
+  const wpos = new THREE.Vector3();
+  piece.getWorldPosition(wpos);
+  const wquat = new THREE.Quaternion();
+  piece.getWorldQuaternion(wquat);
+  // Detach from saucerBody, attach to the spawner's outer group so
+  // gravity acts in world space.
+  if (piece.parent) piece.parent.remove(piece);
+  piece.position.copy(wpos);
+  piece.quaternion.copy(wquat);
+  s.obj.add(piece);
+  // Velocity: outward radial component + upward kick + small random
+  // tangential.
+  const dx = wpos.x - s.pos.x;
+  const dz = wpos.z - s.pos.z;
+  const r = Math.sqrt(dx * dx + dz * dz) || 1;
+  const ox = dx / r, oz = dz / r;
+  const tangX = -oz, tangZ = ox;
+  const rec = {
+    mesh: piece,
+    t: 0,
+    vx: ox * 4 + tangX * (Math.random() - 0.5) * 3,
+    vy: 4 + Math.random() * 2,
+    vz: oz * 4 + tangZ * (Math.random() - 0.5) * 3,
+    spinX: (Math.random() - 0.5) * 12,
+    spinZ: (Math.random() - 0.5) * 12,
+  };
+  s.shedFlying.push(rec);
+  // Visual feedback at the detach point — a small spark burst in the
+  // chapter tint.
+  hitBurst(wpos, s.tint, 6);
+  hitBurst(wpos, 0xffffff, 3);
+}
+
+// =====================================================================
+// UFO DESTRUCTION — bigger explosion than the wasp-nest variant.
+// Called from destroySpawner in spawners.js when structureType==='ufo'.
+// Returns true if the caller should skip the standard collapse animation
+// (we handle it here with a fall-from-sky finale).
+// =====================================================================
+export function explodeUfo(s) {
+  if (!s) return;
+  // Center of the saucer body in world space — slightly higher than
+  // the standard hive explosion (UFOs hover at _HOVER_Y).
+  const pos = new THREE.Vector3(s.pos.x, _HOVER_Y, s.pos.z);
+  // Multi-stage explosion — bigger than the default destroySpawner
+  // burst because we asked for it. Three burst layers fired in
+  // quick succession read as a coherent fireball.
+  hitBurst(pos, 0xffffff, 60);
+  hitBurst(pos, s.tint, 50);
+  setTimeout(() => hitBurst(pos, 0xffaa00, 40), 60);
+  setTimeout(() => hitBurst(pos, 0xff5520, 32), 130);
+  setTimeout(() => hitBurst(pos, 0xff3cac, 24), 220);
+  // Shed every remaining trim piece on death so the explosion has
+  // visible debris.
+  if (s.sheddable && s.shedNext < s.sheddable.length) {
+    while (s.shedNext < s.sheddable.length) {
+      _shedNextPanel(s);
+      s.shedNext++;
+    }
+  }
 }

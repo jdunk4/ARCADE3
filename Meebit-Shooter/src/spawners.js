@@ -4,8 +4,8 @@ import { SPAWNER_CONFIG, HIVE_CONFIG, CHAPTERS, ARENA } from './config.js';
 import { hitBurst } from './effects.js';
 import { getTriangleFor } from './triangles.js';
 import { enemies } from './enemies.js';
-import { spawnPyramidPortal } from './pyramidSpawner.js';
-import { spawnUfoPortal } from './ufoSpawner.js';
+import { spawnPyramidPortal, tickPyramidDamage, launchPyramid, tickPyramidLaunch } from './pyramidSpawner.js';
+import { spawnUfoPortal, tickUfoDamage, explodeUfo } from './ufoSpawner.js';
 
 export const spawners = [];
 
@@ -526,21 +526,43 @@ function destroySpawner(spawner) {
   // time a hive falls — the final overwrite is the "last hive standing".
   _lastHiveDeathPos = { x: spawner.pos.x, y: 0.2, z: spawner.pos.z };
 
-  // Small explosion — chapter tint + white core + orange flash.
-  // Bigger than the per-hit bursts in damageSpawner() so the death reads
-  // as an explosion rather than another hit. Still a "small" explosion
-  // (not a rocket blast) — restrained particle counts keep it from
-  // overwhelming the frame if multiple hives die close together.
-  const pos = new THREE.Vector3(spawner.pos.x, 2, spawner.pos.z);
-  hitBurst(pos, 0xffffff, 40);
-  hitBurst(pos, spawner.tint, 32);
-  setTimeout(() => hitBurst(pos, 0xff8800, 22), 60);
-  setTimeout(() => hitBurst(pos, 0xff3cac, 18), 140);
+  // Structure-specific destruction FX. UFOs explode bigger; pyramids
+  // launch into the sky on thrusters. Both branch run BEFORE the
+  // generic hitBurst chain so their visual lead is clean — but we
+  // still want the AoE damage and the chain-decoration bursts for
+  // wasp-nests + UFOs. Pyramids skip the bursts (their lightning +
+  // launch sequence is the visual event).
+  const isPyramid = spawner.structureType === 'pyramid';
+  const isUfo     = spawner.structureType === 'ufo';
 
-  // AoE enemy damage — the hive's death throws shrapnel that guts
-  // whatever was clustered around it. Uses the same falloff pattern as
-  // explodeRocket in main.js: full damage at the epicenter, linearly
-  // falling to zero at HIVE_EXPLOSION_RADIUS.
+  if (isPyramid) {
+    // Pyramid takes off — no explosion, no AoE damage. The launch
+    // sequence is its death cinematic; updateSpawners drives it.
+    try { launchPyramid(spawner); } catch (e) { console.warn('[pyramid launch]', e); }
+    // Tag so updateSpawners runs the launch tick instead of the
+    // standard collapse animation.
+    spawner.obj.userData._launching = true;
+    return;
+  }
+
+  if (isUfo) {
+    // Bigger UFO explosion — extra burst layers via explodeUfo.
+    try { explodeUfo(spawner); } catch (e) { console.warn('[ufo explode]', e); }
+  } else {
+    // Default (wasp-nest) explosion — chapter tint + white core +
+    // orange flash. Bigger than the per-hit bursts in damageSpawner()
+    // so the death reads as an explosion rather than another hit.
+    const pos = new THREE.Vector3(spawner.pos.x, 2, spawner.pos.z);
+    hitBurst(pos, 0xffffff, 40);
+    hitBurst(pos, spawner.tint, 32);
+    setTimeout(() => hitBurst(pos, 0xff8800, 22), 60);
+    setTimeout(() => hitBurst(pos, 0xff3cac, 18), 140);
+  }
+
+  // AoE enemy damage — the structure's death throws shrapnel that
+  // guts whatever was clustered around it. Uses the same falloff
+  // pattern as explodeRocket in main.js: full damage at the epicenter,
+  // linearly falling to zero at HIVE_EXPLOSION_RADIUS.
   const r2 = HIVE_EXPLOSION_RADIUS * HIVE_EXPLOSION_RADIUS;
   for (let i = 0; i < enemies.length; i++) {
     const e = enemies[i];
@@ -559,8 +581,8 @@ function destroySpawner(spawner) {
   }
 
   // Collapse animation: was 2× speed (full shrink in 0.5s) — bump to
-  // 6× speed so the hive crumbles inside ~0.17s and the explosion reads
-  // as the cause of death rather than a slow wilt.
+  // 6× speed so the structure crumbles inside ~0.17s and the
+  // explosion reads as the cause of death rather than a slow wilt.
   spawner.obj.userData._collapsing = true;
   spawner.obj.userData._collapseT = 0;
   spawner.obj.userData._collapseFast = true;
@@ -599,7 +621,19 @@ export function updateSpawners(dt) {
   const now = performance.now();
   for (const s of spawners) {
     if (s.destroyed) {
-      // Collapse animation
+      // Pyramid takeoff path — replaces the standard collapse with a
+      // launch sequence (charge → ignition → ascent). When tickPyramidLaunch
+      // returns true, the pyramid has cleared the arena and we can
+      // remove its group from the scene.
+      if (s.obj.userData._launching) {
+        const done = tickPyramidLaunch(s, dt);
+        if (done) {
+          if (s.obj.parent) scene.remove(s.obj);
+          s.obj.userData._launching = false;
+        }
+        continue;
+      }
+      // Standard collapse animation (wasp-nest, UFO).
       if (s.obj.userData._collapsing) {
         s.obj.userData._collapseT += dt;
         const t = s.obj.userData._collapseT;
@@ -698,6 +732,16 @@ export function updateSpawners(dt) {
       if (s.ringMat) s.ringMat.emissiveIntensity = baseEmissive + s.hitFlash * 8;
     } else {
       if (s.ringMat) s.ringMat.emissiveIntensity = baseEmissive;
+    }
+
+    // Structure-specific damage FX — each spawner type drives its own
+    // damage visuals on top of the shared sway/egg/hit-flash machinery
+    // above. UFOs spin faster + crack + shed panels; pyramids brighten
+    // + spawn lightning. Both early-return harmlessly when nothing to do.
+    if (s.structureType === 'ufo') {
+      try { tickUfoDamage(s, dt, ratio); } catch (e) {}
+    } else if (s.structureType === 'pyramid') {
+      try { tickPyramidDamage(s, dt, ratio); } catch (e) {}
     }
   }
 }
