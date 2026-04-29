@@ -60,6 +60,27 @@ const _spitTubeGeo   = new THREE.BoxGeometry(0.16, 0.16, 0.30);
 const _pouchGeo      = new THREE.BoxGeometry(0.18, 0.30, 0.18);
 const _skullEyeGeo   = new THREE.BoxGeometry(0.16, 0.16, 0.05);
 
+// Mummy wrap — chapter-2 zomeeb dressing. Grimy cream / parchment
+// strips wrap around the head, torso, arms, and legs at staggered
+// angles. Three strip sizes cover everything: a long torso strip
+// for chest/waist wraps, a short limb strip for arms/legs, and a
+// hanging tag for the few loose ends that trail off as the mummy
+// walks. Cloth material has high roughness + low metalness so it
+// reads as fabric, not painted plastic.
+const _mummyTorsoStripGeo = new THREE.BoxGeometry(1.18, 0.14, 0.78);
+const _mummyLimbStripGeo  = new THREE.BoxGeometry(0.36, 0.10, 0.36);
+const _mummyHeadStripGeo  = new THREE.BoxGeometry(0.92, 0.10, 0.92);
+const _mummyTagGeo        = new THREE.BoxGeometry(0.10, 0.32, 0.04);
+// Yellowed cream — old bandage. Slight warm emissive so the cloth
+// catches even the dim chapter-2 fog without going dead-gray.
+const _mummyClothMat = new THREE.MeshStandardMaterial({
+  color: 0xd4c098,
+  emissive: 0x3a2e1e,
+  emissiveIntensity: 0.22,
+  roughness: 0.95,
+  metalness: 0.02,
+});
+
 function makeHumanoid(tintHex, scale, extraEmissive = 0, typeKey = null) {
   const group = new THREE.Group();
   const tint = new THREE.Color(tintHex);
@@ -228,19 +249,107 @@ function makeHumanoid(tintHex, scale, extraEmissive = 0, typeKey = null) {
     cheekL.visible = false;
     cheekR.visible = false;
   } else if (typeKey === 'zomeeb') {
-    // Drool drip below the visor — two staggered cubes hanging down
-    // from the mouth area. Reads as "this thing is hungry / dying."
-    const droolMat = new THREE.MeshStandardMaterial({
-      color: 0x88ff88, emissive: 0x44ff44, emissiveIntensity: 1.2,
-    });
-    const drool1 = new THREE.Mesh(_drool1Geo, droolMat);
-    drool1.position.set(0, 2.34, 0.48);
-    group.add(drool1);
-    const drool2 = new THREE.Mesh(_drool2Geo, droolMat);
-    drool2.position.set(0.02, 2.18, 0.48);
-    group.add(drool2);
+    // Chapter 2 (CRIMSON) zomeebs get mummy wrap dressing instead
+    // of the standard drool drip — mummies are dry, not slobbering.
+    // Crown spikes stay either way since they're part of zomeeb's
+    // silhouette identity. Other chapters get the regular zombie.
+    const isMummy = (S && S.chapter === 1);
+
+    if (!isMummy) {
+      // Standard zomeeb — drool drip below the visor, two staggered
+      // cubes hanging down from the mouth. Reads as "this thing is
+      // hungry / dying."
+      const droolMat = new THREE.MeshStandardMaterial({
+        color: 0x88ff88, emissive: 0x44ff44, emissiveIntensity: 1.2,
+      });
+      const drool1 = new THREE.Mesh(_drool1Geo, droolMat);
+      drool1.position.set(0, 2.34, 0.48);
+      group.add(drool1);
+      const drool2 = new THREE.Mesh(_drool2Geo, droolMat);
+      drool2.position.set(0.02, 2.18, 0.48);
+      group.add(drool2);
+    } else {
+      // Mummy wrap — chapter-2 dressing. Bandage strips around the
+      // skull, torso, and limbs at staggered angles + slight per-
+      // instance random rotation so a swarm doesn't read as cloned.
+      // Strips are children of the body parts that move (arms / legs
+      // wraps go INSIDE the arm/leg group so they swing with the
+      // walk anim), torso wraps go on the main group.
+
+      // Head bandage — horizontal strip across the brow, just below
+      // the visor. Slight Z-tilt suggests it's been wrapped once.
+      const headWrap = new THREE.Mesh(_mummyHeadStripGeo, _mummyClothMat);
+      headWrap.position.set(0, 2.55, 0);
+      headWrap.rotation.z = (Math.random() - 0.5) * 0.20;
+      group.add(headWrap);
+
+      // Second head wrap — over the top of the skull, perpendicular
+      // to the brow strip. Cross-bandage look (think: classic mummy
+      // skull silhouette where wraps cross over the dome).
+      const headWrap2 = new THREE.Mesh(_mummyHeadStripGeo, _mummyClothMat);
+      headWrap2.position.set(0, 2.85, 0);
+      headWrap2.rotation.y = Math.PI / 2;
+      headWrap2.rotation.z = (Math.random() - 0.5) * 0.15;
+      headWrap2.scale.set(0.95, 1.0, 0.95);     // slightly smaller crown wrap
+      group.add(headWrap2);
+
+      // Chest wrap — diagonal across the upper torso.
+      const chestWrap = new THREE.Mesh(_mummyTorsoStripGeo, _mummyClothMat);
+      chestWrap.position.set(0, 1.85, 0);
+      chestWrap.rotation.z = 0.20 + (Math.random() - 0.5) * 0.10;
+      group.add(chestWrap);
+
+      // Waist wrap — diagonal the other way (opposite tilt to chest)
+      // so the bands cross-hatch visually.
+      const waistWrap = new THREE.Mesh(_mummyTorsoStripGeo, _mummyClothMat);
+      waistWrap.position.set(0, 1.30, 0);
+      waistWrap.rotation.z = -0.20 + (Math.random() - 0.5) * 0.10;
+      group.add(waistWrap);
+
+      // Arm wraps — small bands wrapping each forearm. Anchored
+      // INSIDE the arm group so they swing with arm rotation during
+      // walk anim. Two per arm at different heights.
+      for (const arm of [armL, armR]) {
+        const w1 = new THREE.Mesh(_mummyLimbStripGeo, _mummyClothMat);
+        w1.position.set(0, -0.30, 0);
+        w1.rotation.z = (Math.random() - 0.5) * 0.4;
+        arm.add(w1);
+        const w2 = new THREE.Mesh(_mummyLimbStripGeo, _mummyClothMat);
+        w2.position.set(0, -0.75, 0);
+        w2.rotation.z = (Math.random() - 0.5) * 0.4;
+        arm.add(w2);
+      }
+
+      // Leg wraps — same pattern on shins. Anchored INSIDE the leg
+      // groups so they swing with the walk anim.
+      for (const leg of [legL, legR]) {
+        const w1 = new THREE.Mesh(_mummyLimbStripGeo, _mummyClothMat);
+        w1.position.set(0, -0.30, 0);
+        w1.rotation.z = (Math.random() - 0.5) * 0.4;
+        leg.add(w1);
+        const w2 = new THREE.Mesh(_mummyLimbStripGeo, _mummyClothMat);
+        w2.position.set(0, -0.75, 0);
+        w2.rotation.z = (Math.random() - 0.5) * 0.4;
+        leg.add(w2);
+      }
+
+      // Loose hanging tags — two short strips hanging from the waist,
+      // at slightly different positions so it looks like trailing
+      // wraps that came undone. Reads as "this mummy has been
+      // shambling for a while."
+      const tag1 = new THREE.Mesh(_mummyTagGeo, _mummyClothMat);
+      tag1.position.set(-0.42 + Math.random() * 0.12, 1.10, 0.40);
+      tag1.rotation.z = (Math.random() - 0.5) * 0.30;
+      group.add(tag1);
+      const tag2 = new THREE.Mesh(_mummyTagGeo, _mummyClothMat);
+      tag2.position.set(0.30 + Math.random() * 0.12, 1.05, -0.40);
+      tag2.rotation.z = (Math.random() - 0.5) * 0.30;
+      group.add(tag2);
+    }
+
     // Crown spikes — three small spikes along the top of the head.
-    // Slight random rotation so the silhouette feels chaotic.
+    // Slight random rotation so the silhouette feels chaotic. Kept
+    // for both regular zombies AND mummies — silhouette identity.
     for (let i = 0; i < 3; i++) {
       const spike = new THREE.Mesh(_crownSpikeGeo, _darkAccentMat);
       spike.position.set(-0.24 + i * 0.24, 3.13, 0);
@@ -1140,6 +1249,12 @@ export function makeEnemy(typeKey, tintHex, pos) {
     // so we flip the same flag — same visual loop applies.
     isSpider: typeKey === 'spider' || _useAntForChapter1,
     spiderLegs: built.spiderLegs || null,
+    // Ant wings — only present on the GLB ant. Two THREE.Group hinges
+    // animated by the per-frame flutter loop in main.js. Null on every
+    // other enemy type and on the procedural fallback box ant (which
+    // has no wings).
+    antWings: built.wings || null,
+    antWingPhase: Math.random() * Math.PI * 2,
     ghostTail: built.ghostTail || null,
     floatPhase: Math.random() * Math.PI * 2,
     isBoss: false,
