@@ -62,6 +62,13 @@ import { Audio } from './audio.js';
 import { UI } from './ui.js';
 import { loadPlayer, animatePlayer, player, recolorGun, resetPlayer, swapAvatarGLB } from './player.js';
 import { enemies, enemyProjectiles, spawnEnemyProjectile, makeEnemy, updateVesselZeroAnim } from './enemies.js';
+import { loadAntMesh } from './antMesh.js';
+
+// Kick off the chapter-1 ant GLB load as soon as the module graph
+// resolves. Async load — by the time the player starts a real run
+// the mesh should be ready. If it isn't (slow network, etc) the
+// makeEnemy dispatch falls back to the procedural box ant.
+loadAntMesh();
 import {
   bullets, spawnBullet, clearBullets,
   rockets, spawnRocket, clearRockets,
@@ -2401,6 +2408,16 @@ function startTutorial() {
   recolorCrowd(CHAPTERS[0].full.grid1);
   prewarmShaders(renderer);
   try { prewarmBossCinematic(); } catch (e) {}
+
+  // Tutorial = clear weather. Per playtester: "we can get rid of rain
+  // and lightning in tutorial." initRain + applyRainTo above set up
+  // the pooled mesh group + lightning DirectionalLight + CSS flash
+  // element so they're cheap to re-engage when the player exits to
+  // the real game; disposeRain() immediately tears down the visible
+  // rain group and zeros lightning flash intensity. The pool will be
+  // rebuilt fresh by initRain in startGame() if the player picks
+  // ATTACK THE AI later.
+  disposeRain();
 
   // Swap the floor to the rainbow tile texture AFTER applyTheme so the
   // theme's lamp tint doesn't multiply the rainbow colors.
