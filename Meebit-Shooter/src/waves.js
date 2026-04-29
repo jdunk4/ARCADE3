@@ -92,7 +92,7 @@ import { setMinesweeperTargetCount, resetMinesweeperTargetCount, setMinesweeperO
 import { recolorCrowd } from './crowd.js';
 import {
   prepareChapter, teardownChapter, isChapterPrepared,
-  removeHiveShields, updateHiveShields,
+  removeHiveShields, updateHiveShields, buildShieldMaterials,
 } from './dormantProps.js';
 import {
   startPowerupWave, endPowerupWave, updatePowerupZones,
@@ -2355,24 +2355,37 @@ function updateBossPattern(dt, boss) {
         } catch (e) { console.warn('[NIGHT_HERALD hive]', e); }
       }
 
-      // Build the shield visual — translucent magenta sphere wrapping
-      // the boss. Parent to boss.obj so it inherits position. Mesh
+      // Build the shield visual — translucent chapter-tinted sphere
+      // wrapping the boss. Uses buildShieldMaterials so the boss shield
+      // gets the same hex-pattern texture + halo glow treatment as
+      // hive shields, and its color is sourced from the current chapter
+      // tint (CHAPTERS[S.chapter].full.grid1) instead of being
+      // hardcoded — auto-adapts if the boss is ever moved between
+      // chapters. Parented to boss.obj so it inherits position. Mesh
       // is stored on boss._heraldShield so the break path can dispose it.
       try {
         const shieldGeom = new THREE.SphereGeometry(3.5, 32, 24);
-        const shieldMat = new THREE.MeshBasicMaterial({
-          color: 0xe63aff,        // chapter-6 magenta
-          transparent: true,
-          opacity: 0.30,
-          side: THREE.DoubleSide,
-          depthWrite: false,
-          blending: THREE.AdditiveBlending,
-          toneMapped: false,
-        });
+        const _chapterTint = CHAPTERS[(S.chapter || 0) % CHAPTERS.length].full.grid1;
+        const { core: shieldMat, halo: haloMat } = buildShieldMaterials(_chapterTint);
+        // Boss shield's resting opacity is lower than hive shields
+        // (0.30 core / 0.18 halo vs 0.55 / 0.35 for hives) so the
+        // boss silhouette stays readable through the bubble — the
+        // player needs to see the boss to dodge its attacks.
+        shieldMat.opacity = 0.30;
+        haloMat.opacity = 0.18;
         const shieldMesh = new THREE.Mesh(shieldGeom, shieldMat);
         shieldMesh.position.y = 1.5;     // center at boss torso height
+        // Halo overlay — slightly larger sphere, back-side rendered.
+        // Geometry is per-boss-shield (smaller than hive shields, so
+        // can't share with hive halo geo).
+        const haloGeom = new THREE.SphereGeometry(3.5 * 1.10, 32, 24);
+        const haloMesh = new THREE.Mesh(haloGeom, haloMat);
+        shieldMesh.add(haloMesh);
         boss.obj.add(shieldMesh);
-        boss._heraldShield = { mesh: shieldMesh, geom: shieldGeom, mat: shieldMat };
+        boss._heraldShield = {
+          mesh: shieldMesh, geom: shieldGeom, mat: shieldMat,
+          haloMesh, haloGeom, haloMat,
+        };
       } catch (e) { console.warn('[NIGHT_HERALD shield mesh]', e); }
 
       UI.toast && UI.toast('SHIELD UP · DESTROY THE 3 ' + portalLabels().nounPlural, '#e63aff', 2500);
@@ -2385,7 +2398,14 @@ function updateBossPattern(dt, boss) {
     if (boss.shielded && boss._heraldShield) {
       const tNow = performance.now() / 1000;
       const pulse = 0.5 + 0.5 * Math.sin(tNow * 2.0);
-      boss._heraldShield.mat.opacity = 0.25 + 0.20 * pulse;
+      // Drive both core and halo opacity. Halo follows at 60% so
+      // the outer glow tracks the core's breathing without
+      // overpowering it.
+      const op = 0.25 + 0.20 * pulse;
+      boss._heraldShield.mat.opacity = op;
+      if (boss._heraldShield.haloMat) {
+        boss._heraldShield.haloMat.opacity = op * 0.60;
+      }
       // Slight breathing-scale on the shield for life
       const sc = 1.0 + 0.04 * Math.sin(tNow * 1.5);
       boss._heraldShield.mesh.scale.set(sc, sc, sc);
@@ -2415,6 +2435,11 @@ function updateBossPattern(dt, boss) {
           }
           if (boss._heraldShield.geom) boss._heraldShield.geom.dispose();
           if (boss._heraldShield.mat)  boss._heraldShield.mat.dispose();
+          // Halo overlay — parented to core mesh so it auto-detaches
+          // when core is removed from scene; just need to dispose its
+          // dedicated geometry + material.
+          if (boss._heraldShield.haloGeom) boss._heraldShield.haloGeom.dispose();
+          if (boss._heraldShield.haloMat)  boss._heraldShield.haloMat.dispose();
         } catch (e) {}
         boss._heraldShield = null;
         UI.toast && UI.toast('SHIELD DOWN · ATTACK!', '#ffffff', 2200);

@@ -698,99 +698,54 @@ class AudioEngine {
     this._beep({ type: 'triangle', freqStart: f0 * 2, freqEnd: f1 * 2, dur: 0.10, gainStart: 0.05, delay: 0.04 });
   }
 
-  // Truck startup — engine ignition cranking on. Played once when
-  // the escort truck spawns, before the player has moved into
-  // escort radius. Reads as "diesel turning over": a brief mid-
-  // pitch crank followed by an idle settling.
+  // Truck startup — used to play an ignition crank when the truck
+  // spawned, but per playtester request the cue was too noisy. Now
+  // a no-op; the engine rumble (truckEngine) carries the audio
+  // presence on its own once the truck starts moving.
   truckStart() {
-    // Crank — short rasp of low-mid noise
-    this._noise(0.20, 800, 0.22);
-    // Ignition catch — descending sawtooth
-    this._beep({ type: 'sawtooth', freqStart: 160, freqEnd: 90, dur: 0.30, gainStart: 0.22, delay: 0.10 });
-    // Idle settling — low rumble
-    this._beep({ type: 'sawtooth', freqStart: 80, freqEnd: 65, dur: 0.40, gainStart: 0.16, delay: 0.30 });
+    // Intentionally empty — see comment above.
   }
 
-  // Truck engine rumble — recurring purr while the escort is rolling
-  // or idling. Called every ~0.5s by escortTruck.js's update tick;
-  // keeps the player audibly aware that an active escort is in
-  // progress. `moving` argument: true while the truck is rolling
-  // (slightly louder, broader low-end), false while idling (subtle
-  // huff). Both are quiet enough to sit under gunfire.
+  // Truck engine rumble — a slow, low truck-idle sound. Called every
+  // ~0.5s by escortTruck.js's update tick during travel. Only the
+  // `moving=true` case fires sound — when the truck is stopped/
+  // blocked, this is a no-op (silence reads as "engine off / paused").
+  // Single low rumble layer instead of the old multi-layer engine
+  // mix; lets the truck audibly chug forward without competing
+  // against combat sfx.
   truckEngine(moving = true) {
-    if (moving) {
-      // Rolling rumble — fundamental low + mid-pitch growl. Bumped
-      // from gainStart 0.13 / 0.05 to 0.22 / 0.10 so it actually
-      // registers during gameplay; the previous levels were getting
-      // buried under combat sfx and the user reported not hearing
-      // the truck at all.
-      this._beep({ type: 'sawtooth', freqStart: 70, freqEnd: 65, dur: 0.40, gainStart: 0.22 });
-      this._beep({ type: 'square',   freqStart: 140, freqEnd: 130, dur: 0.32, gainStart: 0.10, delay: 0.05 });
-      // Mid-range "putt-putt" engine note — clearly audible on any
-      // speaker, including laptops and phones where the 70Hz
-      // fundamental drops out entirely. This is the layer that makes
-      // the truck movement unmistakable in tutorial mode.
-      this._beep({ type: 'square',   freqStart: 320, freqEnd: 280, dur: 0.18, gainStart: 0.16 });
-      this._beep({ type: 'sawtooth', freqStart: 480, freqEnd: 420, dur: 0.16, gainStart: 0.08, delay: 0.09 });
-    } else {
-      // Idle huff — quieter, simpler
-      this._beep({ type: 'sawtooth', freqStart: 75, freqEnd: 70, dur: 0.30, gainStart: 0.13 });
-      // Mid-range idle layer too, just quieter, so the truck reads as
-      // "stopped, engine still running" rather than silent.
-      this._beep({ type: 'square',   freqStart: 280, freqEnd: 260, dur: 0.20, gainStart: 0.07 });
-    }
+    if (!moving) return;
+    // Slow diesel idle rumble — low fundamental + warm mid harmonic.
+    // 0.55s envelope gives a chuggy, lazy feel. Volume tuned to sit
+    // under combat sfx comfortably.
+    this._beep({ type: 'sawtooth', freqStart: 60, freqEnd: 55, dur: 0.55, gainStart: 0.20 });
+    this._beep({ type: 'square',   freqStart: 120, freqEnd: 110, dur: 0.50, gainStart: 0.08, delay: 0.05 });
   }
 
-  // Truck decompression — pneumatic hiss + heavy settle thud, played
-  // when the chapter 2 escort truck arrives at the silo. Reads as
-  // "industrial vehicle docking + air brakes releasing."
+  // Truck arrival — cork pop. Sharp pitch-dropping "THOCK" + tiny
+  // fizz tail, reads as a champagne or soda bottle being uncorked.
+  // Replaces the old multi-layer "industrial decompression + fanfare"
+  // cue per playtester request — the player wanted something small
+  // and satisfying, not a big celebration.
   truckDecompression() {
-    // ESCORT COMPLETE cue — combines the original mechanical
-    // decompression sound with a new short fanfare so the moment
-    // of truck arrival reads as a player accomplishment, not just
-    // a hiss-and-thud. Three layers:
-    //   1. Pneumatic hiss + chassis settle (mechanical realism)
-    //   2. Three-note ascending fanfare (G5 → C6 → E6) — short,
-    //      celebratory, reads as "objective complete"
-    //   3. Heavy thud at the end — physical landing
-    //
-    // Volume bumped notably from the earlier mix so the cue
-    // actually punches through combat audio. Without this the
-    // arrival was easy to miss in the chaos of late-wave fights.
-
-    // Pneumatic hiss
-    this._noise(0.55, 4200, 0.42);
-    // Mid-pitch settle whine descending
-    this._beep({ type: 'sawtooth', freqStart: 220, freqEnd: 80, dur: 0.50, gainStart: 0.26 });
-    // Heavy chassis thud landing
-    this._beep({ type: 'sawtooth', freqStart: 70, freqEnd: 28, dur: 0.55, gainStart: 0.42, delay: 0.10 });
-    // Metallic clank — dock connector seating
-    this._beep({ type: 'square', freqStart: 1400, freqEnd: 800, dur: 0.10, gainStart: 0.18, delay: 0.20 });
-
-    // Fanfare — three rising notes, sine + triangle for warmth.
-    // Tuned to G5 (783.99 Hz) → C6 (1046.50) → E6 (1318.51), a
-    // major triad ascending. Each note 0.18s with overlapping
-    // attacks so they read as one quick celebratory bloom.
-    this._beep({ type: 'sine',     freqStart: 783.99,  dur: 0.20, gainStart: 0.22, delay: 0.30 });
-    this._beep({ type: 'triangle', freqStart: 1567.98, dur: 0.20, gainStart: 0.10, delay: 0.30 });
-    this._beep({ type: 'sine',     freqStart: 1046.50, dur: 0.22, gainStart: 0.22, delay: 0.42 });
-    this._beep({ type: 'triangle', freqStart: 2093.00, dur: 0.22, gainStart: 0.10, delay: 0.42 });
-    this._beep({ type: 'sine',     freqStart: 1318.51, dur: 0.30, gainStart: 0.24, delay: 0.54 });
-    this._beep({ type: 'triangle', freqStart: 2637.02, dur: 0.30, gainStart: 0.12, delay: 0.54 });
+    // The pop itself — very fast pitch drop on a sine, plus a triangle
+    // overtone for body. 80ms total so it reads as a single percussive
+    // event, not a tone.
+    this._beep({ type: 'sine',     freqStart: 800, freqEnd: 200, dur: 0.08, gainStart: 0.45 });
+    this._beep({ type: 'triangle', freqStart: 1600, freqEnd: 400, dur: 0.06, gainStart: 0.20 });
+    // Fizz tail — short bright noise burst, delayed via setTimeout
+    // since _noise doesn't accept a delay arg. Reads as pressure
+    // escaping / carbonation hiss after the cork releases.
+    const self = this;
+    setTimeout(() => { self._noise(0.18, 6500, 0.10); }, 60);
   }
 
-  // Truck rolling start — a one-shot cue played when the escort
-  // truck transitions from idling/blocked to actively moving forward.
-  // Sells the moment the player gets the truck unstuck and it starts
-  // crawling toward its destination. Reads as "engine engaging,
-  // wheels turning" — a quick gear-shift + rolling chunk.
+  // Truck rolling start — used to play a gear-shift cue when the
+  // truck transitioned from blocked to rolling. Per playtester
+  // request the cue was too noisy and the engine rumble alone is
+  // enough. Now a no-op.
   truckRollStart() {
-    // Brief gear-shift click
-    this._beep({ type: 'square', freqStart: 220, freqEnd: 110, dur: 0.10, gainStart: 0.18 });
-    // Low engine engage — sawtooth pitch swelling up
-    this._beep({ type: 'sawtooth', freqStart: 50, freqEnd: 95, dur: 0.55, gainStart: 0.22, delay: 0.04 });
-    // Rumbly mid for body weight rolling forward
-    this._beep({ type: 'square', freqStart: 110, freqEnd: 145, dur: 0.42, gainStart: 0.10, delay: 0.10 });
+    // Intentionally empty — see comment above.
   }
 
   // Cannon firing — the big chapter 2 wave 3 cannon's discharge.

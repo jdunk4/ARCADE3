@@ -560,84 +560,71 @@ function _applyShieldsToAllHives(chapterIdx) {
   }
 }
 
-function _addShieldToHive(hive, tint) {
-  // Each shield gets its own ShaderMaterial so per-shield uniforms
-  // (pulse phase, hit-flash strength) are independent. The shader
-  // does three things at once:
-  //   1. Samples the tiling hex texture and adds it to the surface
-  //      color — gives the always-on hex pattern visible in still
-  //      reference frames.
-  //   2. Computes a Fresnel term and amplifies brightness toward the
-  //      silhouette edges — produces the outer rim glow halo.
-  //   3. Modulates total opacity by uOpacity (driven from JS) so the
-  //      pulse + hit-flash logic in updateHiveShields still works.
-  const tintColor = new THREE.Color(tint);
-  const hexTex = _getHexTilingTexture();
-  const mat = new THREE.ShaderMaterial({
-    uniforms: {
-      uTint:    { value: tintColor },
-      uHexTex:  { value: hexTex },
-      uOpacity: { value: 0.55 },         // driven by JS each frame
-      uHexAmt:  { value: 0.45 },         // how strongly hexes show — moderate
-      uRimAmt:  { value: 1.4 },          // edge-glow boost factor
-      uTime:    { value: 0 },
-    },
+/**
+ * Build a shield material set tinted to the given chapter color.
+ *
+ * Returns two materials:
+ *   - core: MeshBasicMaterial with the tiling hex texture mapped onto
+ *     it, chapter-tinted via .color, additive blended. This is the
+ *     main shield surface — what the player sees when looking at the
+ *     dome. The hex pattern is baked in via the texture, no shader
+ *     required, so it's guaranteed to show up if textures load at all.
+ *   - halo: MeshBasicMaterial for an overlay sphere (slightly larger,
+ *     rendered BackSide only). From the camera this back-face-only
+ *     overlay reads as an outer glow halo extending past the core
+ *     shield's silhouette. No Fresnel shader needed — back-side
+ *     rendering with additive blending produces the same visual
+ *     in a fully debuggable way.
+ *
+ * Both materials own their own .opacity which the JS animation driver
+ * (updateHiveShields) modulates each frame for breathing pulse + hit
+ * flash effects.
+ *
+ * Used by:
+ *   - hive (spawner) shields — _addShieldToHive in this file
+ *   - the NIGHT_HERALD boss summon shield in waves.js
+ */
+export function buildShieldMaterials(tint) {
+  const core = new THREE.MeshBasicMaterial({
+    map: _getHexTilingTexture(),
+    color: tint,
     transparent: true,
+    opacity: 0.55,
     side: THREE.DoubleSide,
     depthWrite: false,
     blending: THREE.AdditiveBlending,
     toneMapped: false,
-    vertexShader: /* glsl */ `
-      varying vec2 vUv;
-      varying vec3 vNormal;
-      varying vec3 vViewDir;
-      void main() {
-        vUv = uv;
-        // Transform normal to view space and view-direction in same
-        // space; their dot is the cos of the angle between camera
-        // and surface normal, which we use for Fresnel.
-        vec4 mvPos = modelViewMatrix * vec4(position, 1.0);
-        vNormal = normalize(normalMatrix * normal);
-        vViewDir = normalize(-mvPos.xyz);
-        gl_Position = projectionMatrix * mvPos;
-      }
-    `,
-    fragmentShader: /* glsl */ `
-      precision highp float;
-      uniform vec3 uTint;
-      uniform sampler2D uHexTex;
-      uniform float uOpacity;
-      uniform float uHexAmt;
-      uniform float uRimAmt;
-      uniform float uTime;
-      varying vec2 vUv;
-      varying vec3 vNormal;
-      varying vec3 vViewDir;
-      void main() {
-        // Fresnel: 1.0 when the surface is edge-on to the camera,
-        // 0.0 when perpendicular. Pow shapes the falloff curve so
-        // the rim glow stays narrow.
-        float fres = 1.0 - clamp(dot(normalize(vNormal), normalize(vViewDir)), 0.0, 1.0);
-        float rim = pow(fres, 2.2);
-        // Hex sample. The texture is white-on-transparent so .a
-        // tells us where the hex outlines are.
-        float hex = texture2D(uHexTex, vUv).a * uHexAmt;
-        // Base shield color — chapter tint at moderate strength so
-        // hexes and rim can sit on top.
-        vec3 baseColor = uTint * 0.55;
-        // Add hex outlines (slightly tinted brighter than base).
-        baseColor += uTint * hex * 1.4;
-        // Add rim glow (chapter tint pushed bright toward white).
-        vec3 rimColor = mix(uTint, vec3(1.0), 0.3);
-        baseColor += rimColor * rim * uRimAmt;
-        // Output alpha is driven by uOpacity from JS, with a subtle
-        // bump at the rim so the halo also fades the alpha edge in.
-        float alpha = uOpacity * (1.0 + rim * 0.5);
-        gl_FragColor = vec4(baseColor, clamp(alpha, 0.0, 1.0));
-      }
-    `,
   });
-  const shield = new THREE.Mesh(_SHIELD_GEO, mat);
+  const halo = new THREE.MeshBasicMaterial({
+    color: tint,
+    transparent: true,
+    opacity: 0.35,
+    side: THREE.BackSide,         // only render the BACK face — looks like an outer glow
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    toneMapped: false,
+  });
+  return { core, halo };
+}
+
+// Backward-compatible single-material helper. Some callers want one
+// material; they use this. New callers should use buildShieldMaterials
+// to get the halo overlay too.
+export function buildShieldMaterial(tint) {
+  return buildShieldMaterials(tint).core;
+}
+
+// Larger geometry for the halo overlay — same sphere shape but scaled
+// up 10% so its silhouette extends past the core shield. Shared so we
+// don't allocate per-shield.
+const _SHIELD_HALO_GEO = new THREE.SphereGeometry(3.8 * 1.10, 28, 18);
+
+function _addShieldToHive(hive, tint) {
+  // Two-mesh shield: core (with hex texture) + halo (outer glow).
+  // Both meshes share the same animation timeline so the breathing
+  // pulse + hit flash modulate them together.
+  const { core, halo } = buildShieldMaterials(tint);
+  const shield = new THREE.Mesh(_SHIELD_GEO, core);
   shield.position.copy(hive.pos);
   // Center at y=1.9 so the 3.8-radius sphere spans roughly 0..3.8 in Y —
   // covering base (0..0.3) + portal ring (2.0) + a little headroom. The
@@ -645,7 +632,14 @@ function _addShieldToHive(hive, tint) {
   shield.position.y = 1.9;
   shield.userData.pulseSeed = Math.random() * Math.PI * 2;
   shield.userData.tint = tint;
-  shield.userData.shaderMat = mat;       // updateHiveShields drives uOpacity here
+
+  // Halo overlay — slightly larger sphere, parented to the core shield
+  // so it inherits position + rotation. Renders only the back face of
+  // its larger sphere, producing a soft outer glow.
+  const haloMesh = new THREE.Mesh(_SHIELD_HALO_GEO, halo);
+  shield.add(haloMesh);              // child of core shield (relative pos = 0)
+  shield.userData.haloMat = halo;    // updateHiveShields drives halo opacity too
+
   scene.add(shield);
 
   hive.shielded = true;
@@ -767,13 +761,15 @@ export function updateHiveShields(dt, time) {
       //     Shield shrinks from 1.12 → 0 and fades to 0 opacity.
       shield.userData._dropT += dt;
       const t = shield.userData._dropT;
-      const shaderMat = shield.userData.shaderMat;
+      const haloMat = shield.userData.haloMat;
 
       if (t < 0.08) {
         // FLASH-UP phase. Linear-in opacity + scale ramp.
         const f = t / 0.08;
-        if (shaderMat) shaderMat.uniforms.uOpacity.value = 0.55 + f * 0.40;    // 0.55 → 0.95
-        shield.scale.setScalar(1 + f * 0.12);          // 1.0 → 1.12
+        const op = 0.55 + f * 0.40;                // 0.55 → 0.95
+        shield.material.opacity = op;
+        if (haloMat) haloMat.opacity = op * 0.60;  // halo follows at 60%
+        shield.scale.setScalar(1 + f * 0.12);      // 1.0 → 1.12
       } else {
         // BURST (once) + COLLAPSE phase.
         if (!shield.userData._sparksFired) {
@@ -794,7 +790,9 @@ export function updateHiveShields(dt, time) {
         const f = Math.min(1, (t - 0.08) / 0.22);
         const eased = f * f;   // ease-in, starts slow then accelerates
         shield.scale.setScalar(1.12 * (1 - eased));
-        if (shaderMat) shaderMat.uniforms.uOpacity.value = 0.95 * (1 - eased);
+        const op = 0.95 * (1 - eased);
+        shield.material.opacity = op;
+        if (haloMat) haloMat.opacity = op * 0.60;
         if (f >= 1) {
           if (shield.parent) scene.remove(shield);
           toRemove.push(hive);
@@ -815,8 +813,9 @@ export function updateHiveShields(dt, time) {
         const flashStrength = shield.userData._hitFlash / 0.18;  // 1→0
         opacity = Math.min(0.95, opacity + flashStrength * 0.55);
       }
-      const shaderMat = shield.userData.shaderMat;
-      if (shaderMat) shaderMat.uniforms.uOpacity.value = opacity;
+      shield.material.opacity = opacity;
+      const haloMat = shield.userData.haloMat;
+      if (haloMat) haloMat.opacity = opacity * 0.60;
       // Slow rotation for a subtle "active field" feel.
       shield.rotation.y += dt * 0.25;
     }
