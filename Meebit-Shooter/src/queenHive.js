@@ -196,8 +196,6 @@ export function spawnQueenHive(chapterIdx) {
       _hitFlashT: 0,
     });
   }
-  if (useTsl) console.log('[queen-shield] built 4 TSL shield domes');
-  else console.log('[queen-shield] texture not ready, using fallback domes');
 
   return _queen;
 }
