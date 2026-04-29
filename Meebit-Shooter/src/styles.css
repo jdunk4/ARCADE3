@@ -392,14 +392,21 @@ canvas { display: block; cursor: var(--matrix-cursor); }
 
 .mode-card {
   position: relative;
-  width: 420px;
-  height: 560px;
-  border: 3px solid rgba(120, 140, 200, 0.45);
-  background: rgba(8, 4, 18, 0.55);
+  width: 480px;
+  height: 620px;
+  /* Bright matrix green outline replaces the previous muted blue. The
+     border thickness is bumped 3px → 4px so the green reads strongly
+     even at distance and on high-PPI screens. */
+  border: 4px solid var(--matrix-green);
+  background: rgba(2, 12, 6, 0.62);
   cursor: pointer;
   overflow: hidden;
   transition: transform 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease, filter 0.2s ease;
-  filter: saturate(0.4) brightness(0.7);
+  filter: saturate(0.55) brightness(0.78);
+  /* Soft outer green halo so the card reads as part of the matrix
+     world even at rest. Punches up dramatically on hover/select. */
+  box-shadow: 0 0 28px rgba(0, 255, 102, 0.35),
+              inset 0 0 24px rgba(0, 255, 102, 0.08);
   /* Cards are flex children of #title-row but should not stretch —
      keep them at their fixed dimensions even when the row has
      extra space. */
@@ -414,28 +421,82 @@ canvas { display: block; cursor: var(--matrix-cursor); }
 }
 .mode-card-label {
   position: absolute;
-  left: 0; right: 0; bottom: 18px;
+  left: 0; right: 0; bottom: 22px;
   text-align: center;
-  font-family: 'Impact', sans-serif;
-  font-size: 36px;
-  letter-spacing: 5px;
-  color: #fff;
-  text-shadow: 0 2px 8px #000, 0 0 16px rgba(0,0,0,0.9);
+  font-family: 'Impact', 'Arial Black', sans-serif;
+  font-size: 48px;
+  letter-spacing: 6px;
+  /* 3D extruded matrix-green text. Built from a stack of layered
+     text-shadows: the first six layers each step 1-2px down/right
+     and shift toward darker green to create the extruded BODY of
+     the letters, then a few neon-glow shadows give the glowing
+     halo. The fill color is bright green so the front face of the
+     text reads vivid. Effect: chunky 3D green letters that look
+     like they're physically sticking out of the card. */
+  color: var(--matrix-green);
+  text-shadow:
+    /* Extruded body — staircase of darkening greens going down/right */
+    1px 1px 0 #00cc52,
+    2px 2px 0 #00bb4a,
+    3px 3px 0 #00aa44,
+    4px 4px 0 #00993c,
+    5px 5px 0 #008836,
+    6px 6px 0 #007730,
+    7px 7px 0 #00662a,
+    /* Outer neon glow layers */
+    0 0 14px var(--matrix-green),
+    0 0 28px rgba(0, 255, 102, 0.6),
+    /* Hard contrast shadow underneath for depth */
+    0 8px 24px rgba(0, 0, 0, 0.85);
   pointer-events: none;
+  /* Slight skew so the 3D effect reads from the card's slight
+     tilt-perspective angle — not strictly necessary but sells the
+     "raised letters" feel. */
+  transform: perspective(380px) rotateX(8deg);
+}
+/* Per-card matrix rain container. Positioned absolutely behind the
+   card image (z-index < image) but above the card background, so the
+   green columns visibly fall through the artwork. Hidden by default;
+   the JS rain hook removes .mode-card-rain.hidden when first hover
+   fires. */
+.mode-card-rain {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  z-index: 1;
+  opacity: 0;
+  transition: opacity 0.4s ease;
+}
+.mode-card-rain.active {
+  opacity: 0.85;       /* bright cascade during the first-hover burst */
+}
+.mode-card-rain.ambient {
+  opacity: 0.22;       /* quieter background rain after the burst */
+}
+.mode-card-rain .matrix-col {
+  /* Each column inherits the global matrix-col styles plus a
+     per-card brightness boost — these columns are FOREGROUND, not
+     backdrop dressing, so they need to read clearly. */
+  color: var(--matrix-green);
+  text-shadow: 0 0 6px var(--matrix-green), 0 0 14px rgba(0, 255, 102, 0.6);
+  font-size: 16px;
 }
 .mode-card:hover {
-  transform: translateY(-4px);
-  border-color: var(--xp-yellow);
+  transform: translateY(-6px);
+  border-color: #6effa8;
+  box-shadow: 0 0 60px rgba(0, 255, 102, 0.7),
+              inset 0 0 36px rgba(0, 255, 102, 0.18);
 }
 .mode-card:hover .mode-card-img {
   transform: scale(1.05);
 }
 .mode-card.selected {
   filter: saturate(1.0) brightness(1.0);
-  border-color: var(--xp-yellow);
-  box-shadow: 0 0 40px rgba(255, 217, 61, 0.5),
-              inset 0 0 28px rgba(255, 217, 61, 0.2);
-  transform: translateY(-3px);
+  border-color: #9fffc4;
+  box-shadow: 0 0 70px rgba(0, 255, 102, 0.85),
+              inset 0 0 44px rgba(0, 255, 102, 0.28);
+  transform: translateY(-5px);
 }
 #mode-picker-hint {
   text-align: center;
@@ -448,7 +509,9 @@ canvas { display: block; cursor: var(--matrix-cursor); }
   text-align: center;
   font-size: 14px;
   letter-spacing: 2.5px;
-  color: var(--xp-yellow);
+  /* Matrix-green description text matches the new card theming. */
+  color: var(--matrix-green);
+  text-shadow: 0 0 8px rgba(0, 255, 102, 0.6);
   margin-top: 6px;
   margin-bottom: 10px;
   min-height: 20px;
@@ -459,13 +522,27 @@ canvas { display: block; cursor: var(--matrix-cursor); }
    the center text so the title remains the focal point. */
 @media (max-width: 1400px) {
   #title-row { gap: 24px; }
-  .mode-card { width: 340px; height: 460px; }
-  .mode-card-label { font-size: 30px; letter-spacing: 4px; }
+  .mode-card { width: 380px; height: 510px; }
+  .mode-card-label { font-size: 40px; letter-spacing: 5px; }
   #title-center h1 { font-size: 60px; }
 }
 @media (max-width: 1100px) {
-  .mode-card { width: 280px; height: 380px; }
-  .mode-card-label { font-size: 24px; letter-spacing: 3px; }
+  .mode-card { width: 300px; height: 410px; }
+  .mode-card-label {
+    font-size: 30px;
+    letter-spacing: 3.5px;
+    /* Smaller viewports: shrink the 3D extrusion proportionally so
+       the letters still read. */
+    text-shadow:
+      1px 1px 0 #00bb4a,
+      2px 2px 0 #00aa44,
+      3px 3px 0 #00993c,
+      4px 4px 0 #008836,
+      5px 5px 0 #007730,
+      0 0 10px var(--matrix-green),
+      0 0 20px rgba(0, 255, 102, 0.6),
+      0 6px 18px rgba(0, 0, 0, 0.85);
+  }
   #title-center h1 { font-size: 52px; }
   #title-center { flex-basis: 420px; min-width: 320px; }
 }
@@ -496,6 +573,15 @@ canvas { display: block; cursor: var(--matrix-cursor); }
     font-size: 14px;
     letter-spacing: 2px;
     bottom: 6px;
+    /* Mobile: reduce the 3D extrusion to two layers so the small
+       font doesn't blur into mush. */
+    text-shadow:
+      1px 1px 0 #00aa44,
+      2px 2px 0 #008836,
+      0 0 6px var(--matrix-green),
+      0 0 12px rgba(0, 255, 102, 0.55),
+      0 4px 10px rgba(0, 0, 0, 0.85);
+    transform: none;     /* drop the perspective tilt at small sizes */
   }
 
   /* Center text block — narrow, with title compressed and the
