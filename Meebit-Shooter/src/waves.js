@@ -170,6 +170,62 @@ registerDetonationHandler(() => {
 
 export function getWaveDef_current() { return waveDef; }
 
+// ---------------------------------------------------------------------
+// Portal terminology — chapter-aware UI strings.
+// ---------------------------------------------------------------------
+// Portal type cycles every 3 chapters via spawnPortal(): chapterIdx % 3
+// gives slot 0 = hive, 1 = pyramid, 2 = ufo. Toasts and objective
+// strings should use the right noun per chapter so messaging matches
+// what the player sees on the field. Returns:
+//   noun       — singular noun, lowercase ("hive" / "pyramid" / "ufo")
+//   nounPlural — plural caps for headlines ("HIVES" / "PYRAMIDS" / "UFOS")
+//   exposeToast — short toast fired when the wave-2 mechanism (laser /
+//                 EMP / charge) drops shields and exposes the spawners
+//                 for the player to attack
+//   destroyTitle — objective bar title for the wave-3 attack phase
+//   destroyDesc  — body text under the objective title
+//   targetingToast — short toast when the wave-2 mechanism is mid-fire
+//                    ("TARGETING ..." or equivalent)
+function portalLabels(chapterIdx = S.chapter || 0) {
+  const slot = ((chapterIdx % 3) + 3) % 3;
+  if (slot === 1) {
+    // PYRAMIDS — chapters 2 & 5. Player request: "Opened the Pyramids"
+    // for the expose, "Banish the Pyramids" for the objective.
+    return {
+      noun: 'pyramid',
+      nounPlural: 'PYRAMIDS',
+      exposeToast: 'OPENED THE PYRAMIDS',
+      destroyTitle: 'BANISH THE PYRAMIDS',
+      destroyDesc: 'Shields down. Take them out before they overrun you.',
+      targetingToast: 'TARGETING PYRAMIDS',
+      empSuffix: 'PYRAMIDS DISTURBED',     // unused — pyramid chapters use datacenter path, not EMP
+    };
+  }
+  if (slot === 2) {
+    // UFOS — chapters 3 & 6. Player request: "Access Granted" for the
+    // expose, "Destroy the UFOs" for the objective.
+    return {
+      noun: 'ufo',
+      nounPlural: 'UFOS',
+      exposeToast: 'ACCESS GRANTED',
+      destroyTitle: 'DESTROY THE UFOS',
+      destroyDesc: 'Shields down. Knock them out of the sky.',
+      targetingToast: 'TARGETING UFOS',
+      empSuffix: 'UFOS REVEALED',
+    };
+  }
+  // HIVES — chapters 1, 4, 7. Existing wording preserved.
+  return {
+    noun: 'hive',
+    nounPlural: 'HIVES',
+    exposeToast: 'HIVES EXPOSED',
+    destroyTitle: 'DESTROY THE HIVES',
+    destroyDesc: 'Shields down. Shoot the glowing rings — each has health.',
+    targetingToast: 'TARGETING HIVES',
+    empSuffix: 'HIVES ENRAGED',
+  };
+}
+
 export function startWave(waveNum) {
   updateChapterFromWave(waveNum);
   // Hero hexagons HUD — light up the FLINGER/PIXL hexes at their
@@ -475,11 +531,12 @@ export function startWave(waveNum) {
     // Note: Chapter 2 hive wave is handled by a separate code path
     // further down (with the EMP laser drama), which already invokes
     // setGalagaOverdrive + setGalagaTargetCount + setHazardRushMode.
+    const _lbl = portalLabels();
     UI.showObjective(
-      'DESTROY THE HIVES (' + S.spawnersLive + ')',
-      'Shields down. Shoot the glowing rings — each has health.'
+      _lbl.destroyTitle + ' (' + S.spawnersLive + ')',
+      _lbl.destroyDesc
     );
-    UI.toast('HIVE PHASE ENGAGED', '#ff3cac', 2500);
+    UI.toast(_lbl.exposeToast, '#ff3cac', 2500);
   } else if (waveDef.type === 'cannon-load') {
     // WAVE 2 (chapter 1 reflow) — charge delivery + cannon barrage.
     // Player picks up 4 charges from depot in one trip, walks to
@@ -608,11 +665,12 @@ export function startWave(waveNum) {
     for (const s of spawners) {
       if (!s.destroyed) S.spawnersLive++;
     }
+    const _twLbl = portalLabels();
     UI.showObjective(
-      'DESTROY THE TWIN HIVES',
-      '4 hives exposed by the laser strike. Take them out.'
+      _twLbl.destroyTitle + ' (' + S.spawnersLive + ')',
+      S.spawnersLive + ' ' + _twLbl.noun + 's exposed by the laser strike. Take them out.'
     );
-    UI.toast('HIVES EXPOSED', '#ff8826', 2500);
+    UI.toast(_twLbl.exposeToast, '#ff8826', 2500);
   }
 
   UI.showWaveStart(waveNum);
@@ -1706,7 +1764,7 @@ export function updateWaves(dt) {
         }
         spawnHiveLasers(S.chapter || 0, livePositions);
         try { Audio.laserCharging && Audio.laserCharging(); } catch (e) {}
-        UI.toast('TARGETING HIVES', '#ff8826', 2200);
+        UI.toast(portalLabels().targetingToast, '#ff8826', 2200);
       } else {
         const pct = Math.round((S.dcPodChargeT / POD_CHARGE_DURATION) * 100);
         if (S.dcPodChargeT > 0) {
@@ -1809,7 +1867,7 @@ export function updateWaves(dt) {
       // the (hidden) silo + radio + powerplant LAYOUT positions can
       // leave ghost obstacles for the player after wave 2.
       setCh1Wave2PropsRemoved(true);
-      UI.toast('GRID FRIED — HIVES EXPOSED', '#ff3cac', 2400);
+      UI.toast('GRID FRIED — ' + portalLabels().exposeToast, '#ff3cac', 2400);
       endWave();
       return;
     }
@@ -1862,7 +1920,7 @@ export function updateWaves(dt) {
 // deactivate the turrets here.
 // ============================================================================
 function _fireEmp() {
-  UI.toast('EMP LAUNCHED — HIVES ENRAGED', '#4ff7ff', 2500);
+  UI.toast('EMP LAUNCHED — ' + portalLabels().empSuffix, '#4ff7ff', 2500);
   shake(0.8, 0.8);
   Audio.bigBoom && Audio.bigBoom();
 
@@ -2309,7 +2367,7 @@ function updateBossPattern(dt, boss) {
         boss._heraldShield = { mesh: shieldMesh, geom: shieldGeom, mat: shieldMat };
       } catch (e) { console.warn('[NIGHT_HERALD shield mesh]', e); }
 
-      UI.toast && UI.toast('SHIELD UP · DESTROY THE 3 HIVES', '#e63aff', 2500);
+      UI.toast && UI.toast('SHIELD UP · DESTROY THE 3 ' + portalLabels().nounPlural, '#e63aff', 2500);
       try { Audio.shieldHit && Audio.shieldHit(); } catch (e) {}
       shake(0.3, 0.3);
     }
