@@ -32,8 +32,7 @@ import * as SkeletonUtils from 'three/addons/utils/SkeletonUtils.js';
   };
 })();
 
-import { scene, camera, renderer, CAMERA_OFFSET, applyTheme, Scene, enterChapter7Atmosphere, exitChapter7Atmosphere, updateFlashlight, initRenderer } from './scene.js';
-import { loadShieldTexture } from './shieldShader.js';
+import { scene, camera, renderer, CAMERA_OFFSET, applyTheme, Scene, enterChapter7Atmosphere, exitChapter7Atmosphere, updateFlashlight } from './scene.js';
 import {
   isTutorialActive, setTutorialActive,
   applyTutorialFloor, restoreNormalFloor,
@@ -5804,22 +5803,7 @@ function collectPickup(p) {
   }
 }
 
-// Kick off the animation loop. WebGPURenderer requires renderer.init()
-// to resolve before the first .render() call — calling render on an
-// uninitialized WebGPURenderer silently produces a black screen with
-// no error. initRenderer() is idempotent and resolves quickly on the
-// WebGL backend (forceWebGL: true) which is what we're using.
-(async () => {
-  try {
-    await initRenderer();
-  } catch (e) {
-    console.error('[renderer init failed]', e);
-  }
-  // Async — kick off shield hex texture load in parallel with first
-  // frame render. Falls back to plain glow shield until loaded.
-  loadShieldTexture();
-  animate();
-})();
+animate();
 
 // --- CONSOLE BANNER ---
 // Matrix-themed ASCII-art boot banner printed to the DevTools console so
