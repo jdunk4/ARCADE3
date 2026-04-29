@@ -85,7 +85,7 @@ const _SHIELD_GEO = new THREE.SphereGeometry(3.8, 28, 18);
 // 0.0 opacity, producing a sci-fi "force field absorbs hit" pulse.
 //
 // Two hex textures are generated:
-//   - _getHexTilingTexture() — a small tiling hex pattern that wraps
+//   - getHexTilingTexture() — a small tiling hex pattern that wraps
 //     the entire shield sphere via RepeatWrapping. Always visible at
 //     low opacity so the shield reads as a hex-cell force field even
 //     when not being shot. This is what makes the always-on hex look
@@ -95,7 +95,7 @@ const _SHIELD_GEO = new THREE.SphereGeometry(3.8, 28, 18);
 //     so the pulse reads as a "burst" of hexes radiating from the
 //     impact point, not as a solid ring.
 let _hexTilingCache = null;
-function _getHexTilingTexture() {
+export function getHexTilingTexture() {
   if (_hexTilingCache) return _hexTilingCache;
   // Smaller canvas with one tiling unit — UV-wrapped over the sphere.
   // SphereGeometry default UVs distort at the poles but that's fine
@@ -218,7 +218,7 @@ const _PULSE_START_RADIUS = 0.4;
 // bullet collision code in main.js can import and use them without
 // inspecting mesh geometry directly. MUST stay in sync with the
 // _SHIELD_GEO radius and the shield.position.y assignment in
-// _addShieldToHive (see ~40 lines below).
+// addShieldToHive (see ~40 lines below).
 export const SHIELD_RADIUS = 3.8;
 export const SHIELD_CENTER_Y = 1.9;
 
@@ -556,7 +556,7 @@ function _applyShieldsToAllHives(chapterIdx) {
   const tint = CHAPTERS[chapterIdx % CHAPTERS.length].full.grid1;
   for (const h of spawners) {
     if (h.destroyed) continue;
-    _addShieldToHive(h, tint);
+    addShieldToHive(h, tint);
   }
 }
 
@@ -581,12 +581,12 @@ function _applyShieldsToAllHives(chapterIdx) {
  * flash effects.
  *
  * Used by:
- *   - hive (spawner) shields — _addShieldToHive in this file
+ *   - hive (spawner) shields — addShieldToHive in this file
  *   - the NIGHT_HERALD boss summon shield in waves.js
  */
 export function buildShieldMaterials(tint) {
   const core = new THREE.MeshBasicMaterial({
-    map: _getHexTilingTexture(),
+    map: getHexTilingTexture(),
     color: tint,
     transparent: true,
     opacity: 0.55,
@@ -619,7 +619,7 @@ export function buildShieldMaterial(tint) {
 // don't allocate per-shield.
 const _SHIELD_HALO_GEO = new THREE.SphereGeometry(3.8 * 1.10, 28, 18);
 
-function _addShieldToHive(hive, tint) {
+export function addShieldToHive(hive, tint) {
   // Two-mesh shield: core (with hex texture) + halo (outer glow).
   // Both meshes share the same animation timeline so the breathing
   // pulse + hit flash modulate them together.

@@ -31,6 +31,7 @@ import { hitBurst } from './effects.js';
 import { shake, S } from './state.js';
 import { getTriangleFor } from './triangles.js';
 import { spawners, spawnPortal, clearAllPortals } from './spawners.js';
+import { getHexTilingTexture } from './dormantProps.js';
 
 // ---- Tunables ----
 // Queen is much bigger than a normal hive — visible from any angle,
@@ -56,10 +57,30 @@ function _domeMat(tint, layerIdx) {
   // progressively dimmer so the player can see SOMETHING through
   // them and read "there are more shields beneath."
   const baseOpacity = 0.45 - layerIdx * 0.06;     // 0.45, 0.39, 0.33, 0.27
+  // Apply the same hex tiling texture used by the spawner shields
+  // so the queen's domes match the visual language of the rest of
+  // the game's shields. Each layer gets its own clone of the texture
+  // with a slightly different repeat count so the hex patterns
+  // don't perfectly stack into a single visual line — outer layer
+  // has the most hexes (densest), inner the fewest. Reads as nested
+  // force-field layers rather than a single shield.
+  const hexTex = getHexTilingTexture().clone();
+  hexTex.needsUpdate = true;
+  hexTex.wrapS = hexTex.wrapT = THREE.RepeatWrapping;
+  // Scale repeat by layer so each dome's pattern is distinguishable.
+  // Outer (large radius) = more repeats so hexes stay visually small.
+  // Inner (smaller radius) = fewer repeats so hexes stay readable.
+  const repeatBase = 6 - layerIdx;     // 6, 5, 4, 3 horizontal
+  hexTex.repeat.set(repeatBase, Math.max(2, repeatBase - 2));
   return new THREE.MeshStandardMaterial({
-    color: tint, transparent: true, opacity: baseOpacity,
-    emissive: tint, emissiveIntensity: 0.55 - layerIdx * 0.08,
-    roughness: 0.4, metalness: 0.1,
+    map: hexTex,
+    color: tint,
+    transparent: true,
+    opacity: baseOpacity,
+    emissive: tint,
+    emissiveIntensity: 0.55 - layerIdx * 0.08,
+    roughness: 0.4,
+    metalness: 0.1,
     side: THREE.DoubleSide,
     depthWrite: false,
   });
