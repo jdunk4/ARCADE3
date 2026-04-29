@@ -84,39 +84,46 @@ const _SHIELD_GEO = new THREE.SphereGeometry(3.8, 28, 18);
 // ~0.45s the ring scales from 0.4u → 1.6u radius and fades from 1.0 →
 // 0.0 opacity, producing a sci-fi "force field absorbs hit" pulse.
 //
-// The ring's albedo is a procedurally-generated hex-grid texture. White
-// hex outlines on transparent background — additive-blended so the hex
-// pattern appears to bloom against the shield. One shared CanvasTexture
-// across all pulses (no per-pulse allocation cost). Same texture is
-// also applied to the shield itself (faintly visible at base opacity)
-// so hits "reveal" the texture stronger at the impact site.
-let _hexTextureCache = null;
-function _getHexTexture() {
-  if (_hexTextureCache) return _hexTextureCache;
-  const SIZE = 256;
+// Two hex textures are generated:
+//   - _getHexTilingTexture() — a small tiling hex pattern that wraps
+//     the entire shield sphere via RepeatWrapping. Always visible at
+//     low opacity so the shield reads as a hex-cell force field even
+//     when not being shot. This is what makes the always-on hex look
+//     in screenshots like the user's reference image.
+//   - _getHexBurstTexture()  — a single-cell focused hex pattern with
+//     a transparent surround. Used by the expanding impact pulse rings
+//     so the pulse reads as a "burst" of hexes radiating from the
+//     impact point, not as a solid ring.
+let _hexTilingCache = null;
+function _getHexTilingTexture() {
+  if (_hexTilingCache) return _hexTilingCache;
+  // Smaller canvas with one tiling unit — UV-wrapped over the sphere.
+  // SphereGeometry default UVs distort at the poles but that's fine
+  // (reads as energy distortion). Ratio sqrt(3):3 keeps hexes regular
+  // when tiled.
+  const W = 64, H = 64 * Math.sqrt(3) / 1.5 | 0;     // ~74 px tall
   const c = document.createElement('canvas');
-  c.width = c.height = SIZE;
+  c.width = W; c.height = H;
   const ctx = c.getContext('2d');
-  // Fully transparent background — hex outlines bloom additively over
-  // the shield's tinted surface.
-  ctx.clearRect(0, 0, SIZE, SIZE);
-  // Hex grid parameters tuned so ~6 hex rows are visible across the
-  // ring at peak size — readable but not busy.
-  const HEX_R = 18;             // outer radius of each hex cell
-  const HEX_W = HEX_R * Math.sqrt(3);  // pointy-top hex spacing horizontal
-  const HEX_H = HEX_R * 1.5;           // pointy-top hex spacing vertical
-  ctx.strokeStyle = 'rgba(255, 255, 255, 0.95)';
-  ctx.lineWidth = 2.0;
-  // Draw enough rows/cols to cover the canvas with overlap to handle
-  // the offset pattern. 1.5x SIZE / spacing in each direction.
-  for (let row = -1; row * HEX_H < SIZE + HEX_H; row++) {
+  ctx.clearRect(0, 0, W, H);
+  const HEX_R = 16;
+  const HEX_W = HEX_R * Math.sqrt(3);
+  const HEX_H = HEX_R * 1.5;
+  ctx.strokeStyle = 'rgba(255, 255, 255, 0.65)';
+  ctx.lineWidth = 1.2;
+  // Tile a 2x2 grid of hexes on the canvas. Continued-tile math: the
+  // pattern has horizontal period HEX_W and vertical period 2*HEX_H,
+  // alternating offset on odd rows. We draw enough cells to cover the
+  // canvas with the offset pattern, plus one row of overlap on each
+  // side so seams at the edges don't show a clipped half-hex.
+  for (let row = -1; row * HEX_H < H + HEX_H; row++) {
     const yC = row * HEX_H;
     const xOffset = (row % 2 === 0) ? 0 : HEX_W * 0.5;
-    for (let col = -1; col * HEX_W < SIZE + HEX_W; col++) {
+    for (let col = -1; col * HEX_W < W + HEX_W; col++) {
       const xC = col * HEX_W + xOffset;
       ctx.beginPath();
       for (let i = 0; i < 6; i++) {
-        const a = Math.PI / 6 + i * (Math.PI / 3);   // pointy-top
+        const a = Math.PI / 6 + i * (Math.PI / 3);
         const x = xC + Math.cos(a) * HEX_R;
         const y = yC + Math.sin(a) * HEX_R;
         if (i === 0) ctx.moveTo(x, y);
@@ -128,15 +135,77 @@ function _getHexTexture() {
   }
   const tex = new THREE.CanvasTexture(c);
   tex.colorSpace = THREE.SRGBColorSpace;
-  tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping;
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  // Repeat enough times around the sphere that the hexes look small
+  // and busy (like a finely detailed force field). 4 horizontal × 3
+  // vertical = ~24 cells across the equator at HEX_R=16.
+  tex.repeat.set(4, 3);
   tex.needsUpdate = true;
-  _hexTextureCache = tex;
+  _hexTilingCache = tex;
   return tex;
 }
-// Shared geometry for every pulse — RingGeometry from inner radius 0
-// to outer radius 1, segmented enough to look smooth at full size.
-// Pulses are scaled to their actual size each frame.
-const _PULSE_RING_GEO = new THREE.RingGeometry(0.0, 1.0, 32, 1);
+
+let _hexBurstCache = null;
+function _getHexBurstTexture() {
+  if (_hexBurstCache) return _hexBurstCache;
+  const SIZE = 256;
+  const c = document.createElement('canvas');
+  c.width = c.height = SIZE;
+  const ctx = c.getContext('2d');
+  ctx.clearRect(0, 0, SIZE, SIZE);
+  // Draw a hex grid covering the canvas, then apply a radial alpha
+  // fade so only the central cluster is solid. Reads as "burst of
+  // hexes from impact point."
+  const HEX_R = 22;
+  const HEX_W = HEX_R * Math.sqrt(3);
+  const HEX_H = HEX_R * 1.5;
+  ctx.strokeStyle = 'rgba(255, 255, 255, 1.0)';
+  ctx.lineWidth = 2.4;
+  for (let row = -1; row * HEX_H < SIZE + HEX_H; row++) {
+    const yC = row * HEX_H;
+    const xOffset = (row % 2 === 0) ? 0 : HEX_W * 0.5;
+    for (let col = -1; col * HEX_W < SIZE + HEX_W; col++) {
+      const xC = col * HEX_W + xOffset;
+      ctx.beginPath();
+      for (let i = 0; i < 6; i++) {
+        const a = Math.PI / 6 + i * (Math.PI / 3);
+        const x = xC + Math.cos(a) * HEX_R;
+        const y = yC + Math.sin(a) * HEX_R;
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      }
+      ctx.closePath();
+      ctx.stroke();
+    }
+  }
+  // Radial alpha fade: solid in center, transparent at edges. Pull
+  // the image data, multiply alpha by a radial falloff.
+  const img = ctx.getImageData(0, 0, SIZE, SIZE);
+  const cx = SIZE / 2, cy = SIZE / 2, maxR = SIZE / 2;
+  for (let y = 0; y < SIZE; y++) {
+    for (let x = 0; x < SIZE; x++) {
+      const dx = x - cx, dy = y - cy;
+      const d = Math.sqrt(dx * dx + dy * dy) / maxR;
+      // Fade to 0 by r=0.95; hold full strength until r=0.3.
+      const alphaScale = d < 0.3 ? 1.0 : Math.max(0, 1 - (d - 0.3) / 0.65);
+      const idx = (y * SIZE + x) * 4 + 3;
+      img.data[idx] = Math.round(img.data[idx] * alphaScale);
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping;
+  tex.needsUpdate = true;
+  _hexBurstCache = tex;
+  return tex;
+}
+// Shared geometry for every pulse — PlaneGeometry of size 2 (centered
+// at origin, -1..+1 in both axes). Standard quad UVs (0..1) match the
+// burst texture which has its hex pattern in the center and fades to
+// transparent at the edges. Pulses scale this plane up over their
+// lifetime to grow the apparent burst radius.
+const _PULSE_RING_GEO = new THREE.PlaneGeometry(2.0, 2.0);
 // Active pulses — array of { mesh, t, lifetime, maxRadius, mat }.
 // Updated each frame; mesh removed and pushed to scene removal when
 // t >= lifetime.
@@ -235,7 +304,7 @@ export function shieldHitVisual(hive, impactPos) {
   // frame. Each pulse has its own material clone so the fade doesn't
   // bleed across hits.
   const pulseMat = new THREE.MeshBasicMaterial({
-    map: _getHexTexture(),
+    map: _getHexBurstTexture(),
     color: tint,
     transparent: true,
     opacity: 1.0,
@@ -492,20 +561,81 @@ function _applyShieldsToAllHives(chapterIdx) {
 }
 
 function _addShieldToHive(hive, tint) {
-  // Each shield gets its own material so the per-hive pulse phase can
-  // drift independently (looks less synthetic than every shield pulsing
-  // in lockstep). Additive blending so overlapping front+back faces of
-  // the sphere bloom against each other — produces an automatic edge-
-  // glow without needing a separate halo mesh. toneMapped:false so the
-  // shield isn't crushed by exposure when scene bloom is active.
-  const mat = new THREE.MeshBasicMaterial({
-    color: tint,
+  // Each shield gets its own ShaderMaterial so per-shield uniforms
+  // (pulse phase, hit-flash strength) are independent. The shader
+  // does three things at once:
+  //   1. Samples the tiling hex texture and adds it to the surface
+  //      color — gives the always-on hex pattern visible in still
+  //      reference frames.
+  //   2. Computes a Fresnel term and amplifies brightness toward the
+  //      silhouette edges — produces the outer rim glow halo.
+  //   3. Modulates total opacity by uOpacity (driven from JS) so the
+  //      pulse + hit-flash logic in updateHiveShields still works.
+  const tintColor = new THREE.Color(tint);
+  const hexTex = _getHexTilingTexture();
+  const mat = new THREE.ShaderMaterial({
+    uniforms: {
+      uTint:    { value: tintColor },
+      uHexTex:  { value: hexTex },
+      uOpacity: { value: 0.55 },         // driven by JS each frame
+      uHexAmt:  { value: 0.45 },         // how strongly hexes show — moderate
+      uRimAmt:  { value: 1.4 },          // edge-glow boost factor
+      uTime:    { value: 0 },
+    },
     transparent: true,
-    opacity: 0.55,           // bumped 0.45 → 0.55 — reads more substantial
     side: THREE.DoubleSide,
     depthWrite: false,
     blending: THREE.AdditiveBlending,
     toneMapped: false,
+    vertexShader: /* glsl */ `
+      varying vec2 vUv;
+      varying vec3 vNormal;
+      varying vec3 vViewDir;
+      void main() {
+        vUv = uv;
+        // Transform normal to view space and view-direction in same
+        // space; their dot is the cos of the angle between camera
+        // and surface normal, which we use for Fresnel.
+        vec4 mvPos = modelViewMatrix * vec4(position, 1.0);
+        vNormal = normalize(normalMatrix * normal);
+        vViewDir = normalize(-mvPos.xyz);
+        gl_Position = projectionMatrix * mvPos;
+      }
+    `,
+    fragmentShader: /* glsl */ `
+      precision highp float;
+      uniform vec3 uTint;
+      uniform sampler2D uHexTex;
+      uniform float uOpacity;
+      uniform float uHexAmt;
+      uniform float uRimAmt;
+      uniform float uTime;
+      varying vec2 vUv;
+      varying vec3 vNormal;
+      varying vec3 vViewDir;
+      void main() {
+        // Fresnel: 1.0 when the surface is edge-on to the camera,
+        // 0.0 when perpendicular. Pow shapes the falloff curve so
+        // the rim glow stays narrow.
+        float fres = 1.0 - clamp(dot(normalize(vNormal), normalize(vViewDir)), 0.0, 1.0);
+        float rim = pow(fres, 2.2);
+        // Hex sample. The texture is white-on-transparent so .a
+        // tells us where the hex outlines are.
+        float hex = texture2D(uHexTex, vUv).a * uHexAmt;
+        // Base shield color — chapter tint at moderate strength so
+        // hexes and rim can sit on top.
+        vec3 baseColor = uTint * 0.55;
+        // Add hex outlines (slightly tinted brighter than base).
+        baseColor += uTint * hex * 1.4;
+        // Add rim glow (chapter tint pushed bright toward white).
+        vec3 rimColor = mix(uTint, vec3(1.0), 0.3);
+        baseColor += rimColor * rim * uRimAmt;
+        // Output alpha is driven by uOpacity from JS, with a subtle
+        // bump at the rim so the halo also fades the alpha edge in.
+        float alpha = uOpacity * (1.0 + rim * 0.5);
+        gl_FragColor = vec4(baseColor, clamp(alpha, 0.0, 1.0));
+      }
+    `,
   });
   const shield = new THREE.Mesh(_SHIELD_GEO, mat);
   shield.position.copy(hive.pos);
@@ -515,6 +645,7 @@ function _addShieldToHive(hive, tint) {
   shield.position.y = 1.9;
   shield.userData.pulseSeed = Math.random() * Math.PI * 2;
   shield.userData.tint = tint;
+  shield.userData.shaderMat = mat;       // updateHiveShields drives uOpacity here
   scene.add(shield);
 
   hive.shielded = true;
@@ -636,11 +767,12 @@ export function updateHiveShields(dt, time) {
       //     Shield shrinks from 1.12 → 0 and fades to 0 opacity.
       shield.userData._dropT += dt;
       const t = shield.userData._dropT;
+      const shaderMat = shield.userData.shaderMat;
 
       if (t < 0.08) {
         // FLASH-UP phase. Linear-in opacity + scale ramp.
         const f = t / 0.08;
-        shield.material.opacity = 0.55 + f * 0.40;    // 0.55 → 0.95
+        if (shaderMat) shaderMat.uniforms.uOpacity.value = 0.55 + f * 0.40;    // 0.55 → 0.95
         shield.scale.setScalar(1 + f * 0.12);          // 1.0 → 1.12
       } else {
         // BURST (once) + COLLAPSE phase.
@@ -662,7 +794,7 @@ export function updateHiveShields(dt, time) {
         const f = Math.min(1, (t - 0.08) / 0.22);
         const eased = f * f;   // ease-in, starts slow then accelerates
         shield.scale.setScalar(1.12 * (1 - eased));
-        shield.material.opacity = 0.95 * (1 - eased);
+        if (shaderMat) shaderMat.uniforms.uOpacity.value = 0.95 * (1 - eased);
         if (f >= 1) {
           if (shield.parent) scene.remove(shield);
           toRemove.push(hive);
@@ -683,7 +815,8 @@ export function updateHiveShields(dt, time) {
         const flashStrength = shield.userData._hitFlash / 0.18;  // 1→0
         opacity = Math.min(0.95, opacity + flashStrength * 0.55);
       }
-      shield.material.opacity = opacity;
+      const shaderMat = shield.userData.shaderMat;
+      if (shaderMat) shaderMat.uniforms.uOpacity.value = opacity;
       // Slow rotation for a subtle "active field" feel.
       shield.rotation.y += dt * 0.25;
     }
