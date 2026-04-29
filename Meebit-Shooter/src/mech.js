@@ -37,6 +37,9 @@ import * as THREE from 'three';
 import { scene } from './scene.js';
 import { hitBurst } from './effects.js';
 import { enemies } from './enemies.js';
+import { Audio } from './audio.js';
+import { S } from './state.js';
+import { player } from './player.js';
 
 // =====================================================================
 // TUNING
@@ -59,8 +62,41 @@ const MECH_MG_DAMAGE     = 22;
 const MECH_MG_RANGE      = 28.0;
 const MECH_ENTER_RANGE   = 2.8;        // walk this close to enter
 const MECH_PILOT_RADIUS  = 1.8;        // collision radius while piloting
-const MECH_DROP_HEIGHT   = 24.0;       // mechs drop from this height
-const MECH_DROP_DURATION = 1.0;        // seconds of drop animation
+const MECH_RISE_DEPTH    = 5.0;        // mechs start buried this deep
+const MECH_RISE_DURATION = 1.10;       // seconds of rise animation
+// Legacy aliases — code paths elsewhere reference DROP_HEIGHT /
+// DROP_DURATION; keep names in sync so I don't have to rename
+// references through the file.
+const MECH_DROP_HEIGHT   = MECH_RISE_DEPTH;
+const MECH_DROP_DURATION = MECH_RISE_DURATION;
+
+// =====================================================================
+// PLAYER FRIENDLY-FIRE HELPER
+// =====================================================================
+// Stratagem explosions hurt the player too. We respect invuln timer
+// so dashes / overdrive still grant safety, AND we skip damage when
+// the player is currently piloting a mech (the mech body absorbs).
+// dmg falls off linearly with distance from the epicenter.
+function _splashDamagePlayer(epicenter, radius, maxDmg) {
+  if (!player || !player.pos) return;
+  // Piloted? Mech takes the hit instead — and we already model that
+  // via MECH_BODY_RADIUS proximity in main.js, so just bail.
+  if (_pilotedMech) return;
+  // Invulnerable?
+  if (S.invulnTimer && S.invulnTimer > 0) return;
+  const dx = player.pos.x - epicenter.x;
+  const dz = player.pos.z - epicenter.z;
+  const d = Math.sqrt(dx * dx + dz * dz);
+  if (d >= radius) return;
+  const falloff = 1 - d / radius;
+  const dmg = maxDmg * falloff;
+  S.hp = Math.max(0, (S.hp || 0) - dmg);
+  // Brief invuln + flash hint so a single explosion doesn't double-tap.
+  S.invulnTimer = Math.max(S.invulnTimer || 0, 0.20);
+  if (typeof window !== 'undefined' && window.__takePlayerDamageVfx) {
+    try { window.__takePlayerDamageVfx(0.30, 0.20); } catch (_) {}
+  }
+}
 
 // =====================================================================
 // SHARED GEOMETRY
@@ -126,8 +162,10 @@ const _DEFAULT_VARIANT = 'minigun';
 export function spawnMech(pos, tint, variantId) {
   const variant = _MECH_VARIANTS[variantId] || _MECH_VARIANTS[_DEFAULT_VARIANT];
   const root = new THREE.Group();
-  // Drop from height; tickMechDrop animates Y down to 0 over MECH_DROP_DURATION.
-  root.position.set(pos.x, MECH_DROP_HEIGHT, pos.z);
+  // Spawn buried below the ground; tickMechRise animates Y up to 0
+  // over MECH_RISE_DURATION. Reads as the mech busting up through
+  // the floor, like a Helldivers-style underground deployment pod.
+  root.position.set(pos.x, -MECH_RISE_DEPTH, pos.z);
 
   const tintColor = new THREE.Color(tint || 0xff5520);
   const hullMat = new THREE.MeshStandardMaterial({
@@ -461,19 +499,41 @@ export function updateMechs(dt) {
   for (let i = _activeMechs.length - 1; i >= 0; i--) {
     const m = _activeMechs[i];
 
-    // Drop animation — Y descends from MECH_DROP_HEIGHT to 0 over
-    // MECH_DROP_DURATION with an ease-in for "weighty" landing.
+    // Rise animation — Y ascends from -MECH_RISE_DEPTH to 0 over
+    // MECH_RISE_DURATION with an ease-out so the mech feels like
+    // it's bursting out of the ground rather than levitating up.
+    // Plays a deep servo whir on start and a heavy thud + dust ring
+    // on landing.
     if (m.dropping) {
+      if (!m._riseAudioFired) {
+        m._riseAudioFired = true;
+        try { Audio.mechRise(); } catch (_) {}
+        // Initial dirt burst at ground level.
+        const gp = new THREE.Vector3(m.pos.x, 0, m.pos.z);
+        hitBurst(gp, 0x8a6a44, 22);
+        hitBurst(gp, 0x4a3422, 14);
+        _spawnRiseDustRing(m);
+      }
       m.dropT += dt;
-      const f = Math.min(1, m.dropT / MECH_DROP_DURATION);
-      const eased = f * f;
-      m.root.position.y = MECH_DROP_HEIGHT * (1 - eased);
+      const f = Math.min(1, m.dropT / MECH_RISE_DURATION);
+      // Ease-out: starts fast then settles. Looks more like emerging
+      // through dirt with weight to it.
+      const eased = 1 - Math.pow(1 - f, 2.4);
+      m.root.position.y = -MECH_RISE_DEPTH * (1 - eased);
+      // Periodic dust puffs as the mech rises through the floor.
+      m._dustT = (m._dustT || 0) + dt;
+      if (m._dustT > 0.10 && f < 0.85) {
+        m._dustT = 0;
+        const gp = new THREE.Vector3(m.pos.x, 0.05, m.pos.z);
+        hitBurst(gp, 0x8a6a44, 6);
+      }
       if (f >= 1) {
         m.dropping = false;
         m.root.position.y = 0;
-        // Landing impact burst.
+        // Landing impact burst + heavy thud.
         hitBurst(m.root.position.clone(), m.tint, 30);
         hitBurst(m.root.position.clone(), 0xffffff, 18);
+        try { Audio.mechLand(); } catch (_) {}
       }
     }
 
@@ -773,6 +833,7 @@ function _fireNapalm(m) {
     isNapalm: true,
   });
   hitBurst(muzzleWorld, 0xff5520, 4);
+  try { Audio.mechRocket(); } catch (_) {}
 }
 
 function _fireMechRocket(m, target, muzzleOverride) {
@@ -810,6 +871,7 @@ function _fireMechRocket(m, target, muzzleOverride) {
   // Muzzle flash burst.
   hitBurst(muzzleWorld, m.tint, 6);
   hitBurst(muzzleWorld, 0xffffff, 4);
+  try { Audio.mechRocket(); } catch (_) {}
 }
 
 function _tickMechRockets(m, dt) {
@@ -877,8 +939,12 @@ function _detonateNapalm(m, pos) {
   }
   hitBurst(pos, 0xff5520, 18);
   hitBurst(pos, 0xffaa00, 14);
+  try { Audio.mechRocketImpact(); } catch (_) {}
   // Fire patch — flat disc + rising flame puffs that tick DPS.
   _spawnFirePatch(pos);
+  // Friendly fire — napalm splash + the patch still hurts you if you
+  // walk through it.
+  _splashDamagePlayer(pos, _NAPALM_RADIUS, 25);
 }
 
 // Active fire patches — global list, ticked per frame inside
@@ -963,6 +1029,12 @@ function _detonateMechRocket(m, pos) {
   hitBurst(pos, m.tint, 22);
   setTimeout(() => hitBurst(pos, 0xffaa00, 18), 60);
   setTimeout(() => hitBurst(pos, 0xff5520, 14), 130);
+  // Audio.
+  try { Audio.mechRocketImpact(); } catch (_) {}
+  // Friendly fire — mech rockets hurt the (un-piloted) player too.
+  // This is the cost of stupid placement, not a constant nuisance:
+  // dmg falloff makes near-edge hits trivial.
+  _splashDamagePlayer(pos, MECH_ROCKET_RADIUS, 35);
 }
 
 function _disposeRocket(r) {
@@ -1002,6 +1074,7 @@ function _fireMechMG(m) {
   // Tracer FX — visible cylinder from muzzle to hit (or max range).
   const tracerEnd = muzzleWorld.clone().add(dir.clone().multiplyScalar(bestT));
   _spawnTracer(m, muzzleWorld, tracerEnd);
+  try { Audio.mechMg(); } catch (_) {}
 
   if (hit) {
     hit.hp -= MECH_MG_DAMAGE;
@@ -1073,6 +1146,41 @@ function _doStomp(m) {
   hitBurst(m.pos.clone(), m.tint, 18);
   // Ground impact ring.
   _spawnStompRing(m);
+  try { Audio.mechLand(); } catch (_) {}
+}
+
+// Brown dust ring spawned at the foot of a rising mech. Mirrors the
+// stomp-ring shape but uses an earthy color and grows more slowly.
+function _spawnRiseDustRing(m) {
+  const ringGeo = new THREE.RingGeometry(0.7, 1.05, 36);
+  const ringMat = new THREE.MeshBasicMaterial({
+    color: 0x8a6a44,
+    transparent: true,
+    opacity: 0.85,
+    side: THREE.DoubleSide,
+    blending: THREE.NormalBlending,
+    depthWrite: false,
+    toneMapped: false,
+  });
+  const ring = new THREE.Mesh(ringGeo, ringMat);
+  ring.rotation.x = -Math.PI / 2;
+  ring.position.set(m.pos.x, 0.05, m.pos.z);
+  scene.add(ring);
+  const tStart = performance.now();
+  function tick() {
+    const t = (performance.now() - tStart) / 1000;
+    const f = Math.min(1, t / 1.10);
+    const s = 1 + f * 4.0;
+    ring.scale.set(s, s, 1);
+    ringMat.opacity = 0.85 * (1 - f);
+    if (f < 1) requestAnimationFrame(tick);
+    else {
+      if (ring.parent) ring.parent.remove(ring);
+      ringMat.dispose();
+      ringGeo.dispose();
+    }
+  }
+  requestAnimationFrame(tick);
 }
 
 function _spawnStompRing(m) {
@@ -1177,12 +1285,22 @@ function _tickMechFlame(m, dt) {
     }
     m.flameLastFireT = (m.flameLastFireT || 0) + dt;
     const interval = 1 / FLAME_PARTICLE_RATE;
+    let spawned = 0;
     while (m.flameLastFireT >= interval) {
       m.flameLastFireT -= interval;
       _spawnFlameParticle(m);
+      spawned++;
+    }
+    // One audio puff per ~6 spawned particles so the hiss layers
+    // softly without stacking into a wall of noise.
+    m.flameAudioCounter = (m.flameAudioCounter || 0) + spawned;
+    if (m.flameAudioCounter >= 6) {
+      m.flameAudioCounter = 0;
+      try { Audio.mechFlame(); } catch (_) {}
     }
   } else {
     m.flameLastFireT = 0;
+    m.flameAudioCounter = 0;
   }
   for (let i = m.flameParticles.length - 1; i >= 0; i--) {
     const p = m.flameParticles[i];
@@ -1264,6 +1382,12 @@ function _destroyMech(m) {
   hitBurst(pos, m.tint, 40);
   setTimeout(() => hitBurst(pos, 0xffaa00, 30), 60);
   setTimeout(() => hitBurst(pos, 0xff5520, 22), 140);
+  try { Audio.mechDestroyed(); } catch (_) {}
+  // Splash damage to player — a destroyed mech is a fuel-cell rupture,
+  // it should hurt to be standing right next to it. Pilot already got
+  // ejected (just above) which clears _pilotedMech, so the helper's
+  // piloting bail won't trigger here.
+  _splashDamagePlayer(m.pos, 4.5, 60);
 }
 
 function _disposeMech(m) {

@@ -14,6 +14,7 @@
 
 import * as THREE from 'three';
 import { scene } from './scene.js';
+import { Audio } from './audio.js';
 
 // Shared geometries — built once at module load.
 const _POST_GEO   = new THREE.CylinderGeometry(0.15, 0.20, 1.6, 10);
@@ -161,13 +162,33 @@ function _drawCountdownLabel(beacon) {
 export function updateStratagemBeacons(dt) {
   for (let i = _activeBeacons.length - 1; i >= 0; i--) {
     const b = _activeBeacons[i];
+    const wasT = b.t;
     b.t += dt;
+
+    // Beacon landing — fire once on the first frame the beacon ticks.
+    // Lock-in chirp lets the player know the throw was registered.
+    if (!b._landed) {
+      b._landed = true;
+      try { Audio.beaconLand(); } catch (_) {}
+    }
 
     // Refresh countdown label every 0.1s so we don't redraw the
     // canvas every frame. Sprite texture invalidation is the most
     // expensive op in the per-beacon tick.
     if (Math.floor(b.t * 10) !== Math.floor((b.t - dt) * 10)) {
       _drawCountdownLabel(b);
+    }
+
+    // Beep on each whole-second tick. The pitch rises with urgency
+    // (0..1 across the arm window) so the audio cue actually feels
+    // tense in the final couple of seconds.
+    {
+      const wasSec = Math.floor(wasT);
+      const nowSec = Math.floor(b.t);
+      if (nowSec !== wasSec && b.t < b.armTime) {
+        const urgency = b.t / b.armTime;
+        try { Audio.beaconCountdown(urgency); } catch (_) {}
+      }
     }
 
     // Pulse light intensity — speeds up as the timer counts down.

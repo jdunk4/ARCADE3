@@ -34,6 +34,7 @@
 import * as THREE from 'three';
 import { S, mouse } from './state.js';
 import { camera, scene } from './scene.js';
+import { Audio } from './audio.js';
 import { spawnStratagemBeacon, updateStratagemBeacons, clearStratagemBeacons } from './stratagemBeacon.js';
 import { spawnMech, updateMechs, clearMechs } from './mech.js';
 
@@ -225,6 +226,8 @@ function _attemptCallIn(stratagem) {
   // chapter palette. Fallback to red if no chapter context yet.
   const tint = (typeof window !== 'undefined' && window.__stratagemTint) || 0xff5520;
   spawnStratagemBeacon(target, stratagem, tint);
+  // Audio cue — beacon thrown.
+  try { Audio.beaconThrow(); } catch (_) {}
   // Notify any tutorial observer (bonus lessons listen for specific
   // stratagem ids to mark their "called" sub-step done).
   if (typeof window !== 'undefined' && window.__bonusObserve && window.__bonusObserve.onCall) {

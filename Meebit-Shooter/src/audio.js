@@ -926,6 +926,147 @@ class AudioEngine {
    * Returns null if the AudioContext failed to initialize (browser
    * doesn't support Web Audio).
    */
+  // ---------------------------------------------------------------
+  // STRATAGEM SFX
+  // ---------------------------------------------------------------
+  // All stratagem sounds are layered _beep + _noise calls so they
+  // share the same procedural pipeline as the rest of the game.
+  // Volumes are tuned slightly louder than the base SFX since these
+  // are "moments" the player should feel.
+
+  // Throwing the beacon — a thrown-grenade arc swoosh + soft thud.
+  beaconThrow() {
+    this._noise(0.18, 1200, 0.15);
+    this._beep({ type: 'sawtooth', freqStart: 220, freqEnd: 90, dur: 0.18, gainStart: 0.10 });
+  }
+
+  // Beacon landing — heavier thud + electronic ping locking on.
+  beaconLand() {
+    this._noise(0.10, 400, 0.25);
+    this._beep({ type: 'square', freqStart: 1320, freqEnd: 880, dur: 0.10, gainStart: 0.18 });
+  }
+
+  // Countdown beep — fired by the beacon every 1s as it ticks toward
+  // payload deploy. Pitch rises with urgency (urgency 0..1).
+  beaconCountdown(urgency = 0) {
+    const f = 540 + urgency * 460;
+    this._beep({ type: 'square', freqStart: f, dur: 0.06, gainStart: 0.12 });
+  }
+
+  // ---- THERMONUCLEAR ----
+  // Massive low-end whoosh + tearing noise sweep, layered.
+  nukeBlast() {
+    this._noise(0.55, 250, 0.45);
+    this._beep({ type: 'sawtooth', freqStart: 90, freqEnd: 28, dur: 0.55, gainStart: 0.36 });
+    // Secondary "rolling" boom layer.
+    setTimeout(() => {
+      this._noise(0.40, 420, 0.30);
+      this._beep({ type: 'sawtooth', freqStart: 60, freqEnd: 40, dur: 0.40, gainStart: 0.22 });
+    }, 120);
+  }
+
+  // ---- MECH ----
+  // Pop-out-of-ground rise — ascending whoosh + servo whir.
+  mechRise() {
+    this._beep({ type: 'sawtooth', freqStart: 120, freqEnd: 600, dur: 0.55, gainStart: 0.18 });
+    this._noise(0.30, 800, 0.18);
+  }
+
+  // Heavy mech footfall + ground impact when the mech finishes its
+  // rise animation. Used for landing the rise.
+  mechLand() {
+    this._noise(0.22, 350, 0.45);
+    this._beep({ type: 'sawtooth', freqStart: 70, freqEnd: 30, dur: 0.22, gainStart: 0.32 });
+  }
+
+  // Mech minigun — short percussive pulse, called per shot.
+  mechMg() {
+    this._beep({ type: 'square', freqStart: 1100, freqEnd: 700, dur: 0.04, gainStart: 0.10 });
+  }
+
+  // Mech rocket launch — woosh + thump.
+  mechRocket() {
+    this._noise(0.12, 1000, 0.18);
+    this._beep({ type: 'sawtooth', freqStart: 200, freqEnd: 60, dur: 0.12, gainStart: 0.16 });
+  }
+
+  // Mech flame — soft hissing whoosh, called per particle batch (the
+  // flame variant calls this once per ~6 particles to avoid stacking).
+  mechFlame() {
+    this._noise(0.08, 1400, 0.10);
+  }
+
+  // Mech rocket / napalm impact (also reused for nuke rolling layer).
+  mechRocketImpact() {
+    this._noise(0.18, 600, 0.30);
+    this._beep({ type: 'sawtooth', freqStart: 110, freqEnd: 40, dur: 0.18, gainStart: 0.20 });
+  }
+
+  // Mech destroyed — same pattern as nukeBlast but smaller.
+  mechDestroyed() {
+    this._noise(0.40, 400, 0.36);
+    this._beep({ type: 'sawtooth', freqStart: 80, freqEnd: 30, dur: 0.40, gainStart: 0.28 });
+  }
+
+  // ---- TURRET ----
+  turretDeploy() {
+    // Mechanical clack + servo settle.
+    this._noise(0.10, 1800, 0.18);
+    this._beep({ type: 'square', freqStart: 600, freqEnd: 1200, dur: 0.10, gainStart: 0.14 });
+    setTimeout(() => {
+      this._beep({ type: 'square', freqStart: 1200, freqEnd: 800, dur: 0.06, gainStart: 0.12 });
+    }, 120);
+  }
+  turretMg() {
+    this._beep({ type: 'square', freqStart: 1500, freqEnd: 900, dur: 0.04, gainStart: 0.09 });
+  }
+  turretTesla() {
+    // Crackling zap — brief sharp peak followed by buzzing tail.
+    this._beep({ type: 'square', freqStart: 2400, freqEnd: 600, dur: 0.18, gainStart: 0.16 });
+    this._noise(0.12, 3000, 0.10);
+  }
+  turretFlame() {
+    this._noise(0.06, 1400, 0.08);
+  }
+  turretAntitank() {
+    // Heavy tube launch — louder than mech rocket.
+    this._noise(0.20, 600, 0.30);
+    this._beep({ type: 'sawtooth', freqStart: 160, freqEnd: 40, dur: 0.20, gainStart: 0.26 });
+  }
+  turretDestroyed() {
+    this._noise(0.20, 500, 0.25);
+    this._beep({ type: 'sawtooth', freqStart: 130, freqEnd: 50, dur: 0.20, gainStart: 0.20 });
+  }
+
+  // ---- MINES ----
+  // Drone whir — flying carrier that drops the mines. Looping-ish
+  // whir sound; called once per mine drop with slight pitch jitter.
+  mineDispenserWhir() {
+    this._beep({ type: 'sawtooth', freqStart: 700 + Math.random() * 200, freqEnd: 500, dur: 0.10, gainStart: 0.06 });
+  }
+  // Mine arming click when it lands.
+  mineArm() {
+    this._beep({ type: 'square', freqStart: 1500, dur: 0.04, gainStart: 0.10 });
+  }
+  // Triggered beep — fast pulse during the warning window.
+  mineBeep() {
+    this._beep({ type: 'square', freqStart: 1800, dur: 0.04, gainStart: 0.14 });
+  }
+  // Detonation by kind — explosion is loud burst, fire is whooshier,
+  // poison is a wet thump + hiss.
+  mineDetonate(kind) {
+    if (kind === 'fire') {
+      this._noise(0.20, 900, 0.28);
+      this._beep({ type: 'sawtooth', freqStart: 200, freqEnd: 60, dur: 0.20, gainStart: 0.22 });
+    } else if (kind === 'poison') {
+      this._noise(0.30, 1600, 0.22);
+      this._beep({ type: 'sawtooth', freqStart: 320, freqEnd: 120, dur: 0.18, gainStart: 0.16 });
+    } else {
+      this._noise(0.18, 500, 0.32);
+      this._beep({ type: 'sawtooth', freqStart: 150, freqEnd: 50, dur: 0.18, gainStart: 0.26 });
+    }
+  }
+
   getOrCreateAnalyser() {
     if (this._analyser) return this._analyser;
     if (!this.ctx) this.init();

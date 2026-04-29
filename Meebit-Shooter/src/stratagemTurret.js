@@ -41,14 +41,21 @@ import * as THREE from 'three';
 import { scene } from './scene.js';
 import { hitBurst } from './effects.js';
 import { enemies } from './enemies.js';
+import { Audio } from './audio.js';
+import { S } from './state.js';
+import { player } from './player.js';
+import { isPiloting } from './mech.js';
 
 // =====================================================================
 // TUNING
 // =====================================================================
 const TURRET_HP_MAX           = 240;
 const TURRET_LIFETIME_SEC     = 35.0;     // self-decommission timer
-const TURRET_DROP_HEIGHT      = 22.0;
-const TURRET_DROP_DURATION    = 0.85;
+const TURRET_RISE_DEPTH       = 3.0;       // turrets start buried this deep
+const TURRET_RISE_DURATION    = 0.85;
+// Legacy aliases — code below references DROP_HEIGHT / DROP_DURATION.
+const TURRET_DROP_HEIGHT      = TURRET_RISE_DEPTH;
+const TURRET_DROP_DURATION    = TURRET_RISE_DURATION;
 const TURRET_AIM_LERP         = 8.0;      // higher = snappier
 const TURRET_ACQ_INTERVAL     = 0.25;     // re-acquire target this often
 
@@ -123,7 +130,9 @@ export function spawnTurret(pos, tint, variantId) {
 
   const root = new THREE.Group();
   // Drop animation — start above target.
-  root.position.set(pos.x, TURRET_DROP_HEIGHT, pos.z);
+  // Spawn buried; ticked up to ground level over TURRET_RISE_DURATION.
+  // Reads as the turret deploying out of the floor.
+  root.position.set(pos.x, -TURRET_RISE_DEPTH, pos.z);
 
   // ---- BASE ----
   const baseMat = new THREE.MeshStandardMaterial({
@@ -245,16 +254,23 @@ export function updateTurrets(dt) {
   for (let i = _activeTurrets.length - 1; i >= 0; i--) {
     const t = _activeTurrets[i];
 
-    // Drop animation.
+    // Rise animation — emerges from the floor, with deploy click +
+    // dirt burst on landing.
     if (t.dropping) {
+      if (!t._riseAudioFired) {
+        t._riseAudioFired = true;
+        try { Audio.turretDeploy(); } catch (_) {}
+        // Initial dirt burst at ground level.
+        const gp = new THREE.Vector3(t.pos.x, 0, t.pos.z);
+        hitBurst(gp, 0x8a6a44, 16);
+      }
       t.dropT += dt;
-      const f = Math.min(1, t.dropT / TURRET_DROP_DURATION);
-      const eased = f * f;
-      t.root.position.y = TURRET_DROP_HEIGHT * (1 - eased);
+      const f = Math.min(1, t.dropT / TURRET_RISE_DURATION);
+      const eased = 1 - Math.pow(1 - f, 2.4);
+      t.root.position.y = -TURRET_RISE_DEPTH * (1 - eased);
       if (f >= 1) {
         t.dropping = false;
         t.root.position.y = 0;
-        // Landing impact burst.
         hitBurst(t.pos.clone(), t.accentHex, 22);
         hitBurst(t.pos.clone(), 0xffffff, 14);
       }
@@ -365,6 +381,7 @@ function _fireMg(t, target) {
   _spawnTracer(muzzleWorld, target.pos.clone(), t.accentColor, 0.06);
   // Small muzzle puff.
   hitBurst(muzzleWorld, t.accentHex, 2);
+  try { Audio.turretMg(); } catch (_) {}
 }
 
 function _fireTesla(t, target) {
@@ -407,6 +424,7 @@ function _fireTesla(t, target) {
     cur = next;
     dmg *= FALLOFF;
   }
+  try { Audio.turretTesla(); } catch (_) {}
 }
 
 function _fireFlame(t, target) {
@@ -433,6 +451,13 @@ function _fireFlame(t, target) {
   const muzzleWorld = new THREE.Vector3();
   t.muzzle.getWorldPosition(muzzleWorld);
   _spawnFlameParticle(muzzleWorld, ang, t.accentColor);
+  // Throttle audio — flame fires every 0.04s, but we only want a
+  // hiss every ~6 calls so the whoosh layers softly.
+  t._flameAudioCount = (t._flameAudioCount || 0) + 1;
+  if (t._flameAudioCount >= 6) {
+    t._flameAudioCount = 0;
+    try { Audio.turretFlame(); } catch (_) {}
+  }
 }
 
 const _AT_ROCKET_GEO = new THREE.CylinderGeometry(0.10, 0.14, 0.85, 8);
@@ -477,6 +502,7 @@ function _fireAntitank(t, target) {
   // Backblast.
   hitBurst(muzzleWorld, t.accentHex, 8);
   hitBurst(muzzleWorld, 0xffffff, 4);
+  try { Audio.turretAntitank(); } catch (_) {}
 }
 
 // =====================================================================
@@ -525,6 +551,26 @@ function _tickTracers(dt) {
 // =====================================================================
 const _AT_BLAST_RADIUS = 4.0;
 const _AT_BLAST_DAMAGE = 320;
+const _AT_PLAYER_DAMAGE = 45;     // max player splash; falloff w/ distance
+
+// Local player-splash helper. Mirrors mech's _splashDamagePlayer:
+// gated on isPiloting + invuln, falloff with distance from epicenter.
+function _splashDamagePlayerAT(epicenter, radius, maxDmg) {
+  if (!player || !player.pos) return;
+  if (isPiloting()) return;
+  if (S.invulnTimer && S.invulnTimer > 0) return;
+  const dx = player.pos.x - epicenter.x;
+  const dz = player.pos.z - epicenter.z;
+  const d = Math.sqrt(dx * dx + dz * dz);
+  if (d >= radius) return;
+  const falloff = 1 - d / radius;
+  S.hp = Math.max(0, (S.hp || 0) - maxDmg * falloff);
+  S.invulnTimer = Math.max(S.invulnTimer || 0, 0.20);
+  if (typeof window !== 'undefined' && window.__takePlayerDamageVfx) {
+    try { window.__takePlayerDamageVfx(0.30, 0.20); } catch (_) {}
+  }
+}
+
 function _tickRockets(dt) {
   for (let i = _activeRockets.length - 1; i >= 0; i--) {
     const r = _activeRockets[i];
@@ -560,9 +606,14 @@ function _tickRockets(dt) {
           e.hitFlash = 0.20;
         }
       }
+      // Friendly fire — player too if standing in the blast.
+      _splashDamagePlayerAT(r.pos.clone(), _AT_BLAST_RADIUS, _AT_PLAYER_DAMAGE);
       hitBurst(r.pos.clone(), 0xffffff, 24);
       hitBurst(r.pos.clone(), r.accentHex, 18);
       setTimeout(() => hitBurst(r.pos.clone(), 0xffaa00, 14), 60);
+      // Audio — reuse the mech rocket impact (same heavy thump
+      // profile fits the AT shell).
+      try { Audio.mechRocketImpact(); } catch (_) {}
       if (r.mesh.parent) r.mesh.parent.remove(r.mesh);
       if (r.mat) r.mat.dispose();
       _activeRockets.splice(i, 1);
@@ -642,6 +693,7 @@ function _destroyTurret(t) {
   hitBurst(pos, 0xffffff, 28);
   hitBurst(pos, t.accentHex, 22);
   setTimeout(() => hitBurst(pos, 0xffaa00, 18), 60);
+  try { Audio.turretDestroyed(); } catch (_) {}
 }
 
 function _disposeTurret(t) {

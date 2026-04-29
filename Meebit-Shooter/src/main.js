@@ -251,6 +251,26 @@ window.__stratagemFireNuke = function(pos, tint) {
       e.hitFlash = 0.40;
     }
   }
+  // Splash damage to the player — thermonuclear hits hard if you're
+  // anywhere near the epicenter. Half radius for damage falloff so
+  // the outer ring is survivable; near the core it's lethal.
+  // Skipped if piloting (mech absorbs).
+  {
+    const pp = player && player.pos;
+    if (pp && !isPiloting() && (!S.invulnTimer || S.invulnTimer <= 0)) {
+      const dx = pp.x - pos.x;
+      const dz = pp.z - pos.z;
+      const d = Math.sqrt(dx * dx + dz * dz);
+      const dmgRadius = RADIUS * 0.85;
+      if (d < dmgRadius) {
+        const falloff = 1 - d / dmgRadius;
+        const dmg = 220 * falloff;     // up to 220 at epicenter
+        S.hp = Math.max(0, S.hp - dmg);
+        S.invulnTimer = Math.max(S.invulnTimer || 0, 0.8);
+        _takePlayerDamageVfx(0.6, 0.5);
+      }
+    }
+  }
   // Multi-stage explosion FX — bigger and longer than the previous
   // 500kg call. White flash → tint plume → orange bloom → red ember
   // → magenta fallout. Each stage layered on the same epicenter.
@@ -263,6 +283,8 @@ window.__stratagemFireNuke = function(pos, tint) {
   setTimeout(() => hitBurst(epi, 0xffffff, 30), 360);
   // Heavy camera shake.
   shake(3.0, 1.4);
+  // Audio — thunderous low-end blast layered with rolling boom.
+  try { Audio.nukeBlast(); } catch (_) {}
   // Notify any tutorial observer.
   if (window.__bonusObserve && window.__bonusObserve.onDetonate) {
     try { window.__bonusObserve.onDetonate('thermonuclear'); } catch (_) {}
@@ -305,6 +327,14 @@ window.__bonusObserve = window.__bonusObserve || {
   onDetonate: null,
   onMechEnter: null,
   onMineDetonate: null,
+};
+
+// Player damage VFX bridge — stratagem modules (mech, mineField,
+// stratagemTurret) call this when their own explosions splash-damage
+// the player. Implemented later in this file as _takePlayerDamageVfx
+// (function declaration → hoisted → available now).
+window.__takePlayerDamageVfx = function(shakeAmt, shakeDur) {
+  try { _takePlayerDamageVfx(shakeAmt, shakeDur); } catch (_) {}
 };
 
 
