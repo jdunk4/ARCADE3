@@ -31,7 +31,6 @@ import { hitBurst } from './effects.js';
 import { shake, S } from './state.js';
 import { getTriangleFor } from './triangles.js';
 import { spawners, spawnPortal, clearAllPortals } from './spawners.js';
-import { buildShield as buildHexShield, isShieldTextureLoaded, disposeShield as disposeHexShield } from './shieldShader.js';
 
 // ---- Tunables ----
 // Queen is much bigger than a normal hive — visible from any angle,
@@ -144,49 +143,21 @@ export function spawnQueenHive(chapterIdx) {
 
   // Place 4 CONCENTRIC SHIELD SPHERES centered on the cluster. The
   // outermost shell is the one cannon shots hit first; when it pops,
-  // the next shell becomes the new outer. Each dome is built as a
-  // hex-pattern shader shield (animated pulse + Fresnel rim + impact
-  // ripples) when the texture has loaded, or the simpler
-  // MeshStandardMaterial dome when not. Strength tapers per layer
-  // (outer brighter, inner softer) for a layered force-field feel.
-  const useHex = isShieldTextureLoaded();
+  // the next shell becomes the new outer.
   for (let i = 0; i < DOMES_COUNT; i++) {
-    const radius = DOME_RADII[i];
-    let dome;
-    let hexHandle = null;
-    if (useHex) {
-      try {
-        const handle = buildHexShield(_tint, {
-          radius,
-          strength: 7 - i * 0.6,     // 7.0, 6.4, 5.8, 5.2
-        });
-        if (handle) {
-          hexHandle = handle;
-          dome = handle.mesh;
-        }
-      } catch (e) {
-        console.warn('[queen-shield] hex build threw, falling back', e);
-      }
-    }
-    if (!dome) {
-      // Fallback: classic MeshStandardMaterial dome.
-      const mat = _domeMat(_tint, i);
-      const geo = _DOME_GEOS[i];
-      dome = new THREE.Mesh(geo, mat);
-      dome.userData._fallbackMat = mat;
-    }
+    const mat = _domeMat(_tint, i);
+    const geo = _DOME_GEOS[i];
+    const dome = new THREE.Mesh(geo, mat);
     dome.position.set(cx, 4.0, cz);
     scene.add(dome);
     _domes.push({
       mesh: dome,
-      mat: dome.userData._fallbackMat || null,    // null on hex path
-      hexHandle,                                   // null on fallback path
+      mat,
       intact: true,
       popping: false,
       popT: 0,
       layerIdx: i,                     // 0 = outermost
       pulseSeed: Math.random() * Math.PI * 2,
-      _hitFlashT: 0,
     });
   }
 
@@ -336,60 +307,33 @@ export function updateQueenHive(dt) {
   for (let i = _domes.length - 1; i >= 0; i--) {
     const d = _domes[i];
     if (!d.popping && d.intact) {
-      // Idle pulse — gentle scale bob + per-path brightness modulation.
+      // Idle pulse — gentle scale + opacity bob to read as "active".
+      // Use the layer-specific base opacity so outer shells stay more
+      // opaque and inner shells dimmer, with a small modulation
+      // around that baseline.
       d.pulseSeed += dt * 1.5;
       const pulse = 1.0 + Math.sin(d.pulseSeed) * 0.04;
       d.mesh.scale.setScalar(pulse);
-      // Hit-flash decay (shared across both paths).
-      let flashAmt = 0;
+      const baseOpacity = 0.45 - (d.layerIdx || 0) * 0.06;
+      let opacity = baseOpacity + Math.sin(d.pulseSeed * 1.3) * 0.10;
+      // Hit-flash override — when a bullet pings the shield, ramp
+      // opacity + emissive briefly so the shield "blinks" on hit.
       if (d._hitFlashT && d._hitFlashT > 0) {
         d._hitFlashT -= dt;
-        flashAmt = Math.max(0, d._hitFlashT) / 0.15;     // 1→0
+        const flash = Math.max(0, d._hitFlashT) / 0.15;
+        opacity = Math.min(1.0, opacity + flash * 0.55);
       }
-      if (d.hexHandle) {
-        // Hex shield: drive shader's strength uniform with breathing
-        // pulse + hit-flash bump. Baseline tapers per layer (set in
-        // spawnQueenHive). breath ±0.8 around the baseline; hit
-        // flash adds up to +5 during impact decay.
-        const baseline = 7 - (d.layerIdx || 0) * 0.6;
-        const breath = (Math.sin(d.pulseSeed * 1.3) + 1) * 0.5;     // 0..1
-        let strengthVal = baseline + breath * 0.8;
-        strengthVal += flashAmt * 5.0;
-        d.hexHandle.strength.value = strengthVal;
-      } else if (d.mat) {
-        // Fallback: write material.opacity.
-        const baseOpacity = 0.45 - (d.layerIdx || 0) * 0.06;
-        let opacity = baseOpacity + Math.sin(d.pulseSeed * 1.3) * 0.10;
-        opacity = Math.min(1.0, opacity + flashAmt * 0.55);
-        d.mat.opacity = opacity;
-      }
+      d.mat.opacity = opacity;
     } else if (d.popping) {
-      // Pop animation — expand + fade over 0.45s.
+      // Pop animation — expand + fade over 0.45s
       d.popT += dt;
       const f = Math.min(1, d.popT / 0.45);
       const scale = 1.0 + f * 1.1;
       d.mesh.scale.setScalar(scale);
-      if (d.hexHandle) {
-        // Hex: strength flashes 7 → 14 over first 20% of pop, then
-        // crashes 14 → 0 over remaining 80%. Reads as the shield
-        // over-energizing then collapsing.
-        let s;
-        if (f < 0.2) {
-          s = 7 + (f / 0.2) * 7;       // 7 → 14
-        } else {
-          s = 14 * (1 - (f - 0.2) / 0.8);   // 14 → 0
-        }
-        d.hexHandle.strength.value = Math.max(0, s);
-      } else if (d.mat) {
-        d.mat.opacity = 0.7 * (1 - f);
-      }
+      d.mat.opacity = 0.7 * (1 - f);
       if (f >= 1) {
-        if (d.hexHandle) {
-          try { disposeHexShield(d.hexHandle); } catch (e) {}
-        } else {
-          if (d.mesh.parent) scene.remove(d.mesh);
-          if (d.mat && d.mat.dispose) d.mat.dispose();
-        }
+        if (d.mesh.parent) scene.remove(d.mesh);
+        if (d.mat && d.mat.dispose) d.mat.dispose();
         _domes.splice(i, 1);
       }
     }
@@ -449,11 +393,6 @@ export function tryHitQueenShield(bulletPos) {
   hitBurst(impactPos, _tint, 8);
   // Flash the dome's emissive — visible "blink" on hit.
   outerIntact._hitFlashT = 0.15;
-  // Hex shield: feed the impact into the shader's impact uniform.
-  // 3D distance-field ripple propagates from the impact point.
-  if (outerIntact.hexHandle) {
-    try { outerIntact.hexHandle.impacts.add(impactPos, 1.2); } catch (e) {}
-  }
   return true;
 }
 
@@ -496,9 +435,6 @@ export function pingQueenShieldAt(impactPos) {
   hitBurst(impactPos, 0xffffff, 4);
   hitBurst(impactPos, _tint, 8);
   outerIntact._hitFlashT = 0.15;
-  if (outerIntact.hexHandle) {
-    try { outerIntact.hexHandle.impacts.add(impactPos, 1.2); } catch (e) {}
-  }
   return true;
 }
 
@@ -544,12 +480,8 @@ export function tickQueenShieldCollision(playerPos) {
  *  chapter exit / reset. */
 export function clearQueenHive() {
   for (const d of _domes) {
-    if (d.hexHandle) {
-      try { disposeHexShield(d.hexHandle); } catch (e) {}
-    } else {
-      if (d.mesh && d.mesh.parent) scene.remove(d.mesh);
-      if (d.mat && d.mat.dispose) d.mat.dispose();
-    }
+    if (d.mesh && d.mesh.parent) scene.remove(d.mesh);
+    if (d.mat && d.mat.dispose) d.mat.dispose();
   }
   _domes.length = 0;
   for (const b of _beams) {

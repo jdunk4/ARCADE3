@@ -208,23 +208,14 @@ export function shieldHitVisual(hive, impactPos) {
   hitBurst(impactPos, 0xffffff, 8);
   hitBurst(impactPos, tint, 10);
 
-  // Hex shield: feed the impact into the shader's impact uniform
-  // array. The shader does a 3D distance-field ripple from the
-  // impact point across the dome surface — better and cleaner than
-  // the separate flat-disc-ring spawn we do on the fallback path.
-  if (shield.userData.hexHandle) {
-    try { shield.userData.hexHandle.impacts.add(impactPos, 1.0); } catch (e) {}
-    return;
-  }
-
-  // Fallback path: spawn a soft glow pulse ring at the impact point.
-  // The ring is a flat disc tangent to the shield sphere (its normal
-  // points outward from the sphere center), so it reads as glued to
-  // the curved shield surface rather than floating in space. It
-  // expands and fades over ~0.45s; multiple concurrent pulses are
-  // fine — each one is independent and updateHiveShields walks the
-  // list every frame. Each pulse has its own material clone so the
-  // fade doesn't bleed across hits.
+  // Spawn a soft glow pulse ring at the impact point. The ring is a
+  // flat disc tangent to the shield sphere (its normal points outward
+  // from the sphere center), so it reads as glued to the curved
+  // shield surface rather than floating in space. It expands and
+  // fades over ~0.45s; multiple concurrent pulses are fine — each
+  // one is independent and updateHiveShields walks the list every
+  // frame. Each pulse has its own material clone so the fade doesn't
+  // bleed across hits.
   const pulseMat = new THREE.MeshBasicMaterial({
     map: _getPulseGlowTexture(),
     color: tint,
@@ -540,38 +531,7 @@ export function buildShieldMaterial(tint) {
 // don't allocate per-shield.
 const _SHIELD_HALO_GEO = new THREE.SphereGeometry(3.8 * 1.10, 28, 18);
 
-// GLSL shield builder — animated hex pattern + Fresnel rim + impact
-// ripples via a classic ShaderMaterial. Loads its hex texture
-// asynchronously; until the texture is ready, addShieldToHive falls
-// back to the simpler additive-glow shield in buildShieldMaterials.
-import { buildShield as buildHexShield, isShieldTextureLoaded, disposeShield as disposeHexShield } from './shieldShader.js';
-
 export function addShieldToHive(hive, tint) {
-  // Prefer the procedural hex shield (animated pulse + Fresnel rim +
-  // 3D impact ripples) if the hex texture has loaded. Otherwise fall
-  // back to the simpler glow + halo two-mesh approach.
-  if (isShieldTextureLoaded()) {
-    try {
-      const handle = buildHexShield(tint, { radius: 3.8, strength: 7 });
-      if (handle) {
-        const shield = handle.mesh;
-        shield.position.copy(hive.pos);
-        shield.position.y = 1.9;
-        shield.userData.pulseSeed = Math.random() * Math.PI * 2;
-        shield.userData.tint = tint;
-        shield.userData.hexHandle = handle;     // exposes .impacts.add + .strength uniform
-        scene.add(shield);
-        hive.shielded = true;
-        hive.shieldMesh = shield;
-        _hiveShields.set(hive, shield);
-        return;
-      }
-    } catch (e) {
-      console.warn('[shield] GLSL build threw, falling back:', e);
-    }
-  }
-
-  // ---- Fallback path (texture not yet loaded or build failed) ----
   // Two-mesh shield: core (chapter-tinted glow) + halo (outer glow).
   // Both meshes share the same animation timeline so the breathing
   // pulse + hit flash modulate them together.
@@ -714,19 +674,13 @@ export function updateHiveShields(dt, time) {
       shield.userData._dropT += dt;
       const t = shield.userData._dropT;
       const haloMat = shield.userData.haloMat;
-      const hexHandle = shield.userData.hexHandle;
 
       if (t < 0.08) {
-        // FLASH-UP phase. Linear-in opacity/strength + scale ramp.
+        // FLASH-UP phase. Linear-in opacity + scale ramp.
         const f = t / 0.08;
-        if (hexHandle) {
-          // Hex shield: bump strength uniform 7 → 14 for the over-energize flash.
-          hexHandle.strength.value = 7 + f * 7;
-        } else {
-          const op = 0.55 + f * 0.40;                // 0.55 → 0.95
-          shield.material.opacity = op;
-          if (haloMat) haloMat.opacity = op * 0.60;  // halo follows at 60%
-        }
+        const op = 0.55 + f * 0.40;                // 0.55 → 0.95
+        shield.material.opacity = op;
+        if (haloMat) haloMat.opacity = op * 0.60;  // halo follows at 60%
         shield.scale.setScalar(1 + f * 0.12);      // 1.0 → 1.12
       } else {
         // BURST (once) + COLLAPSE phase.
@@ -748,23 +702,11 @@ export function updateHiveShields(dt, time) {
         const f = Math.min(1, (t - 0.08) / 0.22);
         const eased = f * f;   // ease-in, starts slow then accelerates
         shield.scale.setScalar(1.12 * (1 - eased));
-        if (hexHandle) {
-          // Hex shield: drop strength toward 0. Shader's emissive output
-          // multiplies by strength, so this fades the entire shield.
-          hexHandle.strength.value = 14 * (1 - eased);
-        } else {
-          const op = 0.95 * (1 - eased);
-          shield.material.opacity = op;
-          if (haloMat) haloMat.opacity = op * 0.60;
-        }
+        const op = 0.95 * (1 - eased);
+        shield.material.opacity = op;
+        if (haloMat) haloMat.opacity = op * 0.60;
         if (f >= 1) {
-          if (hexHandle) {
-            // disposeHexShield handles scene removal + cleanup +
-            // unregistering from the per-frame tick list.
-            try { disposeHexShield(hexHandle); } catch (e) {}
-          } else if (shield.parent) {
-            scene.remove(shield);
-          }
+          if (shield.parent) scene.remove(shield);
           toRemove.push(hive);
         }
       }
@@ -783,22 +725,9 @@ export function updateHiveShields(dt, time) {
         const flashStrength = shield.userData._hitFlash / 0.18;  // 1→0
         opacity = Math.min(0.95, opacity + flashStrength * 0.55);
       }
-      const hexHandle = shield.userData.hexHandle;
-      if (hexHandle) {
-        // Hex shield: drive strength uniform with breathing pulse +
-        // hit-flash bump. Baseline 7, breath ±1.5, hit adds up to +6.
-        const phaseN = (Math.sin(phase) + 1) * 0.5;       // 0..1
-        let strengthVal = 7 + phaseN * 1.5;
-        if (shield.userData._hitFlash > 0) {
-          const flashStrength = shield.userData._hitFlash / 0.18;
-          strengthVal += flashStrength * 6;
-        }
-        hexHandle.strength.value = strengthVal;
-      } else {
-        shield.material.opacity = opacity;
-        const haloMat = shield.userData.haloMat;
-        if (haloMat) haloMat.opacity = opacity * 0.60;
-      }
+      shield.material.opacity = opacity;
+      const haloMat = shield.userData.haloMat;
+      if (haloMat) haloMat.opacity = opacity * 0.60;
       // Slow rotation for a subtle "active field" feel.
       shield.rotation.y += dt * 0.25;
     }
