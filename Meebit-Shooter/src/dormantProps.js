@@ -551,22 +551,31 @@ export function addShieldToHive(hive, tint) {
   // Prefer the TSL-based shield (animated hex pattern + Fresnel rim +
   // proper 3D impact ripples) if the hex texture is loaded. Otherwise
   // fall back to the simpler glow + halo two-mesh approach.
-  if (isShieldTextureLoaded()) {
-    const handle = buildTslShield(tint, { radius: 3.8, strength: 7 });
-    if (handle) {
-      const shield = handle.mesh;
-      shield.position.copy(hive.pos);
-      shield.position.y = 1.9;
-      shield.userData.pulseSeed = Math.random() * Math.PI * 2;
-      shield.userData.tint = tint;
-      shield.userData.tslHandle = handle;     // exposes .impacts.add for shieldHitVisual
-
-      scene.add(shield);
-      hive.shielded = true;
-      hive.shieldMesh = shield;
-      _hiveShields.set(hive, shield);
-      return;
+  const tslReady = isShieldTextureLoaded();
+  if (tslReady) {
+    try {
+      const handle = buildTslShield(tint, { radius: 3.8, strength: 7 });
+      if (handle) {
+        const shield = handle.mesh;
+        shield.position.copy(hive.pos);
+        shield.position.y = 1.9;
+        shield.userData.pulseSeed = Math.random() * Math.PI * 2;
+        shield.userData.tint = tint;
+        shield.userData.tslHandle = handle;     // exposes .impacts.add for shieldHitVisual
+        scene.add(shield);
+        hive.shielded = true;
+        hive.shieldMesh = shield;
+        _hiveShields.set(hive, shield);
+        console.log('[shield] TSL path — built shield with hex pattern');
+        return;
+      } else {
+        console.warn('[shield] TSL builder returned null, falling back');
+      }
+    } catch (e) {
+      console.warn('[shield] TSL build threw, falling back:', e);
     }
+  } else {
+    console.log('[shield] texture not ready yet, using fallback glow');
   }
 
   // ---- Fallback path (texture not yet loaded) ----

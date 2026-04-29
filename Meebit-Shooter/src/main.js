@@ -33,6 +33,7 @@ import * as SkeletonUtils from 'three/addons/utils/SkeletonUtils.js';
 })();
 
 import { scene, camera, renderer, CAMERA_OFFSET, applyTheme, Scene, enterChapter7Atmosphere, exitChapter7Atmosphere, updateFlashlight, initRenderer } from './scene.js';
+import { loadShieldTexture } from './shieldShader.js';
 import {
   isTutorialActive, setTutorialActive,
   applyTutorialFloor, restoreNormalFloor,
@@ -5512,6 +5513,12 @@ function _takePlayerDamageVfx(shakeAmt, shakeDur) {
 // ============================================================================
 function killEnemy(idx) {
   const e = enemies[idx];
+  // Defensive guard: enemy at this index may have been spliced out
+  // earlier in the same frame (e.g. by a concurrent rocket-AoE chain
+  // killing multiple enemies in cascade). The calling loop would
+  // hand us a stale index in that case. Silently bail — if e is
+  // undefined, something else already removed this enemy this frame.
+  if (!e || !e.pos) return;
   // Arc chain lightning off the kill if the player picked that card.
   // No-op if chainLightning stack is 0. Fires BEFORE we remove the
   // enemy so the arc can visually originate from their last position.
@@ -5802,7 +5809,6 @@ function collectPickup(p) {
 // uninitialized WebGPURenderer silently produces a black screen with
 // no error. initRenderer() is idempotent and resolves quickly on the
 // WebGL backend (forceWebGL: true) which is what we're using.
-import { loadShieldTexture } from './shieldShader.js';
 (async () => {
   try {
     await initRenderer();

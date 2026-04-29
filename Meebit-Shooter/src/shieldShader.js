@@ -20,24 +20,15 @@ import * as THREE from 'three';
 import {
   dot, float, Fn, positionLocal, texture, uniform, uv, vec2,
   time, TWO_PI, mul, normalView, uniformArray, Loop, max,
-  positionWorld, add, color, mix,
+  positionWorld, add, color, mix, positionViewDirection,
 } from 'three/tsl';
 import { scene } from './scene.js';
 
-// Try to use TSL's positionViewDirection node if exposed at the
-// top-level path, fall back to the lower-level path. As of
-// three.js 0.184 this is exported from 'three/tsl' but historically
-// it's been at 'three/src/nodes/TSL.js'. We do the import at
-// module load and fall back gracefully so a missing export doesn't
-// crash the whole module.
-let _positionViewDirection = null;
-try {
-  // eslint-disable-next-line import/no-unresolved
-  const tsl = await import('three/tsl');
-  _positionViewDirection = tsl.positionViewDirection || null;
-} catch (e) {
-  _positionViewDirection = null;
-}
+// positionViewDirection is exported from three/tsl in three.js 0.184+.
+// If you upgrade to a different version where the export name has
+// changed, replace this with: dot(normalView, vec3(0,0,1)).abs().oneMinus()
+// as a Fresnel approximation that doesn't depend on the missing export.
+const _positionViewDirection = positionViewDirection;
 
 const HEX_TEXTURE_URL = 'assets/shield/hexagons.png';
 
