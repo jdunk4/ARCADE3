@@ -97,20 +97,25 @@ const _SHIELD_GEO = new THREE.SphereGeometry(3.8, 28, 18);
 let _hexTilingCache = null;
 export function getHexTilingTexture() {
   if (_hexTilingCache) return _hexTilingCache;
-  // Smaller canvas with one tiling unit — UV-wrapped over the sphere.
-  // SphereGeometry default UVs distort at the poles but that's fine
-  // (reads as energy distortion). Ratio sqrt(3):3 keeps hexes regular
-  // when tiled.
-  const W = 64, H = 64 * Math.sqrt(3) / 1.5 | 0;     // ~74 px tall
+  // Bigger canvas + thicker lines for visibility at distance. The
+  // earlier 64×74 / 1.2px stroke was too thin on large surfaces (queen
+  // domes are 26u wide) — hexes nearly disappeared. 96×111 with a
+  // 2.6px stroke at full alpha gives crisp, readable hex outlines on
+  // both small (3.8u spawner shield) and large (queen dome) targets.
+  // Ratio sqrt(3):3 keeps hexes regular when tiled.
+  const W = 96, H = 96 * Math.sqrt(3) / 1.5 | 0;     // ~111 px tall
   const c = document.createElement('canvas');
   c.width = W; c.height = H;
   const ctx = c.getContext('2d');
   ctx.clearRect(0, 0, W, H);
-  const HEX_R = 16;
+  const HEX_R = 24;     // outer-radius of each hex cell on the canvas
   const HEX_W = HEX_R * Math.sqrt(3);
   const HEX_H = HEX_R * 1.5;
-  ctx.strokeStyle = 'rgba(255, 255, 255, 0.65)';
-  ctx.lineWidth = 1.2;
+  // Pure white at full alpha — caller's color tint multiplies this,
+  // and emissive then adds on top, so the line color comes out as
+  // (chapter tint) at near-full brightness against the surface.
+  ctx.strokeStyle = 'rgba(255, 255, 255, 1.0)';
+  ctx.lineWidth = 2.6;
   // Tile a 2x2 grid of hexes on the canvas. Continued-tile math: the
   // pattern has horizontal period HEX_W and vertical period 2*HEX_H,
   // alternating offset on odd rows. We draw enough cells to cover the
@@ -137,8 +142,7 @@ export function getHexTilingTexture() {
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
   // Repeat enough times around the sphere that the hexes look small
-  // and busy (like a finely detailed force field). 4 horizontal × 3
-  // vertical = ~24 cells across the equator at HEX_R=16.
+  // and busy (like a finely detailed force field).
   tex.repeat.set(4, 3);
   tex.needsUpdate = true;
   _hexTilingCache = tex;

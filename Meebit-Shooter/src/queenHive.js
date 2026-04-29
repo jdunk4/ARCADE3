@@ -56,7 +56,11 @@ function _domeMat(tint, layerIdx) {
   // Outer layer most opaque (most "armored-looking"), inner layers
   // progressively dimmer so the player can see SOMETHING through
   // them and read "there are more shields beneath."
-  const baseOpacity = 0.45 - layerIdx * 0.06;     // 0.45, 0.39, 0.33, 0.27
+  // Bumped opacity + emissive intensity from earlier values so the
+  // hex texture pattern reads as a clear force-field surface rather
+  // than a faint wash through a translucent dome.
+  const baseOpacity = 0.62 - layerIdx * 0.06;       // 0.62, 0.56, 0.50, 0.44
+  const emissiveBoost = 0.95 - layerIdx * 0.10;     // 0.95, 0.85, 0.75, 0.65
   // Apply the same hex tiling texture used by the spawner shields
   // so the queen's domes match the visual language of the rest of
   // the game's shields. Each layer gets its own clone of the texture
@@ -78,11 +82,12 @@ function _domeMat(tint, layerIdx) {
     transparent: true,
     opacity: baseOpacity,
     emissive: tint,
-    emissiveIntensity: 0.55 - layerIdx * 0.08,
+    emissiveIntensity: emissiveBoost,
     roughness: 0.4,
     metalness: 0.1,
     side: THREE.DoubleSide,
     depthWrite: false,
+    toneMapped: false,            // don't let the tone-mapper crush the bright tint
   });
 }
 
