@@ -231,12 +231,13 @@ import { initGamepad, updateGamepad, setTitleMode, rumble } from './gamepad.js';
 // (keeps the dep graph cleaner — those modules become much more
 // portable). The hooks are wired here ONCE at module load.
 
-// 500kg bomb payload: massive AoE explosion at the beacon location.
-// Kills nearly any enemy in radius and visibly nukes the area.
-window.__stratagemFire500kg = function(pos, tint) {
-  const RADIUS = 16;
+// THERMONUCLEAR payload — massive AoE detonation. Bigger radius and
+// more layered FX than a stratagem rocket; signals "you summoned
+// something terrible" and is balanced as a wave-clear panic button.
+window.__stratagemFireNuke = function(pos, tint) {
+  const RADIUS = 20;
   const r2 = RADIUS * RADIUS;
-  const DAMAGE = 4000;
+  const DAMAGE = 6000;
   // Damage every enemy in radius.
   for (let i = 0; i < enemies.length; i++) {
     const e = enemies[i];
@@ -247,23 +248,24 @@ window.__stratagemFire500kg = function(pos, tint) {
     if (d2 < r2) {
       const falloff = 1 - Math.sqrt(d2) / RADIUS;
       e.hp -= DAMAGE * falloff;
-      e.hitFlash = 0.30;
+      e.hitFlash = 0.40;
     }
   }
-  // Multi-stage explosion FX (bigger than mushroom cloud since this
-  // is a directly-targeted payload — see ufoSpawner.explodeUfo for
-  // similar staged-burst pattern).
+  // Multi-stage explosion FX — bigger and longer than the previous
+  // 500kg call. White flash → tint plume → orange bloom → red ember
+  // → magenta fallout. Each stage layered on the same epicenter.
   const epi = new THREE.Vector3(pos.x, 1.5, pos.z);
-  hitBurst(epi, 0xffffff, 80);
-  hitBurst(epi, tint, 60);
-  setTimeout(() => hitBurst(epi, 0xffaa00, 50), 60);
-  setTimeout(() => hitBurst(epi, 0xff5520, 40), 130);
-  setTimeout(() => hitBurst(epi, 0xff3cac, 30), 220);
+  hitBurst(epi, 0xffffff, 120);
+  hitBurst(epi, tint, 90);
+  setTimeout(() => hitBurst(epi, 0xffaa00, 70), 60);
+  setTimeout(() => hitBurst(epi, 0xff5520, 50), 140);
+  setTimeout(() => hitBurst(epi, 0xff3cac, 40), 240);
+  setTimeout(() => hitBurst(epi, 0xffffff, 30), 360);
   // Heavy camera shake.
-  shake(2.4, 1.0);
+  shake(3.0, 1.4);
   // Notify any tutorial observer.
   if (window.__bonusObserve && window.__bonusObserve.onDetonate) {
-    try { window.__bonusObserve.onDetonate('bomb500kg'); } catch (_) {}
+    try { window.__bonusObserve.onDetonate('thermonuclear'); } catch (_) {}
   }
 };
 
@@ -3437,6 +3439,23 @@ function animate() {
   requestAnimationFrame(animate);
   const dt = Math.min(0.05, clock.getDelta());
 
+  // Slow-mo time scale. While the stratagem menu is open the player
+  // needs breathing room to enter their code under combat pressure;
+  // we slow EVERYTHING world-side (enemies, projectiles, hazards,
+  // particles, hive cooldowns) but keep player input + aim + camera
+  // at full speed so the call-in itself never feels laggy. Updated
+  // every frame: ramped toward 0.18 when menu is open, back to 1.0
+  // when closed. Smoothing avoids a jarring time-warp pop.
+  {
+    const target = isStratagemMenuOpen() ? 0.18 : 1.0;
+    const cur = (typeof S.timeScale === 'number') ? S.timeScale : 1.0;
+    // Lerp toward target — fast enough that the player feels the shift
+    // immediately but smooth enough that it isn't visually jarring.
+    const k = Math.min(1, dt * 10);
+    S.timeScale = cur + (target - cur) * k;
+  }
+  const worldDt = dt * S.timeScale;
+
   // Per-frame VFX dedup. Multiple damage sources hitting the player in
   // the same frame (e.g. a goo splat AND an enemy contact AND a stray
   // projectile all landing in the same 16ms window) used to fire
@@ -3464,13 +3483,13 @@ function animate() {
 
   if (S.running && !S.paused) {
     updatePlayer(dt);
-    updateEnemies(dt);
-    updateBullets(dt);
-    updateTurrets(dt);
-    updatePixlPals(dt, player.pos);
-    updateFlingers(dt, player.pos);
-    updateInfectors(dt, player);
-    updatePowerups(dt, player.pos, player.facing);
+    updateEnemies(worldDt);
+    updateBullets(worldDt);
+    updateTurrets(worldDt);
+    updatePixlPals(worldDt, player.pos);
+    updateFlingers(worldDt, player.pos);
+    updateInfectors(worldDt, player);
+    updatePowerups(worldDt, player.pos, player.facing);
     // VESSEL ZERO (ch.7 final boss) has a custom mesh with writhing
     // tendrils, floating core, pulsing maw, and shuffling parasite
     // cluster — all animated per-frame here. No-op when bossRef isn't
@@ -3486,12 +3505,12 @@ function animate() {
     // type in the same frame, the hive retraction/collapse animation never
     // ticks to completion and the last destroyed hive stays on-screen into
     // wave 4. updateSpawners is a no-op when `spawners` is empty.
-    updateSpawners(dt);
-    // Stratagem system — beacons, mechs, mine-field. Cascades through
-    // updateStratagems → updateStratagemBeacons + updateMechs. Cheap
-    // when nothing is active (early-returns on empty lists).
-    // Refresh the chapter-tint global so beacons / mines / mechs
-    // spawned this frame use the current chapter palette.
+    updateSpawners(worldDt);
+    // Stratagem system — beacons, mechs, mine-field, sentry turrets.
+    // These are PLAYER-DEPLOYED tools and should keep ticking at
+    // full speed during slow-mo (otherwise the player's beacons would
+    // also count down 5x slower while they're using the picker — bad
+    // UX). Pass `dt` not `worldDt`.
     {
       const _ch = CHAPTERS[S.chapter % CHAPTERS.length];
       window.__stratagemTint = _ch && _ch.full ? _ch.full.lamp : 0xff5520;
@@ -3524,6 +3543,30 @@ function animate() {
         hud.__lastHtml = html;
       }
     }
+    // Slow-mo vignette — a subtle radial darkening + chromatic edge
+    // pulse that signals to the player "the world is slowed". Opacity
+    // ramps with the inverse of timeScale so the vignette fades in
+    // smoothly as slow-mo engages. Lazily created.
+    {
+      let vig = document.getElementById('slowmo-vignette');
+      if (!vig) {
+        vig = document.createElement('div');
+        vig.id = 'slowmo-vignette';
+        vig.style.cssText = [
+          'position:fixed', 'inset:0',
+          'pointer-events:none',
+          'z-index:7900',
+          'background:radial-gradient(ellipse at center, transparent 35%, rgba(8,4,20,0.55) 100%)',
+          'mix-blend-mode:multiply',
+          'opacity:0',
+          'transition:opacity 0.15s linear',
+        ].join(';');
+        document.body.appendChild(vig);
+      }
+      // Map timeScale (0.18..1.0) to opacity (1..0).
+      const slowness = 1 - Math.min(1, Math.max(0, (S.timeScale - 0.18) / (1.0 - 0.18)));
+      vig.style.opacity = (slowness * 0.85).toFixed(2);
+    }
     // Tick silo cap open/close, missile raise, powerplant flames, and
     // missile blinkers. Cheap and no-op when no compound is built.
     updateCompound(dt, S.timeElapsed);
@@ -3534,12 +3577,12 @@ function animate() {
     updateLaunch(dt, S.timeElapsed);
     // Tick any active shockwave rings from wave-end events.
     updateShockwaves(dt);
-    updateRockets(dt);
-    updateGrenades(dt);
-    updateEnemyProjectiles(dt);
-    updateHealingProjectiles(dt);
-    updatePickups(dt);
-    updateBlocks(dt);
+    updateRockets(worldDt);
+    updateGrenades(worldDt);
+    updateEnemyProjectiles(worldDt);
+    updateHealingProjectiles(worldDt);
+    updatePickups(worldDt);
+    updateBlocks(worldDt);
     // Chapter 1 reflow — animate cannon (reticle spin, hum, fire flash)
     // and queen-hive shield domes (pulse + pop). Both are no-ops when
     // their entities don't exist (chapters 2-7).
@@ -3558,22 +3601,22 @@ function animate() {
     // a truck via spawnEscortTruck; on other tutorial lessons no
     // truck exists and updateEscortTruck early-returns harmlessly.
     if (S.tutorialMode) {
-      updateEscortTruck(dt, player.pos, enemies);
+      updateEscortTruck(worldDt, player.pos, enemies);
     } else {
-      updateEscortTruck(dt, null, null);
+      updateEscortTruck(worldDt, null, null);
     }
     updateServerWarehouse(dt);
     updateSafetyPod(dt);
-    updateHiveLasers(dt);
-    updateCockroach(dt);
+    updateHiveLasers(worldDt);
+    updateCockroach(worldDt);
     // Skip the fog-ring update in tutorial mode. updateFogRing()
     // re-writes scene.fog.near/far/color every frame to override
     // theme transitions; without this guard it would clobber the
     // disableFog() snapshot and the perimeter darkness would
     // come back. Tutorial gets bare-bones lighting on purpose.
     if (!S.tutorialMode) updateFogRing(player.pos);
-    updateBossCubes(dt);
-    updateCivilians(dt, enemies, player, onCivilianKilled, onCivilianRescued);
+    updateBossCubes(worldDt);
+    updateCivilians(worldDt, enemies, player, onCivilianKilled, onCivilianRescued);
     // In tutorial mode the lesson controller drives spawns and props
     // every frame. updateWaves below early-returns when tutorialMode
     // is on, so the two systems never fight for game state.
@@ -3633,7 +3676,7 @@ function animate() {
         try { clearHazards(); } catch (e) {}
       }
     }
-    updateWaves(dt);
+    updateWaves(worldDt);
     // Notify the pixl-pal system of new waves so it can award charges
     // every 3rd wave. Cheap: one int comparison per frame.
     if (S.wave !== _lastSeenWave) {
@@ -3866,11 +3909,11 @@ function animate() {
     // the pigs stand on the arena perimeter across all subsequent chapters
     // with idle animations (older chapters frozen for performance).
     updateSavedPigs(dt);
-    updateParticles(dt);
+    updateParticles(worldDt);
     updateRain(dt, player.pos);
-    updateGooSplats(dt);
-    updateHazards(dt, S.timeElapsed);
-    updateNewPickups(dt, player.pos);
+    updateGooSplats(worldDt);
+    updateHazards(worldDt, S.timeElapsed);
+    updateNewPickups(worldDt, player.pos);
     tickKillstreak(dt);
     // Overdrive — runs the timer, scales the player, animates the
     // glow, and applies the crush sweep. No-op when not active.

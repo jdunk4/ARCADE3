@@ -55,12 +55,14 @@ import { spawnMech, updateMechs, clearMechs } from './mech.js';
 //               state (turret).
 const _STRATAGEMS = [
   {
-    id: 'bomb500kg',
-    label: '500KG BOMB',
+    // THERMONUCLEAR — single massive AoE detonation. Was previously
+    // labeled "500KG BOMB"; renamed to fit the chapter-7 sci-fi tone.
+    id: 'thermonuclear',
+    label: 'THERMONUCLEAR',
     code: ['up', 'right', 'down', 'down', 'down'],
     armTime: 10.0,
     icon: '☢',
-    payload: (pos, tint) => _firePayloadBomb500kg(pos, tint),
+    payload: (pos, tint) => _firePayloadThermonuclear(pos, tint),
   },
   {
     // Single MECH stratagem; variant chosen via the sticky
@@ -74,37 +76,22 @@ const _STRATAGEMS = [
     variant: ['minigun', 'rocket', 'flame'],
     payload: (pos, tint) => _firePayloadMech(pos, tint),
   },
-  // ---- MINE VARIANTS ----
-  // Three separate codes / artifacts. Each drops a 12-mine field of
-  // its damage type at the beacon location.
+  // ---- MINES ----
+  // Single code. Variant (HE / incendiary / toxic) is picked via the
+  // in-menu 1/2/3 cycle key (S.stratagemMineVariant). Mirrors the
+  // mech sub-picker UX so the player has one consistent pattern.
   {
-    id: 'mines_explosion',
-    label: 'HE MINES',
+    id: 'mines',
+    label: 'MINE FIELD',
     code: ['down', 'right', 'right', 'down'],
     armTime: 8.0,
     icon: '◆',
-    payload: (pos, tint) => _firePayloadMines(pos, tint, 'explosion'),
-  },
-  {
-    id: 'mines_fire',
-    label: 'INCEND. MINES',
-    code: ['down', 'right', 'right', 'up'],
-    armTime: 8.0,
-    icon: '🔥',
-    payload: (pos, tint) => _firePayloadMines(pos, tint, 'fire'),
-  },
-  {
-    id: 'mines_poison',
-    label: 'TOX MINES',
-    code: ['down', 'right', 'right', 'left'],
-    armTime: 8.0,
-    icon: '☠',
-    payload: (pos, tint) => _firePayloadMines(pos, tint, 'poison'),
+    variant: ['explosion', 'fire', 'poison'],
+    payload: (pos, tint) => _firePayloadMines(pos, tint),
   },
   // ---- TURRET ----
   // Single code; variant cycled by digit keys 1/2/3/4 while menu is
-  // open. Live selection is local (_turretVariantIdx); the in-menu
-  // HUD shows the current pick + cycle hint.
+  // open. Live selection lives in S.stratagemTurretVariant.
   {
     id: 'turret',
     label: 'SENTRY TURRET',
@@ -177,6 +164,8 @@ export function pushStratagemVariantKey(digit) {
     S.stratagemMechVariant = target.variant[idx];
   } else if (target.id === 'turret') {
     S.stratagemTurretVariant = target.variant[idx];
+  } else if (target.id === 'mines') {
+    S.stratagemMineVariant = target.variant[idx];
   }
 }
 
@@ -267,12 +256,12 @@ function _resolveCursorGround() {
 // They're free functions (not closures over per-instance state) so
 // the catalog table stays simple.
 
-function _firePayloadBomb500kg(pos, tint) {
-  // Massive AoE. We import explosion FX lazily via the global window
-  // hook to avoid coupling stratagems.js to effects.js + enemies.js
-  // (and to keep the file dependencies minimal).
-  if (typeof window !== 'undefined' && window.__stratagemFire500kg) {
-    window.__stratagemFire500kg(pos, tint);
+function _firePayloadThermonuclear(pos, tint) {
+  // Massive AoE. We delegate to a global hook to avoid coupling
+  // stratagems.js to effects.js + enemies.js. Hook name preserved
+  // (window.__stratagemFireNuke) for clarity; the host wires it.
+  if (typeof window !== 'undefined' && window.__stratagemFireNuke) {
+    window.__stratagemFireNuke(pos, tint);
   }
 }
 
@@ -283,10 +272,12 @@ function _firePayloadMech(pos, tint) {
   spawnMech(pos, tint, variant);
 }
 
-function _firePayloadMines(pos, tint, kind) {
-  // kind = 'explosion' | 'fire' | 'poison'
+function _firePayloadMines(pos, tint) {
+  // Variant chosen by the in-menu picker (digit keys 1/2/3 — same
+  // pattern as mech). Default to 'explosion' if no pick was made.
+  const variant = S.stratagemMineVariant || 'explosion';
   if (typeof window !== 'undefined' && window.__stratagemDeployMines) {
-    window.__stratagemDeployMines(pos, tint, kind || 'explosion');
+    window.__stratagemDeployMines(pos, tint, variant);
   }
 }
 
@@ -358,6 +349,7 @@ export function stratagemHudHtml() {
     if ((arts[s.id] || 0) <= 0) continue;
     const liveKey = s.id === 'mech' ? 'stratagemMechVariant'
                   : s.id === 'turret' ? 'stratagemTurretVariant'
+                  : s.id === 'mines' ? 'stratagemMineVariant'
                   : null;
     if (!liveKey) continue;
     const active = S[liveKey] || s.variant[0];

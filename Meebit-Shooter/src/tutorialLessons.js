@@ -1191,125 +1191,56 @@ export function appendBonusStratagemLessons() {
     catch (e) { console.warn('[bonus lesson] grantArtifact', e); }
   };
 
-  // ---- 12. CALL IN A 500KG BOMB ----
-  _lessons.push({
-    id: 'strat_500kg',
-    label: 'STRATAGEM · 500KG BOMB',
-    hint: 'Hold RIGHT MOUSE · enter ↑→↓↓↓ · release. Throw a beacon at the swarm and stand clear.',
-    _called: false,
-    _detonated: false,
-    onActivate() {
-      this._called = false;
-      this._detonated = false;
-      // Grant 2 artifacts so the player has a retry if they fumble.
-      grantArtifact('bomb500kg', 2);
-      // The completion hook is set on a global flag; the lesson
-      // observes the call and detonation via main.js wiring.
-      if (typeof window !== 'undefined') {
-        window.__bonusObserve = window.__bonusObserve || {};
-        window.__bonusObserve.onCall = (id) => { if (id === 'bomb500kg') this._called = true; };
-        window.__bonusObserve.onDetonate = (id) => { if (id === 'bomb500kg') this._detonated = true; };
-      }
-    },
-    onComplete() {
-      if (typeof window !== 'undefined' && window.__bonusObserve) {
-        window.__bonusObserve.onCall = null;
-        window.__bonusObserve.onDetonate = null;
-      }
-    },
-    isComplete() { return this._detonated; },
-    progress() {
-      if (this._detonated) return '✓ DETONATED';
-      if (this._called) return 'BEACON THROWN · WAIT FOR DETONATION';
-      return '↑→↓↓↓';
-    },
-  });
+  // Helper: a per-lesson enemy spawn ticker. Each bonus lesson
+  // creates one of these in onActivate and ticks it from onUpdate.
+  // Spawns enemies in a slow trickle from random arena edge points
+  // so the player has live targets to practice their stratagem on
+  // — but the trickle is gentle enough that the player can't be
+  // overwhelmed while they fumble with codes.
+  const _bonusSpawner = (interval, type, maxAlive) => {
+    return {
+      _t: 0.0,
+      _interval: interval,
+      _type: type || 'zomeeb',
+      _maxAlive: maxAlive || 5,
+      tick(dt) {
+        // Don't spawn while the stratagem menu is open — slow-mo will
+        // still tick this clock but giving the player a fresh enemy
+        // mid-code-entry feels punitive. (Slow-mo already eases the
+        // pressure; we don't need to compound it.)
+        this._t += dt;
+        if (this._t < this._interval) return;
+        this._t -= this._interval;
+        if (_alivePlayerSpawnedEnemies() >= this._maxAlive) return;
+        // Random angle from arena edge.
+        const a = Math.random() * Math.PI * 2;
+        const dist = 11 + Math.random() * 3;
+        _spawnTutorialEnemy(a, dist, this._type);
+      },
+    };
+  };
 
-  // ---- 13. CALL IN AN EXOSUIT MECH ----
-  _lessons.push({
-    id: 'strat_mech',
-    label: 'STRATAGEM · EXOSUIT',
-    hint: 'Hold RIGHT MOUSE · enter ↓↑→→↑ · release. After it lands, walk to the mech and press E to pilot.',
-    _called: false,
-    _entered: false,
-    onActivate() {
-      this._called = false;
-      this._entered = false;
-      grantArtifact('mech', 2);
-      if (typeof window !== 'undefined') {
-        window.__bonusObserve = window.__bonusObserve || {};
-        window.__bonusObserve.onCall = (id) => { if (id === 'mech') this._called = true; };
-        window.__bonusObserve.onMechEnter = () => { this._entered = true; };
-      }
-    },
-    onComplete() {
-      if (typeof window !== 'undefined' && window.__bonusObserve) {
-        window.__bonusObserve.onCall = null;
-        window.__bonusObserve.onMechEnter = null;
-      }
-    },
-    isComplete() { return this._entered; },
-    progress() {
-      if (this._entered) return '✓ PILOTING';
-      if (this._called) return 'WALK TO MECH · PRESS E';
-      return '↓↑→→↑';
-    },
-  });
-
-  // ---- 14. SCATTER A MINE FIELD ----
-  // Three separate mine codes; lesson grants all three so the player
-  // can experiment, but completion fires on ANY mine detonation.
-  _lessons.push({
-    id: 'strat_mines',
-    label: 'STRATAGEM · MINE FIELD',
-    hint: 'Hold RIGHT MOUSE · enter ↓→→↓ (HE), ↓→→↑ (incendiary), or ↓→→← (toxic) · release.',
-    _called: false,
-    _detonated: false,
-    onActivate() {
-      this._called = false;
-      this._detonated = false;
-      grantArtifact('mines_explosion', 2);
-      grantArtifact('mines_fire', 2);
-      grantArtifact('mines_poison', 2);
-      if (typeof window !== 'undefined') {
-        window.__bonusObserve = window.__bonusObserve || {};
-        window.__bonusObserve.onCall = (id) => {
-          if (id === 'mines_explosion' || id === 'mines_fire' || id === 'mines_poison') {
-            this._called = true;
-          }
-        };
-        window.__bonusObserve.onMineDetonate = () => { this._detonated = true; };
-      }
-    },
-    onComplete() {
-      if (typeof window !== 'undefined' && window.__bonusObserve) {
-        window.__bonusObserve.onCall = null;
-        window.__bonusObserve.onMineDetonate = null;
-      }
-    },
-    isComplete() { return this._detonated; },
-    progress() {
-      if (this._detonated) return '✓ MINES TRIGGERED';
-      if (this._called) return 'WAIT FOR ENEMY TO STEP ON A MINE';
-      return '↓→→↓ · ↓→→↑ · ↓→→←';
-    },
-  });
-
-  // ---- 15. DEPLOY A SENTRY TURRET ----
+  // ---- 12. SENTRY TURRET ----
   // Single turret code; player picks variant via 1/2/3/4 in the
-  // stratagem menu before releasing RMB.
+  // stratagem menu before releasing RMB. Slow zomeeb trickle so the
+  // turret has something to chew on.
   _lessons.push({
     id: 'strat_turret',
     label: 'STRATAGEM · TURRET',
     hint: 'Hold RIGHT MOUSE · press 1-4 to pick MG/TESLA/FLAME/ANTITANK · enter ↓↑→↓↑ · release.',
     _called: false,
+    _spawner: null,
     onActivate() {
       this._called = false;
-      grantArtifact('turret', 2);
+      grantArtifact('turret', 3);
+      this._spawner = _bonusSpawner(2.4, 'zomeeb', 4);
       if (typeof window !== 'undefined') {
         window.__bonusObserve = window.__bonusObserve || {};
         window.__bonusObserve.onCall = (id) => { if (id === 'turret') this._called = true; };
       }
+    },
+    onUpdate(dt) {
+      if (this._spawner) this._spawner.tick(dt);
     },
     onComplete() {
       if (typeof window !== 'undefined' && window.__bonusObserve) {
@@ -1320,6 +1251,92 @@ export function appendBonusStratagemLessons() {
     progress() {
       if (this._called) return '✓ TURRET DEPLOYED';
       return '↓↑→↓↑';
+    },
+  });
+
+  // ---- 13. MINE FIELD ----
+  // One code, in-menu picker (1/2/3 = explosion/fire/poison) — same
+  // pattern as mech and turret. Faster zomeeb trickle so the player
+  // gets enough enemies to trip the mines on.
+  _lessons.push({
+    id: 'strat_mines',
+    label: 'STRATAGEM · MINE FIELD',
+    hint: 'Hold RIGHT MOUSE · press 1-3 to pick HE/INCEND/TOX · enter ↓→→↓ · release.',
+    _called: false,
+    _spawner: null,
+    onActivate() {
+      this._called = false;
+      grantArtifact('mines', 3);
+      this._spawner = _bonusSpawner(1.8, 'zomeeb', 6);
+      if (typeof window !== 'undefined') {
+        window.__bonusObserve = window.__bonusObserve || {};
+        window.__bonusObserve.onCall = (id) => { if (id === 'mines') this._called = true; };
+      }
+    },
+    onUpdate(dt) {
+      if (this._spawner) this._spawner.tick(dt);
+    },
+    onComplete() {
+      if (typeof window !== 'undefined' && window.__bonusObserve) {
+        window.__bonusObserve.onCall = null;
+      }
+    },
+    isComplete() { return this._called; },
+    progress() {
+      if (this._called) return '✓ MINES DEPLOYED';
+      return '↓→→↓';
+    },
+  });
+
+  // ---- 14. EXOSUIT + THERMONUCLEAR ----
+  // Final bonus wave teaches the two heavy-hitters together. The
+  // lesson clears once the player has both called the mech (and
+  // entered it briefly) AND detonated a thermonuclear. Bigger swarm
+  // so the nuke and the mech feel impactful.
+  _lessons.push({
+    id: 'strat_finale',
+    label: 'STRATAGEM · EXOSUIT + NUKE',
+    hint: 'EXOSUIT: ↓↑→→↑ (1/2/3 picks weapon). THERMONUCLEAR: ↑→↓↓↓.',
+    _mechCalled: false,
+    _mechEntered: false,
+    _nukeDetonated: false,
+    _spawner: null,
+    onActivate() {
+      this._mechCalled = false;
+      this._mechEntered = false;
+      this._nukeDetonated = false;
+      grantArtifact('mech', 2);
+      grantArtifact('thermonuclear', 2);
+      this._spawner = _bonusSpawner(1.4, 'zomeeb', 9);
+      if (typeof window !== 'undefined') {
+        window.__bonusObserve = window.__bonusObserve || {};
+        window.__bonusObserve.onCall = (id) => {
+          if (id === 'mech') this._mechCalled = true;
+        };
+        window.__bonusObserve.onMechEnter = () => { this._mechEntered = true; };
+        window.__bonusObserve.onDetonate = (id) => {
+          if (id === 'thermonuclear') this._nukeDetonated = true;
+        };
+      }
+    },
+    onUpdate(dt) {
+      if (this._spawner) this._spawner.tick(dt);
+    },
+    onComplete() {
+      if (typeof window !== 'undefined' && window.__bonusObserve) {
+        window.__bonusObserve.onCall = null;
+        window.__bonusObserve.onMechEnter = null;
+        window.__bonusObserve.onDetonate = null;
+      }
+    },
+    isComplete() {
+      return this._mechEntered && this._nukeDetonated;
+    },
+    progress() {
+      const mechOk = this._mechEntered ? '✓ MECH' :
+                     (this._mechCalled ? 'walk to mech' : 'MECH');
+      const nukeOk = this._nukeDetonated ? '✓ NUKE' : 'NUKE';
+      return mechOk + ' · ' + nukeOk;
     },
   });
 }
