@@ -621,14 +621,14 @@ export const UI = {
           bg.setAttribute('class', 'ammo-bar-bg');
           bg.setAttribute('d', half);
           bg.setAttribute('fill', 'none');
-          bg.setAttribute('stroke-width', '5');
+          bg.setAttribute('stroke-width', '7');
           bg.setAttribute('stroke-linecap', 'round');
           arc.appendChild(bg);
           fg = document.createElementNS(SVG_NS, 'path');
           fg.setAttribute('class', 'ammo-bar-fg');
           fg.setAttribute('d', half);
           fg.setAttribute('fill', 'none');
-          fg.setAttribute('stroke-width', '5');
+          fg.setAttribute('stroke-width', '7');
           fg.setAttribute('stroke-linecap', 'round');
           arc.appendChild(fg);
         }

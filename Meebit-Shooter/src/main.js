@@ -105,6 +105,7 @@ import {
   getEffectiveWeaponStats,
   getEffectivePlayerStats,
   computeRunArmoryXP,
+  defaultArmory,
   WEAPON_BASE_CAPACITY,
   WEAPON_BASE_RELOAD,
 } from './armory.js';
@@ -2691,6 +2692,15 @@ function startTutorial() {
   S.tutorialMode = true;
   setTutorialActive(true);
 
+  // Seed ammo + magazine state for the tutorial. We deliberately apply
+  // the DEFAULT armory record (no XP-bought upgrades, no extra weapon
+  // unlocks) — the tutorial is for learning baseline gameplay, not for
+  // exercising the armory ladder. But we still need S.ammo / S.maxAmmo
+  // initialized so the reload mechanic doesn't throw on the first
+  // pistol shot. (Without this, fireWeapon hits S.ammo[id] when
+  // S.ammo is undefined.)
+  applyArmoryToRunStart(defaultArmory());
+
   // Load player identity. Tutorial only starts the player with the
   // pistol — additional weapons are granted by their respective
   // lessons so the player learns each one in context.
@@ -4603,6 +4613,7 @@ function tryReload() {
   if (S.reloading) return;
   const max = (S.maxAmmo && S.maxAmmo[id]) || 0;
   if (!max) return;
+  if (!S.ammo) return;                           // reload state not seeded yet
   if ((S.ammo[id] || 0) >= max) return;     // already full
   const dur = WEAPON_BASE_RELOAD[id] || 1.5;
   S.reloading = true;
@@ -4653,8 +4664,11 @@ function fireWeapon() {
   // If this weapon uses ammo and the mag is empty, kick off a
   // reload now and bail. Don't punish the player for holding fire
   // through an empty mag — the reload starts on the very click
-  // that runs them dry.
-  if (_isReloadable(id) && (S.ammo[id] || 0) <= 0) {
+  // that runs them dry. The S.ammo guard handles edge cases where
+  // the run started without applyArmoryToRunStart having seeded
+  // the ammo map (any path that misses the seed call would
+  // otherwise throw on the [id] access here).
+  if (_isReloadable(id) && S.ammo && (S.ammo[id] || 0) <= 0) {
     tryReload();
     return;
   }
