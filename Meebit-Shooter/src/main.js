@@ -2176,6 +2176,10 @@ function startGame() {
   // via the incoming-call accept path (or any other unusual entry).
   Audio.stopPhoneRing && Audio.stopPhoneRing();
   Audio.stopCDrone && Audio.stopCDrone();
+  // Stop the death-screen song (Beyond.mp3) if it's still looping
+  // from a previous run's SIGNAL LOST screen. Idempotent — no-op
+  // if never started, never lazy-loaded the asset, etc.
+  Audio.stopDeathMusic && Audio.stopDeathMusic();
 
   // Build the player-centered fog ring. Idempotent — safe to call on
   // replay. Restricts visibility to a uniform ~22u radius around the
@@ -2620,6 +2624,10 @@ function startGame() {
 function startTutorial() {
   Audio.stopPhoneRing && Audio.stopPhoneRing();
   Audio.stopCDrone && Audio.stopCDrone();
+  // Stop the death-screen song (Beyond.mp3) if a prior run's SIGNAL
+  // LOST loop is still playing. Symmetric with startGame — either
+  // entry point into a fresh run silences the death loop.
+  Audio.stopDeathMusic && Audio.stopDeathMusic();
 
   // Reset per-session armory-XP grant flags so a brand-new tutorial
   // run is eligible to award the full 400-XP base reward (and the
@@ -3068,6 +3076,12 @@ function gameOver() {
   S.running = false;
   S.phase = 'gameover';
   Audio.stopMusic();
+  // Play Beyond.mp3 on the SIGNAL LOST screen. Loops until the
+  // player presses REBOOT (startGame stops it) or returns to the
+  // title and runs the tutorial (startTutorial also stops it).
+  // Audio.startDeathMusic also stops the chapter playlist and the
+  // tutorial loop on entry so the death track plays alone.
+  try { Audio.startDeathMusic && Audio.startDeathMusic(); } catch (_) {}
   clearObjectiveArrows();
   Save.onGameOver({
     score: S.score, wave: S.wave, chapter: S.chapter, rescuedIds: S.rescuedIds,

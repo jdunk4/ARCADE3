@@ -341,6 +341,54 @@ class AudioEngine {
     this._fadeOutAndPause(this._tutorialMusicEl);
   }
 
+  // ---------------------------------------------------------------
+  // DEATH MUSIC — independent track that plays on the SIGNAL LOST
+  // (game-over) screen and the tutorial-respawn moment of failure.
+  // Uses Beyond.mp3, lazy-loaded on first call. Mirrors the
+  // tutorial-music pattern: dedicated HTMLAudioElement so it can
+  // run independent of the chapter playlist, and the playlist is
+  // stopped on entry so the death track plays alone. Loops while
+  // the death screen is up — the user explicitly wants the song to
+  // continue until the player either restarts or returns to title.
+  // ---------------------------------------------------------------
+  startDeathMusic() {
+    if (!this.ctx) this.init();
+    // Lazy-load on first call — same pattern as TeachingWar.mp3 above.
+    if (!this._deathMusicEl) {
+      try {
+        const el = new HTMLAudio('assets/Beyond.mp3');
+        el.preload = 'auto';
+        el.loop = true;             // loop indefinitely while the death screen is up
+        el.volume = this._effectiveMusicVolume();
+        this._deathMusicEl = el;
+      } catch (e) {
+        console.warn('[audio] Beyond.mp3 failed to load', e);
+        return;
+      }
+    }
+    // Stop other music streams so the death track plays cleanly. We
+    // explicitly stop both the chapter playlist AND the tutorial loop
+    // — death can happen during the tutorial too (the tutorial does
+    // not currently route to game-over, but we defend the case anyway
+    // so this method is safe to call from any path).
+    this.stopMusic();
+    this.stopTutorialMusic();
+    this._musicOn = true;
+    const el = this._deathMusicEl;
+    try {
+      el.currentTime = 0;
+      el.volume = 0;
+      const p = el.play();
+      if (p && p.catch) p.catch(() => {});
+    } catch (e) {}
+    this._fadeIn(el, this._effectiveMusicVolume(), 0.8);
+  }
+
+  stopDeathMusic() {
+    if (!this._deathMusicEl) return;
+    this._fadeOutAndPause(this._deathMusicEl);
+  }
+
   /** True if a music track is currently active (for callers that want to
    *  avoid restarting music mid-session). */
   isPlaying() {
