@@ -3269,6 +3269,80 @@ function grantBossReward() {
   }
 }
 
+// Silent fast-forward teardown — used by the dev cheat to chain
+// startWave() + silentlyEndCurrentWave() repeatedly so the world
+// arrives at "wave N just started" with all prior waves' residue
+// cleaned up exactly as if they'd been completed normally. Runs the
+// same wave-type-specific cleanup as endWave() but DELIBERATELY skips:
+//   - triggerNuke()                  (no celebratory FX while iterating)
+//   - intermissionActive flag toggle (we don't want to gate the next
+//                                     startWave call)
+//   - Save.onChapterComplete         (don't credit a fake completion)
+//   - ch7-finale game-over overlay   (don't end the run mid-jump)
+//   - UI toasts                      (would spam the screen)
+//   - boss kill cinematics
+// Per playtester: "When I go to wave 4 all elements from waves 1-3
+// should be clear. Same for wave 5."
+export function silentlyEndCurrentWave() {
+  S.waveActive = false;
+  const wasBonus = !!(waveDef && waveDef.type === 'bonus');
+
+  // Bonus-wave residue (rescued meebits dancing in arena, etc.)
+  if (wasBonus) {
+    try { clearBonusWave(); } catch (e) {}
+    S.bonusWaveActive = false;
+  }
+  // Capture-zone (escort objective marker) cleanup.
+  if (S.objectiveZone) {
+    try { removeCaptureZone(S.objectiveZone); } catch (e) {}
+    S.objectiveZone = null;
+  }
+  // MINING — wave 1. Clears falling blocks, loose ores, deactivates
+  // the depot, and swaps the player off the pickaxe if equipped. The
+  // depot mesh itself stays (chapter-scoped dormant prop); just goes
+  // inert. This is what makes "jump to wave 2" not have eggs/blocks
+  // raining from the sky.
+  if (S.miningActive) {
+    S.miningActive = false;
+    try { clearAllBlocks(); } catch (e) {}
+    try { clearAllOres(); } catch (e) {}
+    try { setDepotActive(false); } catch (e) {}
+    if (S.currentWeapon === 'pickaxe') {
+      S.currentWeapon = S.previousCombatWeapon || 'pistol';
+      try { UI.updateWeaponSlots(); } catch (e) {}
+    }
+  }
+  // HIVE / SPAWNER — wave 3. The hive meshes themselves are chapter
+  // dormant props and persist; we just clear the "wave is active"
+  // flags so they stop counting toward objective.
+  if (S.spawnerWaveActive) {
+    S.spawnerWaveActive = false;
+    S.hiveWaveActive = false;
+    S.spawnersLive = 0;
+  }
+  // POWER-UP — wave 2 (chapters 3, 6, 7). Clears the 5 zones, turret
+  // bullets in flight, and the per-wave power-up state.
+  if (S.powerupActive) {
+    S.powerupActive = false;
+    try { endPowerupWave(); } catch (e) {}
+    try { clearPowerupZones(); } catch (e) {}
+    try { clearTurretBullets(); } catch (e) {}
+  }
+  // Boss cubes (charge cubes from boss waves) and corner markers
+  // (legacy escort flow) — defensive clear.
+  try { clearBossCubes(); } catch (e) {}
+  try { clearCornerMarkers(scene); } catch (e) {}
+  // Rescue meebit (some waves spawn a rescuable NPC) — if still in
+  // play, remove without crediting a save.
+  if (S.rescueMeebit) {
+    if (!S.rescueMeebit.freed && !S.rescueMeebit.killed) {
+      try { removeRescueMeebit(S.rescueMeebit); } catch (e) {}
+    }
+    S.rescueMeebit = null;
+  }
+  try { UI.hideObjective(); } catch (e) {}
+}
+
 function endWave() {
   if (intermissionActive) return;
   intermissionActive = true;

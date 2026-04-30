@@ -79,7 +79,7 @@ import {
   gooSplats, spawnGooSplat, updateGooSplats, clearGooSplats,
   bossCubes, clearBossCubes,
 } from './effects.js';
-import { startWave, updateWaves, onEnemyKilled, resetWaves, isInCaptureZone, onBlockMined, getWaveDef_current, prewarmBossCinematic, isBossCinematicActive } from './waves.js';
+import { startWave, updateWaves, onEnemyKilled, resetWaves, isInCaptureZone, onBlockMined, getWaveDef_current, prewarmBossCinematic, isBossCinematicActive, silentlyEndCurrentWave } from './waves.js';
 import {
   damageHerdAt, updateSavedPigs, prepareAllPools,
   getHealingProjectiles, consumeHealingProjectile,
@@ -7233,36 +7233,60 @@ animate();
   const TOTAL_CHAPTERS = 7;
 
   // ----- Core jump function -----
-  // Cleans up live entities, calls startWave(N) (which runs
-  // updateChapterFromWave + applyTheme + prepareChapter), and surfaces
-  // a toast so the dev sees confirmation. Wrapped in try/catch around
-  // each cleanup step because some are no-ops in tutorial mode.
+  // Chains through every wave from the player's current position to
+  // the target — calling startWave then silentlyEndCurrentWave for
+  // each — so the target wave begins with all prior-wave residue
+  // cleaned up exactly as if those waves had been played to
+  // completion. Per playtester: "in wave 1 we destroy blocks and
+  // collect ores - at the end of wave 1 the eggs no longer appear
+  // and the crusher disappears. so loading into wave 2 wouldn't have
+  // that. When I go to wave 4 all elements from waves 1-3 should be
+  // clear. Same for wave 5."
+  //
+  // We also clean live entities (enemies, projectiles, pickups,
+  // mines, turrets) up front so the new wave spawns into an empty
+  // arena. Score / kills / XP are preserved — devs want to keep
+  // their run when teleporting around for testing.
   function _devJumpToWaveNum(waveNum) {
     waveNum = Math.max(1, Math.min(TOTAL_CHAPTERS * WAVES_PER_CH, Math.floor(waveNum)));
     if (!S.running) {
-      // The cheat is mid-run only — without a live game session,
-      // startWave() doesn't do anything useful (no spawners, no theme).
-      // Surface a hint instead of silently failing.
       if (UI && UI.toast) UI.toast('DEV: START A RUN FIRST', '#ff5520', 1500);
       return;
     }
     // Wipe live entities so the new chapter spawns into a clean arena.
-    // We DON'T reset score/kills/XP — devs want to keep run progress
-    // when teleporting around for testing.
     try { clearAllEnemies(); } catch (e) {}
     try { clearAllPickups(); } catch (e) {}
     try { clearAllMines(); } catch (e) {}
     try { clearStratagemTurrets(); } catch (e) {}
-    // Clear in-flight enemy projectiles + bullets if those arrays
-    // exist on the module scope. Defensive — silently skip if not.
     try { if (Array.isArray(enemyProjectiles)) enemyProjectiles.length = 0; } catch (e) {}
-    // Now jump. startWave() resets wave kill targets, applies theme,
-    // preps chapter dormant props, etc. Same path the normal "wave
-    // complete → next wave" flow takes.
+
+    // Walk the player through waves 1..(waveNum-1) silently, calling
+    // startWave then silentlyEndCurrentWave for each. silentlyEndCurrentWave
+    // runs the SAME wave-specific teardown that endWave runs (clears
+    // blocks/ores for mining, clears zones for powerup, clears hive
+    // wave flags, etc.) but skips FX, intermission gating, save calls,
+    // and the chapter-7 finale handoff — all of which would either
+    // disrupt the iteration or spam the player with toasts.
+    //
+    // Performance: each iteration is microseconds (we're just
+    // setting/clearing flags). At worst-case waveNum=35 this loop
+    // runs 34 times — under 1ms total.
     try {
+      for (let w = 1; w < waveNum; w++) {
+        startWave(w);
+        silentlyEndCurrentWave();
+        // Belt-and-suspenders: re-clear any stragglers that the
+        // iteration spawned (e.g. mining wave's startWave triggers
+        // ore drops that we don't want piling up across iterations).
+        try { clearAllEnemies(); } catch (e) {}
+        try { clearAllPickups(); } catch (e) {}
+      }
+      // Land on the target wave. This call does the full setup
+      // (theme, dormant props, hazard hooks, hud) just like a normal
+      // "wave N starts" flow.
       startWave(waveNum);
     } catch (e) {
-      console.warn('[dev-cheat] startWave failed', e);
+      console.warn('[dev-cheat] startWave chain failed', e);
       if (UI && UI.toast) UI.toast('DEV: JUMP FAILED · ' + e.message, '#ff2020', 2200);
       return;
     }
@@ -7272,7 +7296,7 @@ animate();
     if (UI && UI.toast) {
       UI.toast(`DEV: JUMP → CH ${chap} (${chName}) · WAVE ${lw}`, '#00ff66', 1800);
     }
-    console.log(`[dev-cheat] jumped to wave ${waveNum} (chapter ${chap}, local wave ${lw})`);
+    console.log(`[dev-cheat] jumped to wave ${waveNum} (chapter ${chap}, local wave ${lw}) — fast-forwarded through ${waveNum - 1} prior waves`);
   }
 
   // Public power-user globals for devtools console use.
