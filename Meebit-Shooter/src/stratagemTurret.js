@@ -60,11 +60,27 @@ const TURRET_AIM_LERP         = 8.0;      // higher = snappier
 const TURRET_ACQ_INTERVAL     = 0.25;     // re-acquire target this often
 
 // Per-variant config drives geometry + fire behavior.
+//
+// AMMO MODEL (per playtester request: "add ammo capacity to turrets /
+// mech - once used the turrets and mechs disappear instead of
+// despawning after a timer"):
+//   Each variant has an ammoMax. Each successful fire decrements ammo
+//   by 1. When ammo reaches 0 the turret self-destructs. The values
+//   are tuned so the turret does meaningful work but is decisively
+//   FINITE — players plan around its limit rather than treating it as
+//   permanent infrastructure.
+//
+//   Sample uptime estimates at the listed fireInterval values:
+//     mg       - 100 shots × 0.10s = ~10s of sustained fire
+//     tesla    -  35 shots × 0.55s = ~19s (chain hits multiple per shot)
+//     flame    - 200 ticks × 0.04s = ~8s (DPS stream, ticks fast)
+//     antitank -  12 shots × 1.30s = ~16s (heavy single-shots)
 const _VARIANT_CONFIG = {
   mg: {
     label: 'MG',
     range: 22,
     fireInterval: 0.10,                   // rapid
+    ammoMax: 100,
     barrelGeo: new THREE.CylinderGeometry(0.10, 0.10, 1.40, 10),
     barrelOffset: 0.70,
     bodyHex: 0x4a4d54,
@@ -76,6 +92,7 @@ const _VARIANT_CONFIG = {
     label: 'TESLA',
     range: 14,
     fireInterval: 0.55,
+    ammoMax: 35,
     barrelGeo: new THREE.CylinderGeometry(0.18, 0.30, 1.10, 10),
     barrelOffset: 0.55,
     bodyHex: 0x2c2c44,
@@ -87,6 +104,7 @@ const _VARIANT_CONFIG = {
     label: 'FLAME',
     range: 8,
     fireInterval: 0.04,                   // continuous stream
+    ammoMax: 200,
     barrelGeo: new THREE.ConeGeometry(0.32, 0.55, 12),
     barrelOffset: 0.45,
     bodyHex: 0x3a1f12,
@@ -98,6 +116,7 @@ const _VARIANT_CONFIG = {
     label: 'AT',
     range: 28,
     fireInterval: 1.30,                   // slow heavy
+    ammoMax: 12,
     barrelGeo: new THREE.CylinderGeometry(0.18, 0.22, 1.70, 10),
     barrelOffset: 0.85,
     bodyHex: 0x4a4d54,
@@ -379,6 +398,13 @@ export function spawnTurret(pos, tint, variantId) {
     hpMax: TURRET_HP_MAX,
     life: 0,
     lifetime: TURRET_LIFETIME_SEC,
+    // Ammo capacity — drains by 1 per fire. When zero, the turret
+    // self-destroys (replaces the old lifetime-based despawn). The
+    // lifetime field above is now an upper-bound safety only — kept
+    // so any external code still referencing it doesn't break, but
+    // the active despawn condition is ammo === 0.
+    ammo: cfg.ammoMax,
+    ammoMax: cfg.ammoMax,
     dropping: true,
     dropT: 0,
     destroyed: false,
@@ -432,9 +458,20 @@ export function updateTurrets(dt) {
       continue;
     }
 
-    // Self-decommission.
+    // Self-decommission. We still tick t.life so any external code
+    // that reads it for FX timing keeps working, but the natural
+    // despawn condition is now AMMO REACHING ZERO. The original
+    // lifetime check was switched off per playtester request: turrets
+    // should disappear from running out of ammo, not from a clock.
+    // (We still keep a hard upper-bound on lifetime as a runaway
+    // safety so a turret that somehow can't find any targets ever
+    // doesn't sit on the field forever — at 3× the original value.)
     t.life += dt;
-    if (t.life >= t.lifetime) {
+    if (t.life >= t.lifetime * 3) {
+      _destroyTurret(t);
+      continue;
+    }
+    if (t.ammo <= 0) {
       _destroyTurret(t);
       continue;
     }
@@ -471,10 +508,12 @@ export function updateTurrets(dt) {
       t.head.rotation.y = t.aimYaw;
     }
 
-    // Fire.
+    // Fire — decrements ammo on each successful shot. Tesla's chain
+    // counts as one shot regardless of how many enemies it hits.
     t.fireT -= dt;
-    if (t.target && t.fireT <= 0) {
+    if (t.target && t.fireT <= 0 && t.ammo > 0) {
       t.fireT = t.cfg.fireInterval;
+      t.ammo -= 1;
       try { t.cfg.fire(t, t.target); }
       catch (e) { console.warn('[turret fire]', e); }
     }

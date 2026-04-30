@@ -117,10 +117,40 @@ let _menuOpen = false;
 let _enteredCode = [];        // arrows pressed since menu opened
 let _matchedStratagem = null; // non-null when current input matches a code
 
+// =====================================================================
+// COOLDOWN — global, applies across all stratagems
+// =====================================================================
+// After a successful call-in, the player must wait COOLDOWN_SEC
+// before another stratagem can be entered. Per playtester request:
+// "After calling a stratagem we should have a cooldown. 30 seconds."
+//
+// Cooldown gates beginStratagemInput() — the menu can't even OPEN
+// during cooldown — and gives clear feedback through the existing
+// no-artifact toast hook (we wrap it with a "cooling down" message).
+//
+// updateStratagems(dt) decrements _cooldownT every frame. HUD reads
+// stratagemCooldownRemaining() so the player sees a countdown.
+const COOLDOWN_SEC = 30;
+let _cooldownT = 0;            // seconds remaining; 0 = ready
+
 export function isStratagemMenuOpen() { return _menuOpen; }
+
+/** Seconds remaining on the global stratagem cooldown. 0 when ready. */
+export function stratagemCooldownRemaining() {
+  return Math.max(0, _cooldownT);
+}
 
 export function beginStratagemInput() {
   if (_menuOpen) return;
+  // Hard gate on cooldown — the menu shouldn't even open if the
+  // player just fired a stratagem. Surface a "cooling down" toast
+  // through the existing no-artifact hook so they get the same UX.
+  if (_cooldownT > 0) {
+    if (typeof window !== 'undefined' && window.__stratagemCoolingDown) {
+      window.__stratagemCoolingDown(Math.ceil(_cooldownT));
+    }
+    return;
+  }
   _menuOpen = true;
   _enteredCode = [];
   _matchedStratagem = null;
@@ -222,6 +252,11 @@ function _attemptCallIn(stratagem) {
   arts[stratagem.id] = count - 1;
   const target = _resolveCursorGround();
   if (!target) return;
+  // Start the global cooldown — this stratagem (and ALL others) are
+  // locked out for COOLDOWN_SEC. updateStratagems ticks _cooldownT
+  // back down. We set it AFTER the artifact spend + ground resolve so
+  // a missed cursor (no ground hit) doesn't burn the cooldown.
+  _cooldownT = COOLDOWN_SEC;
   // Tint comes from the chapter's lamp color so beacons match the
   // chapter palette. Fallback to red if no chapter context yet.
   const tint = (typeof window !== 'undefined' && window.__stratagemTint) || 0xff5520;
@@ -299,6 +334,12 @@ function _firePayloadTurret(pos, tint) {
 // Called from main.js animate loop. Cascades to beacon and mech ticks
 // so the host code only has one entry point.
 export function updateStratagems(dt) {
+  // Tick the global call-in cooldown. Clamped to 0 so callers can
+  // safely test `stratagemCooldownRemaining() > 0` without worrying
+  // about negative values when no cooldown is active.
+  if (_cooldownT > 0) {
+    _cooldownT = Math.max(0, _cooldownT - dt);
+  }
   updateStratagemBeacons(dt);
   updateMechs(dt);
 }
@@ -310,7 +351,9 @@ export function updateStratagems(dt) {
 // menu state. main.js owns rendering; we just produce content.
 export function stratagemHudHtml() {
   if (!_menuOpen) {
-    // Closed — show artifact counts as a small status strip.
+    // Closed — show artifact counts as a small status strip. If the
+    // global cooldown is active, prepend a "COOLING DOWN · Ns" tag so
+    // the player sees the gating clearly.
     const arts = S.stratagemArtifacts || {};
     const parts = [];
     for (const s of _STRATAGEMS) {
@@ -319,8 +362,16 @@ export function stratagemHudHtml() {
         parts.push(`<span style="color:#ffd93d;">${s.icon}×${n}</span>`);
       }
     }
-    if (!parts.length) return '';
-    return `<div style="font-size:11px;letter-spacing:2px;color:#888;">STRATAGEMS · ${parts.join(' · ')}</div>`;
+    if (!parts.length && _cooldownT <= 0) return '';
+    let cooldownTag = '';
+    if (_cooldownT > 0) {
+      const secs = Math.ceil(_cooldownT);
+      cooldownTag = `<span style="color:#ff5520;">COOLDOWN ${secs}s</span> · `;
+    }
+    if (!parts.length) {
+      return `<div style="font-size:11px;letter-spacing:2px;color:#888;">${cooldownTag.replace(/ · $/, '')}</div>`;
+    }
+    return `<div style="font-size:11px;letter-spacing:2px;color:#888;">${cooldownTag}STRATAGEMS · ${parts.join(' · ')}</div>`;
   }
   // Open menu — show entered code + matched stratagem (if any).
   const ARROW = { up: '↑', down: '↓', left: '←', right: '→' };
@@ -395,6 +446,7 @@ export function resetStratagems() {
   _menuOpen = false;
   _enteredCode = [];
   _matchedStratagem = null;
+  _cooldownT = 0;            // clear cooldown so a fresh run starts ready
   clearStratagemBeacons();
   clearMechs();
 }

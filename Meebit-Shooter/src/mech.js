@@ -61,6 +61,34 @@ const MECH_MG_INTERVAL   = 0.08;       // seconds between MG pulses
 const MECH_MG_DAMAGE     = 22;
 const MECH_MG_RANGE      = 28.0;
 const MECH_ENTER_RANGE   = 2.8;        // walk this close to enter
+
+// AMMO CAPACITY (per playtester request: "add ammo capacity to turrets
+// / mech - once used the turrets and mechs disappear instead of
+// despawning after a timer or taking damage").
+//
+// Each mech variant has its own ammo pool. Every fire of the primary
+// or secondary weapon decrements ammo by 1. When ammo hits 0 the mech
+// auto-destroys (same death path as taking too much damage), which
+// re-shows the player avatar and applies the eject splash. HP-based
+// destruction still works as a backup for "the mech got swarmed and
+// died early," but in normal play players will hit the ammo wall
+// before they hit the HP wall.
+//
+// Counts are tuned so a piloted mech does meaningful work but is
+// FINITE. Approximate uptime under sustained primary fire:
+//   minigun  - 200 MG pulses   × 0.08s = ~16s
+//   rocket   -  35 rockets     × 0.18s = ~6s burst, ~10s with breaks
+//   flame    - 250 flame ticks × 0.04s = ~10s
+//
+// Secondary fire (rocket salvos for minigun, big salvos for rocket,
+// napalm grenades for flame) ALSO decrements from this pool, so a
+// player who burns secondary fire trades primary uptime for it. This
+// mirrors how Helldivers exo-suits work.
+const MECH_AMMO_BY_VARIANT = {
+  minigun: 200,
+  rocket:   35,
+  flame:   250,
+};
 const MECH_PILOT_RADIUS  = 1.8;        // collision radius while piloting
 const MECH_RISE_DEPTH    = 7.0;        // mechs start buried this deep (sized for tall MAV-ULB silhouette)
 const MECH_RISE_DURATION = 1.20;       // seconds of rise animation
@@ -509,6 +537,13 @@ export function spawnMech(pos, tint, variantId) {
     tint, tintColor,
     variant: variant.id,
     hp: MECH_HP_MAX, hpMax: MECH_HP_MAX,
+    // Ammo — drained by every primary or secondary fire. When 0 the
+    // mech auto-destroys via _destroyMech, which ejects the pilot
+    // and re-shows the player avatar. Per-variant pool selected from
+    // MECH_AMMO_BY_VARIANT; flame and minigun get larger pools to
+    // match their shorter per-shot cost.
+    ammo: MECH_AMMO_BY_VARIANT[variant.id] || 100,
+    ammoMax: MECH_AMMO_BY_VARIANT[variant.id] || 100,
     pos: new THREE.Vector3(pos.x, 0, pos.z),
     facing: 0,
     // Aim target — set by tickPilotedMech every frame from the cursor
@@ -794,17 +829,29 @@ export function updateMechs(dt) {
           1.5,
           m.pos.z + Math.cos(ang) * 50,
         );
-        _fireMechRocket(m, m.rocketTargetWorld);
+        if (_consumeMechAmmo(m)) {
+          _fireMechRocket(m, m.rocketTargetWorld);
+        } else {
+          // Out of ammo — abort the rest of the salvo. _destroyMech
+          // already fired from the helper.
+          m.rocketSalvoLeft = 0;
+        }
         m.rocketSalvoLeft -= 1;
         m.rocketSalvoTimer = MECH_ROCKET_INTERVAL;
       }
     }
 
     // MG continuous fire — fires while flag is on (piloted ticks set it).
+    // Each pulse consumes one ammo; running dry triggers _destroyMech
+    // via the helper. The interval reset still happens so a brief
+    // out-of-ammo window doesn't dump a frame-buffer of pulses on
+    // refill (there's no refill, but defensive).
     if (m.mgFiring) {
       m.mgTimer -= dt;
       if (m.mgTimer <= 0) {
-        _fireMechMG(m);
+        if (_consumeMechAmmo(m)) {
+          _fireMechMG(m);
+        }
         m.mgTimer = MECH_MG_INTERVAL;
       }
       // Spin minigun barrels visibly while firing.
@@ -1056,6 +1103,9 @@ function _requestRocketSingle(m, dt) {
   m.singleRocketTimer = (m.singleRocketTimer || 0) - dt;
   if (m.singleRocketTimer > 0) return;
   m.singleRocketTimer = _ROCKET_SINGLE_INTERVAL;
+  // Each single rocket consumes one ammo. If the helper says we're
+  // out, _destroyMech has already been called and we skip the shot.
+  if (!_consumeMechAmmo(m)) return;
   // Aim point.
   const ang = m.facing;
   const target = new THREE.Vector3(
@@ -1078,6 +1128,9 @@ const _NAPALM_GEO = new THREE.SphereGeometry(0.30, 12, 8);
 const _NAPALM_COOLDOWN_DUR = 0.70;
 function _fireNapalm(m) {
   if (m.napalmCooldown > 0) return;
+  // Napalm consumes one ammo. Most ammo-expensive choice in the
+  // flame variant since it's a heavy AoE+DoT combo.
+  if (!_consumeMechAmmo(m)) return;
   m.napalmCooldown = _NAPALM_COOLDOWN_DUR;
   const muzzleWorld = new THREE.Vector3();
   m.rocketMuzzle.getWorldPosition(muzzleWorld);
@@ -1610,35 +1663,55 @@ const FLAME_PARTICLE_RATE = 80;
 const FLAME_PARTICLE_TTL  = 0.35;
 function _tickMechFlame(m, dt) {
   if (m.flameFiring) {
-    const ang = m.facing;
-    const dirX = Math.sin(ang), dirZ = Math.cos(ang);
-    for (let i = 0; i < enemies.length; i++) {
-      const e = enemies[i];
-      if (!e || !e.pos || e.dying) continue;
-      const ex = e.pos.x - m.pos.x;
-      const ez = e.pos.z - m.pos.z;
-      const along = ex * dirX + ez * dirZ;
-      if (along < 0 || along > FLAME_RANGE) continue;
-      const perp = Math.sqrt(Math.max(0, (ex * ex + ez * ez) - along * along));
-      if (perp / Math.max(0.5, along) > FLAME_CONE_HALF) continue;
-      const falloff = 1 - 0.7 * (along / FLAME_RANGE);
-      e.hp -= FLAME_DPS * falloff * dt;
-      e.hitFlash = 0.10;
-    }
-    m.flameLastFireT = (m.flameLastFireT || 0) + dt;
-    const interval = 1 / FLAME_PARTICLE_RATE;
-    let spawned = 0;
-    while (m.flameLastFireT >= interval) {
-      m.flameLastFireT -= interval;
-      _spawnFlameParticle(m);
-      spawned++;
-    }
-    // One audio puff per ~6 spawned particles so the hiss layers
-    // softly without stacking into a wall of noise.
-    m.flameAudioCounter = (m.flameAudioCounter || 0) + spawned;
-    if (m.flameAudioCounter >= 6) {
+    // Out-of-ammo guard — if the mech ran dry mid-stream we stop
+    // emitting flame. The auto-destroy from _consumeMechAmmo below
+    // handles the death path.
+    if (m.ammo <= 0) {
+      m.flameLastFireT = 0;
       m.flameAudioCounter = 0;
-      try { Audio.mechFlame(); } catch (_) {}
+      // Fall through to particle tick so existing flame motes still
+      // animate out.
+    } else {
+      const ang = m.facing;
+      const dirX = Math.sin(ang), dirZ = Math.cos(ang);
+      // Backwards iteration so killEnemy splices don't shift indices.
+      for (let i = enemies.length - 1; i >= 0; i--) {
+        const e = enemies[i];
+        if (!e || !e.pos || e.dying) continue;
+        const ex = e.pos.x - m.pos.x;
+        const ez = e.pos.z - m.pos.z;
+        const along = ex * dirX + ez * dirZ;
+        if (along < 0 || along > FLAME_RANGE) continue;
+        const perp = Math.sqrt(Math.max(0, (ex * ex + ez * ez) - along * along));
+        if (perp / Math.max(0.5, along) > FLAME_CONE_HALF) continue;
+        const falloff = 1 - 0.7 * (along / FLAME_RANGE);
+        e.hp -= FLAME_DPS * falloff * dt;
+        e.hitFlash = 0.10;
+        // Finish the kill — without this enemies sat at -hp instead
+        // of dying. Same bug the rest of the stratagem damage paths
+        // had; fixed here for parity.
+        if (e.hp <= 0 && typeof window !== 'undefined' && window.__killEnemyAtIdx) {
+          try { window.__killEnemyAtIdx(e); } catch (_) {}
+        }
+      }
+      m.flameLastFireT = (m.flameLastFireT || 0) + dt;
+      const interval = 1 / FLAME_PARTICLE_RATE;
+      let spawned = 0;
+      while (m.flameLastFireT >= interval) {
+        m.flameLastFireT -= interval;
+        // Consume ammo per particle. If we run out mid-burst the
+        // helper auto-destroys the mech and we stop spawning.
+        if (!_consumeMechAmmo(m)) break;
+        _spawnFlameParticle(m);
+        spawned++;
+      }
+      // One audio puff per ~6 spawned particles so the hiss layers
+      // softly without stacking into a wall of noise.
+      m.flameAudioCounter = (m.flameAudioCounter || 0) + spawned;
+      if (m.flameAudioCounter >= 6) {
+        m.flameAudioCounter = 0;
+        try { Audio.mechFlame(); } catch (_) {}
+      }
     }
   } else {
     m.flameLastFireT = 0;
@@ -1695,6 +1768,37 @@ function _spawnFlameParticle(m) {
 }
 
 // =====================================================================
+// AMMO
+// =====================================================================
+// Single helper called from every fire entry point. Returns true if
+// the mech still has ammo to fire (and decrements it); returns false
+// if empty. When the decrement brings ammo to 0 the mech auto-
+// destroys via _destroyMech — which ejects the pilot, re-shows the
+// player avatar, plays the explosion FX, and applies the splash.
+// Same death path as taking too much HP damage so the player gets a
+// consistent "your tool is gone" cue regardless of cause.
+function _consumeMechAmmo(m) {
+  if (!m || m.destroyed) return false;
+  if (m.ammo <= 0) {
+    // Defensive — should already have been caught the previous shot,
+    // but if anything ever fires while empty (e.g. queued salvo
+    // ticks), still bail cleanly.
+    _destroyMech(m);
+    return false;
+  }
+  m.ammo -= 1;
+  if (m.ammo <= 0) {
+    // Mark for destruction this frame. Don't return false yet — the
+    // current shot is still allowed (we already decremented for it),
+    // so the player feels their LAST shot connect rather than just
+    // "gun stops working." _destroyMech is idempotent via the
+    // m.destroyed guard above.
+    _destroyMech(m);
+  }
+  return true;
+}
+
+// =====================================================================
 // DAMAGE
 // =====================================================================
 export function damagePilotedMech(dmg) {
@@ -1711,6 +1815,14 @@ function _destroyMech(m) {
   // Eject pilot.
   if (_pilotedMech === m) {
     _pilotedMech = null;
+    // CRITICAL — clear S.pilotingMech so player.js's per-frame
+    // visibility tick stops forcing the avatar to invisible. Without
+    // this, when the mech gets destroyed the player remains hidden
+    // forever (a playtester report). The visibility logic in player.js
+    // is: "if S.pilotingMech then hidden, else respect invuln flicker
+    // / fully visible". So flipping the flag here is what brings the
+    // avatar back.
+    S.pilotingMech = false;
     // Surface the eject so main.js can re-show the player mesh and
     // restore player.pos to mech.pos.
     if (typeof window !== 'undefined' && window.__mechEjected) {

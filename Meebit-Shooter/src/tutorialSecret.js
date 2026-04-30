@@ -61,12 +61,34 @@ export function armSecretListener(onUnlock) {
   window.addEventListener('keydown', _keyHandler, true);
 
   // Inject the on-screen matrix-green d-pad inside the tutorial
-  // complete modal. On desktop it's a redundant-but-friendly affordance
-  // (some players don't realize they can type a code); on mobile it's
-  // the ONLY way to enter the code since phones have no arrow keys.
-  _ensureDpadInModal();
+  // complete modal — but ONLY on mobile. On desktop the player has
+  // arrow keys and the d-pad just clutters the screen. The mobile
+  // check uses the same media-query trigger as the rest of the
+  // project (see styles.css line ~1021): touch device, narrow
+  // viewport, no-hover, or short viewport. matchMedia is the right
+  // primitive here — it's a runtime check, so a desktop user who
+  // resizes their browser to a phone-shape window would correctly
+  // get the d-pad too.
+  if (_isMobileDevice()) {
+    _ensureDpadInModal();
+  }
 
   _showHint('try anything');
+}
+
+// Same trigger conditions the project uses elsewhere for "this is a
+// mobile or mobile-ish surface, show touch UI". Returns true if any
+// of the conditions match. Single source of truth here so the modal +
+// any other touch-only inject can share it.
+function _isMobileDevice() {
+  if (typeof window === 'undefined' || !window.matchMedia) return false;
+  return (
+    window.matchMedia('(pointer: coarse)').matches ||
+    window.matchMedia('(any-pointer: coarse)').matches ||
+    window.matchMedia('(hover: none)').matches ||
+    window.matchMedia('(max-width: 1024px)').matches ||
+    window.matchMedia('(max-height: 600px)').matches
+  );
 }
 
 export function disarmSecretListener() {

@@ -122,6 +122,7 @@ import {
   tickPilotedMech, damagePilotedMech, updateMechPrompts, clearMechs,
 } from './mech.js';
 import { deployMineField, updateMines, clearAllMines } from './mineField.js';
+import { spawnMushroomCloud } from './mushroomCloud.js';
 import {
   spawnTurret, updateTurrets as updateStratagemTurrets,
   clearStratagemTurrets,
@@ -337,6 +338,55 @@ window.__stratagemFireNuke = function(pos, tint) {
   setTimeout(() => hitBurst(epi, 0xff5520, 50), 140);
   setTimeout(() => hitBurst(epi, 0xff3cac, 40), 240);
   setTimeout(() => hitBurst(epi, 0xffffff, 30), 360);
+
+  // ---- 4 mushroom clouds clustered at the detonation site ----
+  // Per playtester request: "can we add 4 of the ufo Mushroom clouds
+  // all together at the place of detonation." Reuses the existing
+  // mushroomCloud module (already wired into spawners.js's update
+  // tick via updateMushroomClouds). Four offsets in a tight diamond
+  // around the epicenter give the visual mass of a thermonuclear
+  // detonation without overlapping into a single mega-cloud. Each
+  // cloud picks up the chapter tint so the cluster reads as one
+  // synchronized event.
+  {
+    const offs = [
+      [ -3.0,  0.0],
+      [  3.0,  0.0],
+      [  0.0, -3.0],
+      [  0.0,  3.0],
+    ];
+    for (const [dx, dz] of offs) {
+      try {
+        spawnMushroomCloud(
+          new THREE.Vector3(pos.x + dx, 0, pos.z + dz),
+          tint || 0xffaa00,
+        );
+      } catch (e) { console.warn('[nuke cloud]', e); }
+    }
+  }
+
+  // ---- Roach kill zone ----
+  // Per playtester request: "destroy any roaches that spawn from
+  // enemies shortly after." Roaches spawn from infector kills + boss
+  // patterns (see infector.js — they're enemies with type='roach').
+  // The instant nuke damage above kills enemies present AT detonation,
+  // but roaches spawning a fraction of a second later (e.g. from an
+  // infector that died this exact tick) wouldn't be in the array yet.
+  // The linger zone fixes this: for LINGER_DUR seconds we keep
+  // applying very high DPS in a generous radius around the beacon, so
+  // anything that spawns into the area dies immediately. Tracked as a
+  // module-level array; ticked from the existing animate loop below.
+  const LINGER_DUR    = 5.0;       // seconds
+  const LINGER_RADIUS = 30;        // generous so spawns at the rim still get cleansed
+  const LINGER_DPS    = 2000;      // high enough to one-shot any roach (~50hp)
+  _nukeLingerZones.push({
+    pos: pos.clone(),
+    radius: LINGER_RADIUS,
+    ttl: LINGER_DUR,
+    age: 0,
+    dps: LINGER_DPS,
+  });
+
   // Heavy camera shake.
   shake(3.0, 1.4);
   // Audio — thunderous low-end blast layered with rolling boom.
@@ -346,6 +396,37 @@ window.__stratagemFireNuke = function(pos, tint) {
     try { window.__bonusObserve.onDetonate('thermonuclear'); } catch (_) {}
   }
 };
+
+// Active nuke linger zones — one entry per detonation, stays for
+// LINGER_DUR seconds after spawn. _tickNukeLingerZones() below is
+// called once per frame from the main animate loop. Keeping this at
+// module scope means it survives across nuke calls and is naturally
+// drained by the per-frame tick.
+const _nukeLingerZones = [];
+function _tickNukeLingerZones(dt) {
+  for (let i = _nukeLingerZones.length - 1; i >= 0; i--) {
+    const z = _nukeLingerZones[i];
+    z.age += dt;
+    if (z.age >= z.ttl) {
+      _nukeLingerZones.splice(i, 1);
+      continue;
+    }
+    // Backwards-iterate enemies — killEnemy splices the array, so a
+    // forward loop would skip an enemy each kill. Same pattern used
+    // throughout the stratagem damage paths.
+    const r2 = z.radius * z.radius;
+    for (let j = enemies.length - 1; j >= 0; j--) {
+      const e = enemies[j];
+      if (!e || !e.pos || e.dying) continue;
+      const dx = e.pos.x - z.pos.x;
+      const dz = e.pos.z - z.pos.z;
+      if (dx * dx + dz * dz < r2) {
+        e.hp -= z.dps * dt;
+        if (e.hp <= 0) killEnemy(j);
+      }
+    }
+  }
+}
 
 // Mine field payload — delegate to mineField.js. The kind argument
 // chooses between 'explosion' / 'fire' / 'poison'; the catalog has
@@ -366,11 +447,30 @@ window.__stratagemNoArtifact = function(stratagem) {
   if (UI && UI.toast) UI.toast('NO ' + stratagem.label + ' ARTIFACT', '#ff5520', 1800);
 };
 
+// Cooldown feedback toast — fired by stratagems.js when the player
+// tries to open the menu while the global call-in cooldown is ticking.
+// Per playtester request the cooldown is 30s; the seconds-remaining
+// reading lets the player time their next call rather than mashing
+// the button. Wrapped in try/catch on the stratagems side so a missing
+// hook degrades to silence rather than throwing.
+window.__stratagemCoolingDown = function(secsRemaining) {
+  if (UI && UI.toast) {
+    UI.toast('STRATAGEMS COOLING DOWN · ' + secsRemaining + 's', '#ff5520', 1400);
+  }
+};
+
 // Mech ejection — when the mech is destroyed, restore the player
 // avatar at the mech's last position. Called by mech.js _destroyMech.
 window.__mechEjected = function(mechPos) {
   player.pos.x = mechPos.x;
   player.pos.z = mechPos.z;
+  // Defense in depth — _destroyMech in mech.js already clears
+  // S.pilotingMech, but we re-clear here in case any other code path
+  // ever ejects the player without going through _destroyMech (e.g.
+  // a future "manual eject + delete mech" feature). player.js's
+  // visibility tick reads this flag every frame, so leaving it true
+  // would re-hide the avatar even though we just set visible=true.
+  S.pilotingMech = false;
   if (player.obj) player.obj.visible = true;
   if (UI && UI.toast) UI.toast('EJECTED', '#ff5520', 1500);
 };
@@ -3869,6 +3969,11 @@ function animate() {
     }
     updateStratagems(dt);
     updateMines(dt);
+    // Nuke linger zones — high-DPS bubbles left over after each
+    // thermonuclear call. Tick after updateStratagems so any beacon
+    // detonation that happens THIS frame has already pushed its zone
+    // before we drain. See _tickNukeLingerZones above the nuke handler.
+    _tickNukeLingerZones(dt);
     // Stratagem turrets — separate from the existing turrets.js
     // module (which handles enemy compound turrets in waveProps).
     // Aliased on import as updateStratagemTurrets to avoid the
@@ -6801,6 +6906,23 @@ animate();
   // Only run in a browser context; some build tools import main.js for
   // static analysis without a real DOM.
   if (typeof document === 'undefined') return;
+
+  // Mobile-only feature. The CSS .mobile-only class already hides the
+  // button on desktop via the existing media query, but per playtester
+  // request we belt-and-suspenders the gate with a JS matchMedia check
+  // — same conditions the rest of the project uses for "this is a
+  // touch surface." If we're on a desktop with a normal viewport,
+  // bail BEFORE building DOM nodes so nothing is even available to
+  // accidentally show.
+  const _isMobile = (
+    window.matchMedia &&
+    (window.matchMedia('(pointer: coarse)').matches ||
+     window.matchMedia('(any-pointer: coarse)').matches ||
+     window.matchMedia('(hover: none)').matches ||
+     window.matchMedia('(max-width: 1024px)').matches ||
+     window.matchMedia('(max-height: 600px)').matches)
+  );
+  if (!_isMobile) return;
 
   // ---- Build the call button (always present in DOM; CSS .mobile-only
   // controls visibility on the right kind of device). ----
