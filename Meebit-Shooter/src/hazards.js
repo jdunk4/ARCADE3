@@ -375,10 +375,19 @@ function _placeTile(cells, tintHex, opts) {
   const mat = lethal ? getLethalMat() : getHazardMat(tintHex);
   const geo = getTileGeo();
   const finalCells = [];
+  // Lethal (red bomb) tiles sit a hair above safe (numbered) tiles
+  // so the player can ALWAYS see the warning. Per playtester request:
+  // "Never want to hide death." With both tile types at the original
+  // shared y=0.03, a safe tile placed between the camera and a red
+  // tile could occlude it from low/tilted camera angles. y=0.04
+  // raises lethal tiles ~1cm above safe tiles in world space — small
+  // enough to be imperceptible as a "floating" gap, large enough to
+  // win the depth test against any safe tile in front of them.
+  const tileY = lethal ? 0.04 : 0.03;
   for (const c of cells) {
     const tile = new THREE.Mesh(geo, mat);
     tile.rotation.x = -Math.PI / 2;
-    tile.position.set(c.x, 0.03, c.z);
+    tile.position.set(c.x, tileY, c.z);
     group.add(tile);
     finalCells.push({ x: c.x, z: c.z });
   }
