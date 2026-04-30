@@ -9,13 +9,24 @@
 // temporary stratagem artifacts so the player can practice without
 // having earned them in the main game.
 //
+// MOBILE INPUT:
+//   Phones don't have arrow keys. armSecretListener() now ALSO injects
+//   a small green-matrix-themed d-pad inside the tutorial complete
+//   modal. The d-pad's 4 buttons call _pushArrow() the same way the
+//   keyboard handler does, so there's exactly one input pipeline. The
+//   d-pad uses the .stratagem-dpad CSS class defined in styles.css —
+//   visually it matches the matrix-cursor / matrix-rain aesthetic.
+//   On mobile-landscape an extra @media block in styles.css shrinks
+//   the d-pad so it fits between the title text and the RETURN button.
+//
 // Public API:
 //   armSecretListener(onUnlock)
 //                              — call when the completion modal is
 //                                shown. Listens for arrow key + arrow
-//                                button events. onUnlock fires when
-//                                the code is matched.
-//   disarmSecretListener()     — cleanup; remove key handler.
+//                                button events + the in-modal d-pad
+//                                taps. onUnlock fires when the code
+//                                is matched.
+//   disarmSecretListener()     — cleanup; remove key handler + d-pad.
 
 const SECRET_CODE = ['up', 'right', 'down', 'down', 'down'];
 
@@ -24,6 +35,7 @@ let _onUnlock = null;
 let _keyHandler = null;
 let _hintEl = null;
 let _hintTimer = null;
+let _dpadEl = null;          // injected matrix-green d-pad inside the modal
 
 /**
  * Begin listening on the modal. The hint sprite at the bottom of the
@@ -48,6 +60,12 @@ export function armSecretListener(onUnlock) {
   };
   window.addEventListener('keydown', _keyHandler, true);
 
+  // Inject the on-screen matrix-green d-pad inside the tutorial
+  // complete modal. On desktop it's a redundant-but-friendly affordance
+  // (some players don't realize they can type a code); on mobile it's
+  // the ONLY way to enter the code since phones have no arrow keys.
+  _ensureDpadInModal();
+
   _showHint('try anything');
 }
 
@@ -59,6 +77,7 @@ export function disarmSecretListener() {
   _entered = [];
   _onUnlock = null;
   _hideHint();
+  _removeDpad();
 }
 
 /**
@@ -156,4 +175,77 @@ function _hideHint() {
     _hintEl.parentNode.removeChild(_hintEl);
   }
   _hintEl = null;
+}
+
+// =====================================================================
+// D-PAD UI — matrix-green directional input injected into the modal
+// =====================================================================
+// Built once per arm cycle. Lives inside #tutorial-complete-modal so
+// the modal's flex centering positions it for free, and so the modal
+// disposing it on close cleans up automatically (we still tear it
+// down explicitly in disarmSecretListener for safety).
+//
+// The 4 buttons reuse the .stratagem-dpad-* classes from styles.css —
+// same component the in-game stratagem call shares, so the player
+// learns the input pattern once and reuses it.
+function _ensureDpadInModal() {
+  const modal = document.getElementById('tutorial-complete-modal');
+  if (!modal) return;                      // modal not built yet — caller can re-arm later
+  if (_dpadEl && _dpadEl.parentNode === modal) return;   // already attached
+
+  const wrap = document.createElement('div');
+  wrap.id = 'stratagem-dpad-modal';
+  wrap.className = 'stratagem-dpad';
+
+  const DIRS = [
+    { dir: 'up',    cls: 'stratagem-dpad-up',    glyph: '↑' },
+    { dir: 'right', cls: 'stratagem-dpad-right', glyph: '→' },
+    { dir: 'down',  cls: 'stratagem-dpad-down',  glyph: '↓' },
+    { dir: 'left',  cls: 'stratagem-dpad-left',  glyph: '←' },
+  ];
+  for (const { dir, cls, glyph } of DIRS) {
+    const btn = document.createElement('div');
+    btn.className = 'stratagem-dpad-btn ' + cls;
+    btn.textContent = glyph;
+    // Both touch and click — touchstart for snappy mobile feedback
+    // (avoids the ~300ms click delay), click for desktop dev test.
+    // We push the arrow on press-down (not release) to match the
+    // keyboard handler which fires on keydown.
+    const onPress = (e) => {
+      if (!_keyHandler) return;            // listener disarmed — don't fire
+      e.preventDefault();
+      e.stopPropagation();
+      btn.classList.add('pressed');
+      _pushArrow(dir);
+    };
+    const onRelease = (e) => {
+      btn.classList.remove('pressed');
+      if (e) e.stopPropagation();
+    };
+    btn.addEventListener('touchstart', onPress, { passive: false });
+    btn.addEventListener('touchend', onRelease, { passive: false });
+    btn.addEventListener('touchcancel', onRelease, { passive: false });
+    btn.addEventListener('mousedown', onPress);
+    btn.addEventListener('mouseup', onRelease);
+    btn.addEventListener('mouseleave', onRelease);
+    wrap.appendChild(btn);
+  }
+
+  // Insert before the RETURN button so it sits in the visual flow
+  // between the XP badge and the CTA. If the button isn't found we
+  // append at the end of the modal — still readable.
+  const cta = modal.querySelector('#tutorial-complete-return');
+  if (cta && cta.parentNode === modal) {
+    modal.insertBefore(wrap, cta);
+  } else {
+    modal.appendChild(wrap);
+  }
+  _dpadEl = wrap;
+}
+
+function _removeDpad() {
+  if (_dpadEl && _dpadEl.parentNode) {
+    _dpadEl.parentNode.removeChild(_dpadEl);
+  }
+  _dpadEl = null;
 }

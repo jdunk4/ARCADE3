@@ -6735,3 +6735,143 @@ animate();
   // Initial print on module load.
   printBootBanner();
 })();
+
+// =====================================================================
+// MOBILE STRATAGEM CALL-IN — touch d-pad replacement for RMB+arrows
+// =====================================================================
+// Desktop: hold RMB → tap arrow keys → release RMB. Phones have neither
+// a right mouse button nor arrow keys, so we add:
+//   1. A small green-matrix STRATAGEM button on the left side of the
+//      screen (above the joystick), only visible on mobile when the
+//      player has at least one stratagem artifact.
+//   2. A 4-direction d-pad that slides in above the button when it's
+//      tapped. Each arrow tap calls pushStratagemArrow(dir), exactly
+//      what the desktop keydown handler does. A second tap on the
+//      STRATAGEM button (or matching the code) confirms — same call
+//      path as releasing RMB on desktop.
+//
+// Wiring lives in a single self-contained IIFE so adding/removing
+// this feature is one block edit.
+(function setupMobileStratagemDpad() {
+  // Only run in a browser context; some build tools import main.js for
+  // static analysis without a real DOM.
+  if (typeof document === 'undefined') return;
+
+  // ---- Build the call button (always present in DOM; CSS .mobile-only
+  // controls visibility on the right kind of device). ----
+  let callBtn = document.getElementById('stratagem-call-btn');
+  if (!callBtn) {
+    callBtn = document.createElement('div');
+    callBtn.id = 'stratagem-call-btn';
+    callBtn.className = 'mobile-only';
+    callBtn.innerHTML = '<div style="font-size:22px;line-height:1;margin-bottom:2px;">⚙</div>STRAT';
+    document.body.appendChild(callBtn);
+  }
+
+  // ---- Build the floating d-pad (4 buttons in a + cross). ----
+  let dpad = document.getElementById('stratagem-dpad-ingame');
+  if (!dpad) {
+    dpad = document.createElement('div');
+    dpad.id = 'stratagem-dpad-ingame';
+    dpad.className = 'stratagem-dpad';
+    const DIRS = [
+      { dir: 'up',    cls: 'stratagem-dpad-up',    glyph: '↑' },
+      { dir: 'right', cls: 'stratagem-dpad-right', glyph: '→' },
+      { dir: 'down',  cls: 'stratagem-dpad-down',  glyph: '↓' },
+      { dir: 'left',  cls: 'stratagem-dpad-left',  glyph: '←' },
+    ];
+    for (const { dir, cls, glyph } of DIRS) {
+      const btn = document.createElement('div');
+      btn.className = 'stratagem-dpad-btn ' + cls;
+      btn.textContent = glyph;
+      const onPress = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        btn.classList.add('pressed');
+        // The stratagem menu is opened by the call button tap below.
+        // pushStratagemArrow is a no-op when the menu isn't open, so
+        // a stray tap with the d-pad visible-but-menu-closed is safe.
+        try { pushStratagemArrow(dir); } catch (err) { console.warn('[stratagem dpad]', err); }
+      };
+      const onRelease = (e) => {
+        btn.classList.remove('pressed');
+        if (e) e.stopPropagation();
+      };
+      btn.addEventListener('touchstart', onPress, { passive: false });
+      btn.addEventListener('touchend', onRelease);
+      btn.addEventListener('touchcancel', onRelease);
+      btn.addEventListener('mousedown', onPress);
+      btn.addEventListener('mouseup', onRelease);
+      btn.addEventListener('mouseleave', onRelease);
+      dpad.appendChild(btn);
+    }
+    document.body.appendChild(dpad);
+  }
+
+  // ---- Tap the call button to ARM the stratagem menu. Tap again to
+  // CONFIRM (release the menu — fires whichever code is matched, same
+  // as the desktop RMB-release path). ----
+  function _toggleStratagemMenu() {
+    if (isStratagemMenuOpen()) {
+      // Already open — confirm. endStratagemInput fires the matched
+      // stratagem (if any) and clears menu state.
+      try { endStratagemInput(); } catch (err) { console.warn('[stratagem]', err); }
+      dpad.classList.remove('visible');
+      callBtn.classList.remove('armed');
+      return;
+    }
+    // Not open — only open if the player has at least one artifact,
+    // mirroring the RMB-down guard around line 1882.
+    const arts = (typeof S !== 'undefined' && S.stratagemArtifacts) || {};
+    let any = false;
+    for (const k in arts) { if (arts[k] > 0) { any = true; break; } }
+    if (!any) return;
+    try { beginStratagemInput(); } catch (err) { console.warn('[stratagem]', err); return; }
+    dpad.classList.add('visible');
+    callBtn.classList.add('armed');
+  }
+  const onCallPress = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    _toggleStratagemMenu();
+  };
+  callBtn.addEventListener('touchstart', onCallPress, { passive: false });
+  callBtn.addEventListener('mousedown', onCallPress);
+
+  // ---- Per-frame visibility sync. The button should hide itself when
+  // the player has zero artifacts (so we don't tease an empty menu),
+  // and the d-pad should hide whenever the menu closes for any reason
+  // (e.g., the matched stratagem fired, or main code cleared menu
+  // state on game restart). Cheap — runs at requestAnimationFrame
+  // rate but only writes when state changes. ----
+  let _lastVisible = false;
+  let _lastDpadVisible = false;
+  function _syncFrame() {
+    const arts = (typeof S !== 'undefined' && S.stratagemArtifacts) || {};
+    let any = false;
+    for (const k in arts) { if (arts[k] > 0) { any = true; break; } }
+    if (any !== _lastVisible) {
+      _lastVisible = any;
+      // .mobile-only handles visibility on the right kind of viewport
+      // already; we toggle a dataset flag the CSS can read for the
+      // "no-artifacts" case so the element is fully removed from
+      // layout when there's nothing to call.
+      callBtn.style.display = any ? '' : 'none';
+    }
+    const menuOpen = (typeof isStratagemMenuOpen === 'function') && isStratagemMenuOpen();
+    if (menuOpen !== _lastDpadVisible) {
+      _lastDpadVisible = menuOpen;
+      if (menuOpen) {
+        dpad.classList.add('visible');
+        callBtn.classList.add('armed');
+      } else {
+        dpad.classList.remove('visible');
+        callBtn.classList.remove('armed');
+      }
+    }
+    requestAnimationFrame(_syncFrame);
+  }
+  // Default-hidden until first sync confirms artifacts.
+  callBtn.style.display = 'none';
+  requestAnimationFrame(_syncFrame);
+})();

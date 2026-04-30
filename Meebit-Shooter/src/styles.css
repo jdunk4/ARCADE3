@@ -1689,3 +1689,389 @@ canvas { display: block; cursor: var(--matrix-cursor); }
   padding-top: 10px;
   border-top: 1px solid rgba(255, 255, 255, 0.08);
 }
+
+/* ============================================================================
+ * MOBILE LANDSCAPE FIXES — added to make armory + tutorial complete modal +
+ * secret stratagem hint fit on a single screen with no scrolling.
+ *
+ * Trigger conditions (matched to the existing mobile MQ in this file at line
+ * 1021): touch device OR narrow viewport OR short viewport. Phones in
+ * landscape are typically <= 932px wide and <= 430px tall; we use a single
+ * tight short-screen MQ as the primary gate so we don't accidentally squash
+ * tablets in portrait.
+ *
+ * STRATEGY for the armory:
+ *   - Hide the wordy footer hint and the long blurb on each weapon card —
+ *     reclaiming ~80–120px of vertical space.
+ *   - Compact header: smaller title, smaller XP pill, single-row layout.
+ *   - Convert the player + weapons sections from "stacked vertically with
+ *     scroll" to "side-by-side horizontal carousel that fits one screen."
+ *     Player tracks become a thin top strip; weapons grid becomes a
+ *     horizontal swipe-row of compact cards.
+ *   - Frame loses its overflow:auto — content fits.
+ *
+ * STRATEGY for the tutorial complete modal:
+ *   - Title from 86px → 44px, shorter line height.
+ *   - Trim padding and margins.
+ *   - Move the secret arrow hint INSIDE the modal flow on mobile so it can
+ *     never collide with the RETURN button. (On desktop it stays fixed at
+ *     bottom:30px as before.)
+ *
+ * STRATEGY for the stratagem secret arrows:
+ *   - Reduce font-size + letter-spacing so the 5 glyphs sit on one line at
+ *     a comfortable size on small screens.
+ * ========================================================================= */
+
+/* ---- MOBILE LANDSCAPE — short OR narrow viewport ---- */
+@media (max-height: 600px), (max-width: 900px) and (pointer: coarse) {
+
+  /* ---------- ARMORY OVERLAY ---------- */
+  #armory-frame {
+    /* Stop scrolling — content must fit. */
+    overflow: hidden !important;
+    padding: 8px 10px 8px 10px !important;
+    gap: 6px !important;
+    max-width: none !important;
+    height: 100vh !important;
+    box-sizing: border-box !important;
+  }
+
+  /* Compact header — single row, smaller title, no border. */
+  #armory-header {
+    grid-template-columns: 1fr auto auto !important;
+    gap: 8px !important;
+    padding-bottom: 4px !important;
+    border-bottom: none !important;
+  }
+  #armory-title-block h1 {
+    font-size: 22px !important;
+    letter-spacing: 4px !important;
+  }
+  /* Subtitle eats too much space on a phone — drop it. The header
+     already says "ARMORY" in big letters. */
+  #armory-sub {
+    display: none !important;
+  }
+  #armory-xp-pill {
+    padding: 4px 10px !important;
+    min-width: 90px !important;
+  }
+  .armory-xp-label {
+    font-size: 8px !important;
+    letter-spacing: 2px !important;
+  }
+  #armory-xp-amount {
+    font-size: 16px !important;
+    margin-top: 0 !important;
+    letter-spacing: 1px !important;
+  }
+  #armory-close-btn {
+    padding: 6px 10px !important;
+    font-size: 10px !important;
+    letter-spacing: 2px !important;
+  }
+
+  /* Section titles — smaller and tighter. */
+  .armory-section-title {
+    font-size: 10px !important;
+    letter-spacing: 3px !important;
+    margin-bottom: 4px !important;
+    padding-left: 2px !important;
+    border-left-width: 2px !important;
+  }
+
+  /* Player tracks stay in a single row even on narrow screens.
+     The base rule at line 1528 collapses them to 1 column at <= 720px,
+     which causes vertical growth — override it back to 2 columns. */
+  #armory-player-tracks {
+    grid-template-columns: 1fr 1fr !important;
+    gap: 6px !important;
+  }
+
+  /* Weapons grid — horizontal scroll carousel of compact cards.
+     Players swipe sideways instead of scrolling vertically. The base
+     rule at line 1539 collapses to 1 column at <= 720px which is exactly
+     what causes the long scroll the user is complaining about. */
+  #armory-weapons-grid {
+    display: flex !important;
+    grid-template-columns: none !important;
+    flex-wrap: nowrap !important;
+    overflow-x: auto !important;
+    overflow-y: hidden !important;
+    gap: 8px !important;
+    padding-bottom: 4px !important;
+    /* iOS-style smooth horizontal scroll snap so each card lands cleanly. */
+    scroll-snap-type: x mandatory !important;
+    -webkit-overflow-scrolling: touch !important;
+    /* Take all remaining vertical space in the frame. */
+    flex: 1 1 auto !important;
+    min-height: 0 !important;
+  }
+  /* Weapons section — let the inner grid use the full available height. */
+  #armory-weapons-section {
+    display: flex !important;
+    flex-direction: column !important;
+    flex: 1 1 auto !important;
+    min-height: 0 !important;
+  }
+
+  .armory-weapon-card {
+    /* Fixed width per card so the carousel scrolls predictably; the
+       player sees ~2.3 cards at once on a typical landscape phone,
+       which makes the "swipe me" affordance obvious. */
+    flex: 0 0 220px !important;
+    min-width: 220px !important;
+    padding: 8px 10px !important;
+    gap: 6px !important;
+    scroll-snap-align: start !important;
+  }
+  .armory-weapon-name {
+    font-size: 14px !important;
+    letter-spacing: 2px !important;
+  }
+  .armory-weapon-chapter {
+    font-size: 8px !important;
+    letter-spacing: 1px !important;
+  }
+  /* Blurb costs the most vertical space and adds nothing the player
+     doesn't already know once they've played the chapter — hide. */
+  .armory-weapon-blurb {
+    display: none !important;
+  }
+  .armory-weapon-tracks {
+    gap: 4px !important;
+  }
+  .armory-track {
+    grid-template-columns: 70px 1fr auto !important;
+    padding: 4px 6px !important;
+    gap: 6px !important;
+  }
+  .armory-track .armory-track-label {
+    font-size: 9px !important;
+    letter-spacing: 1px !important;
+  }
+  .armory-track .pip {
+    height: 6px !important;
+  }
+  .armory-track .armory-track-buy {
+    padding: 3px 6px !important;
+    font-size: 8px !important;
+    min-width: 64px !important;
+    letter-spacing: 1px !important;
+  }
+  .armory-weapon-unlock {
+    padding: 8px !important;
+    font-size: 11px !important;
+    letter-spacing: 2px !important;
+  }
+
+  /* Footer hint just eats space on a small screen. */
+  #armory-footer-hint {
+    display: none !important;
+  }
+
+  /* ---------- TUTORIAL COMPLETE MODAL ---------- */
+  /* The modal is built inline in main.js with hard-coded font-size /
+     margin values. On mobile the 86px title alone overshoots a typical
+     landscape phone height. Override those inline styles here. The
+     selectors target the modal id + nth-child positions so the cascade
+     wins against the inline styles set in JS. */
+  #tutorial-complete-modal {
+    padding: 14px !important;
+  }
+  /* :: SIGNAL CLEAN :: header */
+  #tutorial-complete-modal > div:nth-child(1) {
+    font-size: 10px !important;
+    letter-spacing: 4px !important;
+    margin-bottom: 6px !important;
+  }
+  /* TUTORIAL COMPLETE big title — keep on two lines (TUTORIAL / COMPLETE)
+     since the source HTML uses <br>; just shrink it small enough that
+     two stacked lines + d-pad + button still fit on a 360px landscape
+     phone. 26px × 2 lines × line-height 0.95 = ~50px. */
+  #tutorial-complete-modal > div:nth-child(2) {
+    font-size: 26px !important;
+    letter-spacing: 4px !important;
+    line-height: 0.95 !important;
+    margin-bottom: 4px !important;
+  }
+  /* "YOU ARE READY..." subtitle */
+  #tutorial-complete-modal > div:nth-child(3) {
+    font-size: 11px !important;
+    letter-spacing: 2px !important;
+    margin-bottom: 12px !important;
+  }
+  /* XP badge — the dynamically-inserted element */
+  #tut-armory-xp-badge {
+    font-size: 14px !important;
+    letter-spacing: 2px !important;
+    margin: 0 0 10px 0 !important;
+  }
+  /* RETURN TO MAIN SCREEN button */
+  #tutorial-complete-return {
+    font-size: 14px !important;
+    letter-spacing: 3px !important;
+    padding: 10px 22px !important;
+  }
+
+  /* ---------- SECRET STRATAGEM ARROW HINT ---------- */
+  /* Built in tutorialSecret.js _ensureHint() with hard-coded
+     font-size:28px and letter-spacing:16px. Five glyphs at that size
+     measure ~220px wide and the row sits at fixed bottom:30px which
+     can collide with the modal's RETURN button on short screens.
+     On mobile we tighten the row so it stays a clean straight line. */
+  #tutorial-complete-modal ~ div[style*="bottom: 30px"],
+  body > div[style*="letter-spacing: 16px"] {
+    font-size: 18px !important;
+    letter-spacing: 8px !important;
+    bottom: 8px !important;
+  }
+}
+
+/* ---------- MOBILE STRATAGEM D-PAD (matrix-green directional input) ----------
+   Used in TWO places:
+     1) On the tutorial complete modal so a phone player can enter the
+        secret code (↑→↓↓↓) without a keyboard.
+     2) During gameplay when the player taps STRATAGEM to call in a
+        Helldivers-style code.
+   The element has class .stratagem-dpad. It's an absolutely-positioned
+   container with 4 child buttons (up / down / left / right) arranged in
+   a + cross. Theme: matrix green to match the existing matrix-cursor and
+   matrix-rain aesthetic. Visible everywhere — desktop users can use the
+   keyboard, but the d-pad is non-disruptive. */
+.stratagem-dpad {
+  /* Default placement is "below the modal" — overridden per use. */
+  position: relative;
+  width: 168px;
+  height: 168px;
+  pointer-events: auto;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  /* Subtle matrix-green glow ring framing the cross. Keeps the
+     d-pad legible against busy backgrounds without dominating. */
+  filter: drop-shadow(0 0 12px rgba(0, 255, 102, 0.45));
+}
+.stratagem-dpad-btn {
+  position: absolute;
+  width: 50px;
+  height: 50px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: 'Impact', monospace;
+  font-size: 28px;
+  color: #00ff66;
+  background: rgba(0, 30, 12, 0.65);
+  border: 2px solid #00ff66;
+  border-radius: 8px;
+  box-shadow:
+    0 0 8px rgba(0, 255, 102, 0.55),
+    inset 0 0 10px rgba(0, 255, 102, 0.18);
+  text-shadow: 0 0 8px #00ff66;
+  cursor: pointer;
+  transition: transform 0.06s ease-out, background 0.08s ease-out;
+  touch-action: none;
+}
+.stratagem-dpad-btn:active,
+.stratagem-dpad-btn.pressed {
+  background: #00ff66;
+  color: #000;
+  text-shadow: none;
+  transform: scale(0.92);
+  box-shadow:
+    0 0 14px rgba(0, 255, 102, 0.95),
+    inset 0 0 12px rgba(255, 255, 255, 0.4);
+}
+.stratagem-dpad-up    { top: 0;    left: 50%; transform: translateX(-50%); }
+.stratagem-dpad-down  { bottom: 0; left: 50%; transform: translateX(-50%); }
+.stratagem-dpad-left  { left: 0;   top: 50%;  transform: translateY(-50%); }
+.stratagem-dpad-right { right: 0;  top: 50%;  transform: translateY(-50%); }
+/* :active needs to preserve the centering transform AND scale; we
+   recombine here so :active doesn't reset the button into the corner. */
+.stratagem-dpad-up:active,    .stratagem-dpad-up.pressed    { transform: translateX(-50%) scale(0.92); }
+.stratagem-dpad-down:active,  .stratagem-dpad-down.pressed  { transform: translateX(-50%) scale(0.92); }
+.stratagem-dpad-left:active,  .stratagem-dpad-left.pressed  { transform: translateY(-50%) scale(0.92); }
+.stratagem-dpad-right:active, .stratagem-dpad-right.pressed { transform: translateY(-50%) scale(0.92); }
+
+/* In-game floating stratagem d-pad — appears bottom-center above the
+   joystick + fire button when the STRATAGEM trigger button is tapped.
+   z-index 60 puts it above the inventory wheel (40) and above mobile
+   fire/joystick (15), but below the pause menu (150). */
+#stratagem-dpad-ingame {
+  position: fixed;
+  bottom: 110px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 60;
+  display: none;       /* shown via .visible class */
+}
+#stratagem-dpad-ingame.visible { display: block; }
+
+/* In-modal d-pad — sits inside the tutorial complete modal as a
+   normal flow element. Centered automatically by the modal's
+   align-items:center. */
+#stratagem-dpad-modal {
+  margin-top: 18px;
+  /* Slightly smaller on the modal so it doesn't push the RETURN
+     button off the bottom of a short-landscape phone. */
+  width: 144px;
+  height: 144px;
+}
+#stratagem-dpad-modal .stratagem-dpad-btn {
+  width: 42px;
+  height: 42px;
+  font-size: 24px;
+}
+
+/* On mobile-landscape — make the modal d-pad even tighter so it fits. */
+@media (max-height: 600px) {
+  #stratagem-dpad-modal {
+    margin-top: 8px;
+    width: 110px;
+    height: 110px;
+  }
+  #stratagem-dpad-modal .stratagem-dpad-btn {
+    width: 32px;
+    height: 32px;
+    font-size: 18px;
+    border-width: 1px;
+  }
+}
+
+/* In-game STRATAGEM toggle button — small matrix-green pill on the
+   left side of the screen, just above the joystick. Tapping toggles
+   the in-game d-pad above. Mobile only. Hidden until the player has
+   at least one stratagem artifact (toggle handled by main.js). */
+#stratagem-call-btn {
+  display: none;       /* base hidden; .mobile-only on the element makes it appear in the right MQ */
+  position: fixed;
+  bottom: 200px;
+  left: 12px;
+  z-index: 60;
+  width: 60px;
+  height: 60px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(0, 255, 102, 0.25), rgba(0, 0, 0, 0.7));
+  border: 2px solid #00ff66;
+  box-shadow: 0 0 14px rgba(0, 255, 102, 0.55);
+  color: #00ff66;
+  font-family: 'Impact', monospace;
+  font-size: 10px;
+  letter-spacing: 1px;
+  text-align: center;
+  line-height: 1.1;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  text-shadow: 0 0 6px #00ff66;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+#stratagem-call-btn.mobile-only {}    /* relies on the existing .mobile-only MQ to flip display */
+#stratagem-call-btn.armed {
+  background: radial-gradient(circle, rgba(0, 255, 102, 0.45), rgba(0, 0, 0, 0.7));
+  box-shadow: 0 0 22px rgba(0, 255, 102, 0.95), inset 0 0 12px rgba(0, 255, 102, 0.4);
+}
