@@ -357,6 +357,14 @@
        title screen. armoryUI.js handles open() — we also hide the
        game-over overlay first so the armory renders cleanly on top. -->
   <button class="cta" id="gameover-armory-btn" style="margin-top:10px; background:linear-gradient(135deg, #ff8800 0%, #ff3cac 100%); border-color:#ff8800; color:#fff;">⚙ ARMORY</button>
+  <!-- Return to the title screen — gives the player access to the
+       tutorial, wallet connect, mode picker, etc. without forcing a
+       restart-into-game first. Per playtester request: "can we add
+       main menu option when a player dies? In case a player wants to
+       go to tutorial or connect wallet." Styled neutral (charcoal
+       outline) so it sits visually below REBOOT (primary cyan) and
+       ARMORY (warm secondary), reading as a "back/exit" affordance. -->
+  <button class="cta" id="gameover-mainmenu-btn" style="margin-top:10px; background:transparent; border-color:#888; color:#ccc;">⌂ MAIN MENU</button>
 </div>
 
 <audio id="phone-ring" src="assets/phone_ring.mp3" loop preload="auto"></audio>
