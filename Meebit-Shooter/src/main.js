@@ -3525,6 +3525,35 @@ document.getElementById('restart-btn').addEventListener('click', () => {
   startGame();
 });
 
+// MAIN MENU button on the game over screen. Returns the player to
+// the title screen so they can access the tutorial, connect their
+// wallet, pick a different mode, etc., without being forced to
+// restart-into-game first. The tear-down sequence mirrors the
+// PauseMenu onQuit flow so we re-use the same proven path: stop
+// the music, drop tutorial floor if active, hide the in-game HUD,
+// hide the gameover overlay, show the title.
+//
+// One subtle thing: the player is already dead here (not paused),
+// so we don't need a confirmation dialog like onQuit uses for an
+// in-progress run. Going to the menu IS the polite "exit run" path.
+{
+  const mainMenuBtn = document.getElementById('gameover-mainmenu-btn');
+  if (mainMenuBtn) {
+    mainMenuBtn.addEventListener('click', () => {
+      S.paused = false;
+      S.running = false;
+      Audio.stopMusic();
+      _exitTutorialIfActive();
+      // Hide all the in-game HUD bits (joystick, fire button, score,
+      // pause button, etc.). The .hidden-ui class is applied to all
+      // such elements so a single querySelectorAll handles the lot.
+      document.querySelectorAll('.hidden-ui').forEach(el => el.style.display = 'none');
+      document.getElementById('gameover').classList.add('hidden');
+      document.getElementById('title').classList.remove('hidden');
+    });
+  }
+}
+
 // ---- ARMORY UI ----
 // Wires the title-screen ⚙ ARMORY button + close handlers. The
 // armoryUI module is purely DOM-side (no game-loop participation),
