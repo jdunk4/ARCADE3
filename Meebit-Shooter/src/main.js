@@ -62,7 +62,7 @@ import { PLAYER, WEAPONS, CHAPTERS, ARENA, GOO_CONFIG, MINING_CONFIG, BLOCK_CONF
 import { Audio } from './audio.js';
 import { UI } from './ui.js';
 import { loadPlayer, animatePlayer, player, recolorGun, resetPlayer, swapAvatarGLB } from './player.js';
-import { enemies, enemyProjectiles, spawnEnemyProjectile, makeEnemy, updateVesselZeroAnim } from './enemies.js';
+import { enemies, enemyProjectiles, spawnEnemyProjectile, makeEnemy, updateVesselZeroAnim, clearAllEnemies } from './enemies.js';
 import { loadAntMesh } from './antMesh.js';
 
 // Kick off the chapter-1 ant GLB load as soon as the module graph
@@ -7206,4 +7206,296 @@ animate();
   // Default-hidden until first sync confirms artifacts.
   callBtn.style.display = 'none';
   requestAnimationFrame(_syncFrame);
+})();
+
+// =====================================================================
+// DEV CHEAT — chapter / wave jump console
+// =====================================================================
+// Keyboard activation: tap the backtick key (`) THREE TIMES within
+// 1.5s to open a small floating dev console. The console has chapter
+// (1-7) and wave (1-5) inputs plus a JUMP button. Closing is via
+// the X button or the ESC key.
+//
+// This is a build-time tool only — there's no obfuscation / IP gate
+// because the JS is shipped to the client anyway. If you want to
+// disable it for a public build, set window.__DEV_CHEATS_OFF = true
+// before main.js loads (or comment out the IIFE call).
+//
+// Also exposes power-user globals on window so anyone can drive from
+// devtools without finding the activation key:
+//   window.__devJumpToWave(n)         — n in 1..35
+//   window.__devJumpToChapter(c, w)   — c in 1..7, optional w in 1..5
+(function setupDevCheatConsole() {
+  if (typeof document === 'undefined') return;
+  if (window.__DEV_CHEATS_OFF) return;
+
+  const WAVES_PER_CH = 5;
+  const TOTAL_CHAPTERS = 7;
+
+  // ----- Core jump function -----
+  // Cleans up live entities, calls startWave(N) (which runs
+  // updateChapterFromWave + applyTheme + prepareChapter), and surfaces
+  // a toast so the dev sees confirmation. Wrapped in try/catch around
+  // each cleanup step because some are no-ops in tutorial mode.
+  function _devJumpToWaveNum(waveNum) {
+    waveNum = Math.max(1, Math.min(TOTAL_CHAPTERS * WAVES_PER_CH, Math.floor(waveNum)));
+    if (!S.running) {
+      // The cheat is mid-run only — without a live game session,
+      // startWave() doesn't do anything useful (no spawners, no theme).
+      // Surface a hint instead of silently failing.
+      if (UI && UI.toast) UI.toast('DEV: START A RUN FIRST', '#ff5520', 1500);
+      return;
+    }
+    // Wipe live entities so the new chapter spawns into a clean arena.
+    // We DON'T reset score/kills/XP — devs want to keep run progress
+    // when teleporting around for testing.
+    try { clearAllEnemies(); } catch (e) {}
+    try { clearAllPickups(); } catch (e) {}
+    try { clearAllMines(); } catch (e) {}
+    try { clearStratagemTurrets(); } catch (e) {}
+    // Clear in-flight enemy projectiles + bullets if those arrays
+    // exist on the module scope. Defensive — silently skip if not.
+    try { if (Array.isArray(enemyProjectiles)) enemyProjectiles.length = 0; } catch (e) {}
+    // Now jump. startWave() resets wave kill targets, applies theme,
+    // preps chapter dormant props, etc. Same path the normal "wave
+    // complete → next wave" flow takes.
+    try {
+      startWave(waveNum);
+    } catch (e) {
+      console.warn('[dev-cheat] startWave failed', e);
+      if (UI && UI.toast) UI.toast('DEV: JUMP FAILED · ' + e.message, '#ff2020', 2200);
+      return;
+    }
+    const chap = Math.floor((waveNum - 1) / WAVES_PER_CH) + 1;
+    const lw = ((waveNum - 1) % WAVES_PER_CH) + 1;
+    const chName = (CHAPTERS[chap - 1] && CHAPTERS[chap - 1].name) || '?';
+    if (UI && UI.toast) {
+      UI.toast(`DEV: JUMP → CH ${chap} (${chName}) · WAVE ${lw}`, '#00ff66', 1800);
+    }
+    console.log(`[dev-cheat] jumped to wave ${waveNum} (chapter ${chap}, local wave ${lw})`);
+  }
+
+  // Public power-user globals for devtools console use.
+  window.__devJumpToWave = _devJumpToWaveNum;
+  window.__devJumpToChapter = function(chap, localWave) {
+    chap = Math.max(1, Math.min(TOTAL_CHAPTERS, Math.floor(chap)));
+    localWave = Math.max(1, Math.min(WAVES_PER_CH, Math.floor(localWave || 1)));
+    _devJumpToWaveNum((chap - 1) * WAVES_PER_CH + localWave);
+  };
+
+  // ----- Activation: hold right mouse button + enter arrow code -----
+  //
+  //     CODE: ↑ → ↓ ↓ ↓ ← ← ←
+  //
+  // Hold RMB, tap the arrows in sequence within the activation window.
+  // Mirrors Helldivers' stratagem-call input pattern, which the player
+  // already learned for in-game stratagems — same muscle memory, same
+  // physical interaction.
+  //
+  // This listener is INDEPENDENT of the in-game stratagem menu. It
+  // watches RMB state and arrow keydowns directly. Side effect: while
+  // entering the dev code, the stratagem menu (which uses the same
+  // RMB+arrow inputs) will ALSO see the keystrokes — meaning the
+  // first 5 arrows of this code (↑→↓↓↓) match the THERMONUCLEAR
+  // stratagem code. If the player has a thermo artifact AND they
+  // happen to release RMB at the 5-arrow mark, a nuke would fire.
+  // In practice the dev intends to hold through all 8 arrows so this
+  // doesn't happen. To eliminate the risk entirely, clear your
+  // artifact pool in devtools first: `S.stratagemArtifacts = {}`.
+  const _DEV_CODE = ['up', 'right', 'down', 'down', 'down', 'left', 'left', 'left'];
+  const _DEV_CODE_WINDOW_MS = 4000;
+  let _devRmbDown = false;
+  let _devEntered = [];
+  let _devEnteredFirstT = 0;
+
+  function _resetDevBuffer() {
+    _devEntered = [];
+    _devEnteredFirstT = 0;
+  }
+
+  // Right mouse button — track down/up. capture phase so we see this
+  // before any other RMB handler in the codebase.
+  window.addEventListener('mousedown', (e) => {
+    if (e.button === 2) {
+      _devRmbDown = true;
+      _resetDevBuffer();
+    }
+  }, true);
+  window.addEventListener('mouseup', (e) => {
+    if (e.button === 2) {
+      _devRmbDown = false;
+      _resetDevBuffer();
+    }
+  }, true);
+
+  // Arrow keys — only buffered while RMB is held.
+  window.addEventListener('keydown', (e) => {
+    if (!_devRmbDown) return;
+    let dir = null;
+    if (e.key === 'ArrowUp')         dir = 'up';
+    else if (e.key === 'ArrowDown')  dir = 'down';
+    else if (e.key === 'ArrowLeft')  dir = 'left';
+    else if (e.key === 'ArrowRight') dir = 'right';
+    if (!dir) return;
+
+    // Skip when typing in an input.
+    const t = e.target;
+    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+
+    const now = performance.now();
+    if (_devEntered.length === 0) _devEnteredFirstT = now;
+
+    // If too much time has elapsed since the FIRST arrow, reset and
+    // treat this keystroke as the new first entry. Window protects
+    // against incidental RMB-held arrow taps during normal play.
+    if (now - _devEnteredFirstT > _DEV_CODE_WINDOW_MS) {
+      _devEntered = [];
+      _devEnteredFirstT = now;
+    }
+
+    _devEntered.push(dir);
+
+    // Match check — does the current buffer equal the dev code so far?
+    // Bail (and reset) if the buffer diverges from the expected prefix
+    // so a wrong arrow doesn't keep extending stale state.
+    let prefixOk = true;
+    for (let i = 0; i < _devEntered.length; i++) {
+      if (_devEntered[i] !== _DEV_CODE[i]) { prefixOk = false; break; }
+    }
+    if (!prefixOk) {
+      _resetDevBuffer();
+      return;
+    }
+    if (_devEntered.length >= _DEV_CODE.length) {
+      // Full code entered — open the dev console.
+      _resetDevBuffer();
+      _toggleDevConsole();
+      // Don't preventDefault — we want the stratagem listener to also
+      // see the final keystroke if it cares. The dev console is
+      // additive; the player's existing inputs continue normally.
+    }
+  }, true);
+
+  // ----- Console UI (lazy build) -----
+  let _consoleEl = null;
+  function _ensureConsole() {
+    if (_consoleEl) return _consoleEl;
+    const root = document.createElement('div');
+    root.id = 'dev-cheat-console';
+    root.style.cssText = [
+      'position: fixed',
+      'top: 80px',
+      'right: 16px',
+      'z-index: 99999',
+      'min-width: 240px',
+      'padding: 12px 14px',
+      'background: rgba(2, 12, 6, 0.96)',
+      'border: 2px solid #00ff66',
+      'box-shadow: 0 0 22px rgba(0, 255, 102, 0.55), inset 0 0 18px rgba(0, 255, 102, 0.10)',
+      'color: #ccffd9',
+      'font-family: "Courier New", monospace',
+      'font-size: 12px',
+      'letter-spacing: 1px',
+      'pointer-events: auto',
+      'user-select: none',
+      '-webkit-user-select: none',
+    ].join(';');
+
+    // Build the chapter dropdown options dynamically from CHAPTERS so
+    // names stay in sync if the catalog changes.
+    let chapterOptions = '';
+    for (let i = 0; i < TOTAL_CHAPTERS; i++) {
+      const nm = (CHAPTERS[i] && CHAPTERS[i].name) || ('CH ' + (i + 1));
+      chapterOptions += `<option value="${i + 1}">${i + 1} · ${nm}</option>`;
+    }
+    let waveOptions = '';
+    for (let i = 1; i <= WAVES_PER_CH; i++) {
+      waveOptions += `<option value="${i}">${i}</option>`;
+    }
+
+    root.innerHTML = `
+      <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:10px;">
+        <div style="color:#00ff66; font-weight:bold; letter-spacing:2px;">⚙ DEV · JUMP</div>
+        <div id="dev-cheat-close" style="cursor:pointer; color:#888; padding:2px 6px;" title="Close (ESC)">✕</div>
+      </div>
+      <label style="display:block; margin-bottom:8px;">
+        <span style="color:#888; display:inline-block; width:64px;">CHAPTER</span>
+        <select id="dev-cheat-chapter" style="background:#020807; color:#ccffd9; border:1px solid #00ff66; padding:3px 6px; font-family:inherit;">
+          ${chapterOptions}
+        </select>
+      </label>
+      <label style="display:block; margin-bottom:10px;">
+        <span style="color:#888; display:inline-block; width:64px;">WAVE</span>
+        <select id="dev-cheat-wave" style="background:#020807; color:#ccffd9; border:1px solid #00ff66; padding:3px 6px; font-family:inherit;">
+          ${waveOptions}
+        </select>
+      </label>
+      <button id="dev-cheat-jump" style="
+        width:100%; padding:8px;
+        background:transparent; color:#00ff66;
+        border:2px solid #00ff66; cursor:pointer;
+        font-family:inherit; font-size:13px; letter-spacing:2px; font-weight:bold;
+      ">JUMP →</button>
+      <div style="margin-top:10px; padding-top:8px; border-top:1px solid rgba(0,255,102,0.18); font-size:10px; color:#666;">
+        RMB + <code style="color:#00ff66;">↑→↓↓↓←←←</code> to toggle · ESC closes<br>
+        Console: <code style="color:#00ff66;">__devJumpToChapter(c, w)</code>
+      </div>
+    `;
+    document.body.appendChild(root);
+    _consoleEl = root;
+
+    // Pre-select the player's current chapter/wave so the inputs
+    // reflect where they are now.
+    try {
+      const curChap = Math.floor((S.wave - 1) / WAVES_PER_CH) + 1;
+      const curLW = ((S.wave - 1) % WAVES_PER_CH) + 1;
+      root.querySelector('#dev-cheat-chapter').value = String(Math.max(1, Math.min(TOTAL_CHAPTERS, curChap)));
+      root.querySelector('#dev-cheat-wave').value = String(Math.max(1, Math.min(WAVES_PER_CH, curLW)));
+    } catch (e) {}
+
+    // Wire buttons.
+    root.querySelector('#dev-cheat-close').addEventListener('click', _hideConsole);
+    root.querySelector('#dev-cheat-jump').addEventListener('click', () => {
+      const chap = parseInt(root.querySelector('#dev-cheat-chapter').value, 10) || 1;
+      const lw = parseInt(root.querySelector('#dev-cheat-wave').value, 10) || 1;
+      _devJumpToWaveNum((chap - 1) * WAVES_PER_CH + lw);
+      // Keep console open — devs often jump multiple times per session.
+    });
+
+    return root;
+  }
+
+  function _toggleDevConsole() {
+    if (_consoleEl && _consoleEl.style.display !== 'none') {
+      _hideConsole();
+    } else {
+      _showConsole();
+    }
+  }
+  function _showConsole() {
+    const el = _ensureConsole();
+    el.style.display = '';
+    // Refresh selected values to current wave each time we open.
+    try {
+      const curChap = Math.floor((S.wave - 1) / WAVES_PER_CH) + 1;
+      const curLW = ((S.wave - 1) % WAVES_PER_CH) + 1;
+      el.querySelector('#dev-cheat-chapter').value = String(Math.max(1, Math.min(TOTAL_CHAPTERS, curChap)));
+      el.querySelector('#dev-cheat-wave').value = String(Math.max(1, Math.min(WAVES_PER_CH, curLW)));
+    } catch (e) {}
+  }
+  function _hideConsole() {
+    if (_consoleEl) _consoleEl.style.display = 'none';
+  }
+
+  // ESC closes the console (without ending the run / opening pause menu).
+  // capture phase + check that the console is open + stopPropagation so
+  // ESC doesn't bubble to the pause-menu handler when our console
+  // claimed the keystroke.
+  window.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape') return;
+    if (!_consoleEl || _consoleEl.style.display === 'none') return;
+    _hideConsole();
+    e.stopPropagation();
+    e.preventDefault();
+  }, true);
 })();
