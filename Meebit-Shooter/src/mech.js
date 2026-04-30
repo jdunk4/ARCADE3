@@ -158,8 +158,22 @@ const _MG_BARREL_GEO  = new THREE.CylinderGeometry(0.16, 0.16, 1.6, 12);
 const _MG_HOUSING_GEO = new THREE.BoxGeometry(0.6, 0.6, 0.9);
 // Rocket projectile.
 const _ROCKET_GEO    = new THREE.CylinderGeometry(0.08, 0.12, 0.8, 8);
-// MG tracer (thin elongated cylinder).
-const _TRACER_GEO    = new THREE.CylinderGeometry(0.04, 0.04, 1.0, 6);
+// MG tracer — beefed-up two-layer cylinder pair. The previous single
+// 0.04-radius cylinder was almost invisible against busy backgrounds
+// and disappeared in 0.07s. New design: a bright core (0.10 radius)
+// for the bullet's body, plus a translucent halo (0.22 radius) layered
+// outside for the glow trail. Both share the same length so they
+// scale together. Lifetime extended to 0.14s so the eye actually
+// catches the streak.
+const _TRACER_CORE_GEO  = new THREE.CylinderGeometry(0.10, 0.10, 1.0, 8);
+const _TRACER_HALO_GEO  = new THREE.CylinderGeometry(0.22, 0.22, 1.0, 10);
+// Round muzzle-flash sprite — kept around so we don't reallocate per
+// shot. Spawned at the firing origin for the brief flash that reads
+// as "the gun just fired" before the tracer streaks out.
+const _MUZZLE_FLASH_GEO = new THREE.SphereGeometry(0.28, 10, 8);
+// Legacy alias — preserved so any other code paths that referenced
+// _TRACER_GEO compile. Visual mass matches the new core.
+const _TRACER_GEO    = _TRACER_CORE_GEO;
 
 const _activeMechs = [];
 
@@ -497,6 +511,10 @@ export function spawnMech(pos, tint, variantId) {
     hp: MECH_HP_MAX, hpMax: MECH_HP_MAX,
     pos: new THREE.Vector3(pos.x, 0, pos.z),
     facing: 0,
+    // Aim target — set by tickPilotedMech every frame from the cursor
+    // direction. m.facing rotates toward this at MECH_TORSO_TURN_SPEED.
+    // null while the mech is unpiloted (idles facing forward).
+    aimTargetAng: null,
     walkPhase: 0,
     // Drop animation
     dropping: true,
@@ -761,10 +779,21 @@ export function updateMechs(dt) {
     if (m.napalmCooldown > 0) m.napalmCooldown -= dt;
 
     // Salvo timer — fires queued rockets on interval (whether piloted
-    // or not; we'll just stop queueing when not piloted).
+    // or not; we'll just stop queueing when not piloted). Each rocket
+    // recomputes the firing target from the LIVE m.facing — without
+    // this, the salvo locks in the angle at request time and rockets
+    // 2/3/4 fly toward where the mech WAS pointing, even as the
+    // player has already started turning. Refreshing per-shot keeps
+    // the salvo fanning out forward of the current torso heading.
     if (m.rocketSalvoLeft > 0) {
       m.rocketSalvoTimer -= dt;
       if (m.rocketSalvoTimer <= 0) {
+        const ang = m.facing;
+        m.rocketTargetWorld.set(
+          m.pos.x + Math.sin(ang) * 50,
+          1.5,
+          m.pos.z + Math.cos(ang) * 50,
+        );
         _fireMechRocket(m, m.rocketTargetWorld);
         m.rocketSalvoLeft -= 1;
         m.rocketSalvoTimer = MECH_ROCKET_INTERVAL;
@@ -859,12 +888,19 @@ export function enterMech(mech) {
   if (!mech || mech.destroyed) return;
   _pilotedMech = mech;
   mech.prompt.visible = false;
+  // Flag read by player.js to keep the player avatar + gun hidden
+  // while piloting (mech body replaces the silhouette). Without this,
+  // player.js's per-frame visibility tick flipped the avatar back on
+  // every frame, causing the gun to show through the mech and read
+  // to playtesters as "primary weapon is still firing".
+  S.pilotingMech = true;
 }
 
 export function exitMech() {
   if (!_pilotedMech) return null;
   const mp = _pilotedMech.pos.clone();
   _pilotedMech = null;
+  S.pilotingMech = false;
   return mp;
 }
 
@@ -925,13 +961,33 @@ export function tickPilotedMech(inputs, dt) {
     m.torso.position.y = 3.05;
   }
 
-  // Aim — torso rotates toward inputs.aimAng. Body legs rotate to match
-  // movement direction so the mech reads as walking forward, not
-  // crab-walking, BUT only when not actively dashing (during dash the
-  // legs stay aligned to dashDir).
+  // Aim — the requested aim angle (cursor direction) is treated as a
+  // TARGET, and the torso rotates toward it at a fixed angular speed.
+  // Firing functions read m.facing (the actual current torso angle), so
+  // bullets always come out the front of the mech where it's pointing
+  // RIGHT NOW — never sideways at the cursor while the body lags. This
+  // matches the user's note: "mech should shoot in the direction it's
+  // facing but always slowly turn toward the crosshair."
+  //
+  // TURN_SPEED is the max torso rotation rate in radians/second. At
+  // ~2.5 rad/s (≈143°/s) the mech feels weighty without being sluggish:
+  // a 180° about-face takes ~1.25s, a 90° track ~0.6s.
+  const MECH_TORSO_TURN_SPEED = 2.5;
   if (typeof inputs.aimAng === 'number') {
-    m.facing = inputs.aimAng;
-    m.torso.rotation.y = inputs.aimAng;
+    m.aimTargetAng = inputs.aimAng;
+  }
+  if (typeof m.aimTargetAng === 'number') {
+    // Shortest-arc delta from current facing to target.
+    let delta = m.aimTargetAng - m.facing;
+    while (delta >  Math.PI) delta -= Math.PI * 2;
+    while (delta < -Math.PI) delta += Math.PI * 2;
+    const maxStep = MECH_TORSO_TURN_SPEED * dt;
+    const step = Math.max(-maxStep, Math.min(maxStep, delta));
+    m.facing += step;
+    // Wrap to [-PI, PI] for cleanliness.
+    while (m.facing >  Math.PI) m.facing -= Math.PI * 2;
+    while (m.facing < -Math.PI) m.facing += Math.PI * 2;
+    m.torso.rotation.y = m.facing;
   }
   if (m.dashLeft > 0) {
     const dashAng = Math.atan2(m.dashDir.x, m.dashDir.z);
@@ -1137,7 +1193,7 @@ const _NAPALM_PATCH_DUR = 4.0;
 const _NAPALM_PATCH_DPS = 60;
 function _detonateNapalm(m, pos) {
   const r2 = _NAPALM_RADIUS * _NAPALM_RADIUS;
-  for (let i = 0; i < enemies.length; i++) {
+  for (let i = enemies.length - 1; i >= 0; i--) {
     const e = enemies[i];
     if (!e || !e.pos || e.dying) continue;
     const dx = e.pos.x - pos.x;
@@ -1147,6 +1203,9 @@ function _detonateNapalm(m, pos) {
       const falloff = 1 - Math.sqrt(d2) / _NAPALM_RADIUS;
       e.hp -= _NAPALM_DAMAGE * falloff;
       e.hitFlash = 0.18;
+      if (e.hp <= 0 && typeof window !== 'undefined' && window.__killEnemyAtIdx) {
+        try { window.__killEnemyAtIdx(e); } catch (_) {}
+      }
     }
   }
   hitBurst(pos, 0xff5520, 18);
@@ -1202,13 +1261,16 @@ function _tickFirePatches(dt) {
     p.mat.opacity = (0.55 + pulse * 0.20) * (1 - f * 0.6);
     // Damage enemies inside the patch.
     const r2 = _NAPALM_RADIUS * _NAPALM_RADIUS;
-    for (let j = 0; j < enemies.length; j++) {
+    for (let j = enemies.length - 1; j >= 0; j--) {
       const e = enemies[j];
       if (!e || !e.pos || e.dying) continue;
       const dx = e.pos.x - p.pos.x;
       const dz = e.pos.z - p.pos.z;
       if (dx * dx + dz * dz < r2) {
         e.hp -= _NAPALM_PATCH_DPS * dt;
+        if (e.hp <= 0 && typeof window !== 'undefined' && window.__killEnemyAtIdx) {
+          try { window.__killEnemyAtIdx(e); } catch (_) {}
+        }
       }
     }
   }
@@ -1222,9 +1284,11 @@ function _clearFirePatches() {
 }
 
 function _detonateMechRocket(m, pos) {
-  // AoE damage in MECH_ROCKET_RADIUS.
+  // AoE damage in MECH_ROCKET_RADIUS. Iterate BACKWARDS because
+  // window.__killEnemyAtIdx splices the live enemies array — going
+  // forward would skip enemies as the array shrinks behind us.
   const r2 = MECH_ROCKET_RADIUS * MECH_ROCKET_RADIUS;
-  for (let i = 0; i < enemies.length; i++) {
+  for (let i = enemies.length - 1; i >= 0; i--) {
     const e = enemies[i];
     if (!e || !e.pos || e.dying) continue;
     const dx = e.pos.x - pos.x;
@@ -1234,6 +1298,12 @@ function _detonateMechRocket(m, pos) {
       const falloff = 1 - Math.sqrt(d2) / MECH_ROCKET_RADIUS;
       e.hp -= MECH_ROCKET_DAMAGE * falloff;
       e.hitFlash = 0.18;
+      // Finish the kill — without this the enemy walks around at
+      // negative HP because mech damage paths previously skipped the
+      // game's killEnemy pipeline (which handles score, drops, splice).
+      if (e.hp <= 0 && typeof window !== 'undefined' && window.__killEnemyAtIdx) {
+        try { window.__killEnemyAtIdx(e); } catch (_) {}
+      }
     }
   }
   // FX.
@@ -1291,34 +1361,85 @@ function _fireMechMG(m) {
   if (hit) {
     hit.hp -= MECH_MG_DAMAGE;
     hit.hitFlash = 0.10;
-    hitBurst(tracerEnd, 0xffffff, 3);
-    hitBurst(tracerEnd, m.tint, 2);
+    hitBurst(tracerEnd, 0xffffff, 5);
+    hitBurst(tracerEnd, m.tint, 4);
+    // Finish the kill — same fix as the rocket detonation.
+    if (hit.hp <= 0 && typeof window !== 'undefined' && window.__killEnemyAtIdx) {
+      try { window.__killEnemyAtIdx(hit); } catch (_) {}
+    }
   }
 }
 
 function _spawnTracer(m, from, to) {
   const len = from.distanceTo(to);
   if (len < 0.1) return;
-  const mat = new THREE.MeshBasicMaterial({
-    color: m.tintColor,
+
+  // ----- BRIGHT CORE -----
+  // Solid color, near-opaque, slim cylinder. This is the bullet body
+  // the eye reads as the actual projectile streak.
+  const coreMat = new THREE.MeshBasicMaterial({
+    color: 0xffffff,
     transparent: true,
-    opacity: 0.85,
+    opacity: 1.0,
     blending: THREE.AdditiveBlending,
     depthWrite: false,
     toneMapped: false,
   });
-  const tracer = new THREE.Mesh(_TRACER_GEO, mat);
-  tracer.scale.set(1, len, 1);
-  // Position halfway, oriented along (to - from).
+  const core = new THREE.Mesh(_TRACER_CORE_GEO, coreMat);
+  core.scale.set(1, len, 1);
+
+  // ----- GLOW HALO -----
+  // Wider, lower-opacity, chapter-tinted cylinder layered around the
+  // core. Provides the soft outer glow trail. Additive blending makes
+  // overlapping tracers stack into a brighter beam, classic arcade feel.
+  const haloMat = new THREE.MeshBasicMaterial({
+    color: m.tintColor,
+    transparent: true,
+    opacity: 0.55,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+    toneMapped: false,
+  });
+  const halo = new THREE.Mesh(_TRACER_HALO_GEO, haloMat);
+  halo.scale.set(1, len, 1);
+
+  // Position both halfway, oriented along (to - from).
   const mid = from.clone().lerp(to, 0.5);
-  tracer.position.copy(mid);
+  core.position.copy(mid);
+  halo.position.copy(mid);
   // Rotate so the cylinder's Y axis aligns with the from→to direction.
   const dir = to.clone().sub(from).normalize();
   const up = new THREE.Vector3(0, 1, 0);
   const quat = new THREE.Quaternion().setFromUnitVectors(up, dir);
-  tracer.quaternion.copy(quat);
-  scene.add(tracer);
-  m.tracers.push({ mesh: tracer, mat, life: 0, ttl: 0.07 });
+  core.quaternion.copy(quat);
+  halo.quaternion.copy(quat);
+  scene.add(core);
+  scene.add(halo);
+  // Lifetime: 0.14s — twice the previous 0.07s. Long enough that the
+  // eye latches onto the streak even at 60+ fps; short enough that
+  // tracers don't clutter the scene during sustained fire.
+  m.tracers.push({ mesh: core, mat: coreMat, life: 0, ttl: 0.14, peakOpacity: 1.0 });
+  m.tracers.push({ mesh: halo, mat: haloMat, life: 0, ttl: 0.14, peakOpacity: 0.55 });
+
+  // ----- MUZZLE FLASH -----
+  // Bright sphere at the firing origin that lives for a third of the
+  // tracer ttl, giving the gun a "punch" frame as the bullet leaves.
+  // Sphere geometry instead of a cylinder so it reads as a burst of
+  // light, not a tracer of its own.
+  const flashMat = new THREE.MeshBasicMaterial({
+    color: 0xffffff,
+    transparent: true,
+    opacity: 0.95,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+    toneMapped: false,
+  });
+  const flash = new THREE.Mesh(_MUZZLE_FLASH_GEO, flashMat);
+  flash.position.copy(from);
+  // Scale up briefly so the flash punches outward visually.
+  flash.scale.set(1.4, 1.4, 1.4);
+  scene.add(flash);
+  m.tracers.push({ mesh: flash, mat: flashMat, life: 0, ttl: 0.06, peakOpacity: 0.95 });
 }
 
 function _tickMechTracers(m, dt) {
@@ -1332,7 +1453,13 @@ function _tickMechTracers(m, dt) {
       m.tracers.splice(i, 1);
       continue;
     }
-    t.mat.opacity = 0.85 * (1 - f);
+    // Each tracer element (core / halo / muzzle flash) was spawned with
+    // its own peakOpacity. Fade from peak → 0 across its ttl so the
+    // bright core, soft halo, and short flash each fade independently.
+    // Falls back to 0.85 if something pushed an old-style entry without
+    // the peakOpacity field.
+    const peak = (typeof t.peakOpacity === 'number') ? t.peakOpacity : 0.85;
+    t.mat.opacity = peak * (1 - f);
   }
 }
 
@@ -1341,7 +1468,7 @@ function _doStomp(m) {
   if (m.stompCooldown > 0) return;
   m.stompCooldown = MECH_STOMP_COOLDOWN;
   const r2 = MECH_STOMP_RADIUS * MECH_STOMP_RADIUS;
-  for (let i = 0; i < enemies.length; i++) {
+  for (let i = enemies.length - 1; i >= 0; i--) {
     const e = enemies[i];
     if (!e || !e.pos || e.dying) continue;
     const dx = e.pos.x - m.pos.x;
@@ -1351,6 +1478,9 @@ function _doStomp(m) {
       const falloff = 1 - Math.sqrt(d2) / MECH_STOMP_RADIUS;
       e.hp -= MECH_STOMP_DAMAGE * falloff;
       e.hitFlash = 0.20;
+      if (e.hp <= 0 && typeof window !== 'undefined' && window.__killEnemyAtIdx) {
+        try { window.__killEnemyAtIdx(e); } catch (_) {}
+      }
     }
   }
   // Visual: shockwave ring + dust burst.

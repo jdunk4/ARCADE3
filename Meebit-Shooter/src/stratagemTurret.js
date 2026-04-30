@@ -513,7 +513,11 @@ function _findClosestEnemy(pos, range) {
 // =====================================================================
 // VARIANT FIRE FUNCTIONS
 // =====================================================================
-const _MG_TRACER_GEO = new THREE.CylinderGeometry(0.04, 0.04, 1.0, 6);
+// MG tracer geometry — beefed up from the original 0.04 radius. Same
+// approach as the mech MG: a thicker visible streak so player + turret
+// fire reads at a glance against busy backgrounds. _spawnTracer below
+// also paints an additional halo cylinder for the glow trail.
+const _MG_TRACER_GEO = new THREE.CylinderGeometry(0.10, 0.10, 1.0, 8);
 function _fireMg(t, target) {
   // Hitscan: damage target instantly + spawn a tracer for visual.
   const dmg = 16;
@@ -523,8 +527,14 @@ function _fireMg(t, target) {
   t.muzzle.getWorldPosition(muzzleWorld);
   _spawnTracer(muzzleWorld, target.pos.clone(), t.accentColor, 0.06);
   // Small muzzle puff.
-  hitBurst(muzzleWorld, t.accentHex, 2);
+  hitBurst(muzzleWorld, t.accentHex, 4);
   try { Audio.turretMg(); } catch (_) {}
+  // Finish the kill — turrets used to damage but never trigger the
+  // standard score/loot/splice pipeline; enemies could end up at
+  // negative hp and keep walking.
+  if (target.hp <= 0 && typeof window !== 'undefined' && window.__killEnemyAtIdx) {
+    try { window.__killEnemyAtIdx(target); } catch (_) {}
+  }
 }
 
 function _fireTesla(t, target) {
@@ -536,6 +546,10 @@ function _fireTesla(t, target) {
   const MAX_CHAIN = 4;
   const visited = new Set();
   visited.add(target);
+  // Collect any enemy that the chain drops below 0 hp; we run the
+  // kill pipeline AFTER the chain finishes so the splice inside
+  // killEnemy doesn't perturb the in-progress jump-target search.
+  const kills = [];
   // Start point is the muzzle.
   const muzzleWorld = new THREE.Vector3();
   t.muzzle.getWorldPosition(muzzleWorld);
@@ -546,6 +560,7 @@ function _fireTesla(t, target) {
     if (!cur || !cur.pos) break;
     cur.hp -= dmg;
     cur.hitFlash = 0.16;
+    if (cur.hp <= 0) kills.push(cur);
     const to = cur.pos.clone();
     to.y = 1.0;
     _spawnTracer(from, to, t.accentColor, 0.18);
@@ -567,6 +582,12 @@ function _fireTesla(t, target) {
     cur = next;
     dmg *= FALLOFF;
   }
+  // Now finish kills — chain logic is done so splices are safe.
+  if (kills.length && typeof window !== 'undefined' && window.__killEnemyAtIdx) {
+    for (const e of kills) {
+      try { window.__killEnemyAtIdx(e); } catch (_) {}
+    }
+  }
   try { Audio.turretTesla(); } catch (_) {}
 }
 
@@ -577,8 +598,9 @@ function _fireFlame(t, target) {
   const DPS_BURST = 40;            // damage per call (called every cfg.fireInterval)
   const ang = t.aimYaw;
   const dirX = Math.sin(ang), dirZ = Math.cos(ang);
-  // Apply damage once per call to anything in cone.
-  for (let i = 0; i < enemies.length; i++) {
+  // Apply damage once per call to anything in cone. Backwards
+  // iteration so the killEnemy splice doesn't shift indices.
+  for (let i = enemies.length - 1; i >= 0; i--) {
     const e = enemies[i];
     if (!e || !e.pos || e.dying) continue;
     const ex = e.pos.x - t.pos.x;
@@ -589,6 +611,9 @@ function _fireFlame(t, target) {
     if (perp / Math.max(0.5, along) > CONE_HALF) continue;
     e.hp -= DPS_BURST;
     e.hitFlash = 0.06;
+    if (e.hp <= 0 && typeof window !== 'undefined' && window.__killEnemyAtIdx) {
+      try { window.__killEnemyAtIdx(e); } catch (_) {}
+    }
   }
   // Particle.
   const muzzleWorld = new THREE.Vector3();
@@ -651,27 +676,57 @@ function _fireAntitank(t, target) {
 // =====================================================================
 // TRACER FX (mg + tesla)
 // =====================================================================
+// Two-layer tracer: a bright white core for the bullet body and a
+// chapter-tinted halo cylinder for the glow trail. Matches the mech MG
+// look so player + turret fire reads as a coherent visual language.
+// _MG_TRACER_GEO above provides the core geometry (0.10 radius, beefed
+// up from the original 0.04). The halo geometry is allocated once here
+// at module scope; both meshes share it.
+const _MG_TRACER_HALO_GEO = new THREE.CylinderGeometry(0.22, 0.22, 1.0, 10);
 function _spawnTracer(from, to, color, ttl) {
   const len = from.distanceTo(to);
   if (len < 0.1) return;
-  const mat = new THREE.MeshBasicMaterial({
-    color,
+
+  // Bright white core — opaque, the visible bullet streak.
+  const coreMat = new THREE.MeshBasicMaterial({
+    color: 0xffffff,
     transparent: true,
-    opacity: 0.85,
+    opacity: 1.0,
     blending: THREE.AdditiveBlending,
     depthWrite: false,
     toneMapped: false,
   });
-  const tracer = new THREE.Mesh(_MG_TRACER_GEO, mat);
-  tracer.scale.set(1, len, 1);
+  const core = new THREE.Mesh(_MG_TRACER_GEO, coreMat);
+  core.scale.set(1, len, 1);
+
+  // Tinted halo — wider, additive, gives the soft glow trail.
+  const haloMat = new THREE.MeshBasicMaterial({
+    color,
+    transparent: true,
+    opacity: 0.55,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+    toneMapped: false,
+  });
+  const halo = new THREE.Mesh(_MG_TRACER_HALO_GEO, haloMat);
+  halo.scale.set(1, len, 1);
+
+  // Position both halfway between from and to, oriented along the ray.
   const mid = from.clone().lerp(to, 0.5);
-  tracer.position.copy(mid);
+  core.position.copy(mid);
+  halo.position.copy(mid);
   const dir = to.clone().sub(from).normalize();
   const up = new THREE.Vector3(0, 1, 0);
   const quat = new THREE.Quaternion().setFromUnitVectors(up, dir);
-  tracer.quaternion.copy(quat);
-  scene.add(tracer);
-  _activeTracers.push({ mesh: tracer, mat, life: 0, ttl });
+  core.quaternion.copy(quat);
+  halo.quaternion.copy(quat);
+  scene.add(core);
+  scene.add(halo);
+  // Extend ttl slightly so the streak reads at 60fps. Original 0.06s
+  // was too short — the eye barely caught it.
+  const TTL = Math.max(ttl || 0.06, 0.12);
+  _activeTracers.push({ mesh: core, mat: coreMat, life: 0, ttl: TTL, peakOpacity: 1.0 });
+  _activeTracers.push({ mesh: halo, mat: haloMat, life: 0, ttl: TTL, peakOpacity: 0.55 });
 }
 
 function _tickTracers(dt) {
@@ -685,7 +740,9 @@ function _tickTracers(dt) {
       _activeTracers.splice(i, 1);
       continue;
     }
-    t.mat.opacity = 0.85 * (1 - f);
+    // Each layer fades from its peakOpacity (set on push) down to 0.
+    const peak = (typeof t.peakOpacity === 'number') ? t.peakOpacity : 0.85;
+    t.mat.opacity = peak * (1 - f);
   }
 }
 
@@ -735,9 +792,10 @@ function _tickRockets(dt) {
       }
     }
     if (hit || r.life >= r.maxLife) {
-      // AoE detonation.
+      // AoE detonation. Backwards iteration so the killEnemy splice
+      // doesn't shift indices we haven't visited yet.
       const r2 = _AT_BLAST_RADIUS * _AT_BLAST_RADIUS;
-      for (let j = 0; j < enemies.length; j++) {
+      for (let j = enemies.length - 1; j >= 0; j--) {
         const e = enemies[j];
         if (!e || !e.pos || e.dying) continue;
         const dx = e.pos.x - r.pos.x;
@@ -747,6 +805,9 @@ function _tickRockets(dt) {
           const falloff = 1 - Math.sqrt(d2) / _AT_BLAST_RADIUS;
           e.hp -= _AT_BLAST_DAMAGE * falloff;
           e.hitFlash = 0.20;
+          if (e.hp <= 0 && typeof window !== 'undefined' && window.__killEnemyAtIdx) {
+            try { window.__killEnemyAtIdx(e); } catch (_) {}
+          }
         }
       }
       // Friendly fire — player too if standing in the blast.

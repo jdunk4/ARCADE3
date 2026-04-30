@@ -564,7 +564,16 @@ export function animatePlayer(dt, moving, timeElapsed) {
   }
 
   // Invuln flicker — keep this so damage feedback still works.
-  if (S.invulnTimer > 0) {
+  // While piloting a mech, however, the player avatar must stay
+  // hidden (the mech body replaces it). main.js sets player.obj.visible
+  // = false on enterMech, but without the S.pilotingMech guard below,
+  // this every-frame block would flip visibility back on every tick —
+  // showing the player + their gun INSIDE the mech, which read to
+  // playtesters as "the primary weapon is still firing." Gate on the
+  // pilot flag set by enterMech / exitMech in mech.js.
+  if (S.pilotingMech) {
+    player.obj.visible = false;
+  } else if (S.invulnTimer > 0) {
     player.obj.visible = Math.floor(S.invulnTimer * 20) % 2 === 0;
   } else {
     player.obj.visible = true;

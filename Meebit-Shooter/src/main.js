@@ -242,15 +242,52 @@ import { initGamepad, updateGamepad, setTitleMode, rumble } from './gamepad.js';
 // (keeps the dep graph cleaner — those modules become much more
 // portable). The hooks are wired here ONCE at module load.
 
+// Generic enemy-kill bridge. Stratagem damage paths (mech bullets,
+// turret fire, mine detonations) need to actually FINISH the kill —
+// otherwise enemies keep walking around at -3000 hp because nothing
+// ever runs the score / loot / drops / removal pipeline. The standard
+// player-bullet path does `e.hp -= dmg; if (e.hp <= 0) killEnemy(j);`
+// — we expose killEnemy via this hook so external modules can do the
+// same without an import (would create cycles for mech.js → main.js).
+//
+// Callers MUST pass an enemy reference (NOT a stale array index).
+// killEnemy splices the enemies array internally, so any caller
+// iterating with a numeric index would race the splice and either
+// double-kill or skip an enemy. Looking up the index fresh inside the
+// hook eliminates that whole class of bug.
+window.__killEnemyAtIdx = function(enemyOrIdx) {
+  // Resolve to a fresh index against the live enemies array. Accepts
+  // either an enemy reference (preferred) or a number index (legacy).
+  let idx;
+  if (typeof enemyOrIdx === 'number') {
+    idx = enemyOrIdx;
+  } else {
+    idx = enemies.indexOf(enemyOrIdx);
+  }
+  if (idx < 0 || idx >= enemies.length) return;
+  killEnemy(idx);
+};
+
 // THERMONUCLEAR payload — massive AoE detonation. Bigger radius and
 // more layered FX than a stratagem rocket; signals "you summoned
 // something terrible" and is balanced as a wave-clear panic button.
 window.__stratagemFireNuke = function(pos, tint) {
-  const RADIUS = 20;
+  // Radius bumped from 20 → 120 to match the user's spec: "the nuke
+  // [should] clear the screen of enemies." Arena half-extent is 50,
+  // so 120 covers corner-to-corner with margin and any enemy visible
+  // on screen (even at zoomed-out perspectives) is in the kill zone.
+  // Falloff still applies so the FX read as a centered detonation —
+  // enemies near the epicenter take ~6000 dmg, enemies near the rim
+  // take a fraction. Even bosses with hp in the thousands die at
+  // mid-range with this scale. Damage is intentionally massive; the
+  // gating mechanic is the artifact cost, not survival math.
+  const RADIUS = 120;
   const r2 = RADIUS * RADIUS;
-  const DAMAGE = 6000;
-  // Damage every enemy in radius.
-  for (let i = 0; i < enemies.length; i++) {
+  const DAMAGE = 8000;
+  // Iterate backwards so killEnemy splices don't shift indices we
+  // haven't visited yet. Damage every enemy in radius, then call
+  // killEnemy on anything that hit zero HP.
+  for (let i = enemies.length - 1; i >= 0; i--) {
     const e = enemies[i];
     if (!e || !e.pos || e.dying) continue;
     const dx = e.pos.x - pos.x;
@@ -260,11 +297,19 @@ window.__stratagemFireNuke = function(pos, tint) {
       const falloff = 1 - Math.sqrt(d2) / RADIUS;
       e.hp -= DAMAGE * falloff;
       e.hitFlash = 0.40;
+      // Without this, enemies ended up with hp < 0 but never died —
+      // they kept running around as ghosts because the nuke path
+      // skipped the kill pipeline entirely.
+      if (e.hp <= 0) killEnemy(i);
     }
   }
   // Splash damage to the player — thermonuclear hits hard if you're
-  // anywhere near the epicenter. Half radius for damage falloff so
-  // the outer ring is survivable; near the core it's lethal.
+  // anywhere near the epicenter. The ENEMY kill RADIUS is huge (120)
+  // since the user wants the nuke to clear the screen, but the player
+  // damage zone is independently scoped to a much smaller fixed radius
+  // so the player isn't insta-killed by their own panic button. With a
+  // 120u kill radius and an 18u player danger zone, the player can
+  // safely call a nuke from anywhere outside the immediate beacon spot.
   // Skipped if piloting (mech absorbs).
   {
     const pp = player && player.pos;
@@ -272,7 +317,7 @@ window.__stratagemFireNuke = function(pos, tint) {
       const dx = pp.x - pos.x;
       const dz = pp.z - pos.z;
       const d = Math.sqrt(dx * dx + dz * dz);
-      const dmgRadius = RADIUS * 0.85;
+      const dmgRadius = 18;       // fixed; decoupled from RADIUS
       if (d < dmgRadius) {
         const falloff = 1 - d / dmgRadius;
         const dmg = 220 * falloff;     // up to 220 at epicenter

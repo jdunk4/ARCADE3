@@ -672,15 +672,19 @@ export function updateMines(dt) {
     // Pulse + fade.
     const pulse = 0.5 + 0.5 * Math.sin(p.life * 7);
     p.mat.opacity = (0.55 + pulse * 0.20) * (1 - f * 0.6);
-    // Damage enemies inside the patch.
+    // Damage enemies inside the patch. Iterate BACKWARDS so the
+    // splice inside __killEnemyAtIdx doesn't skip enemies behind us.
     const r2 = p.radius * p.radius;
-    for (let j = 0; j < enemies.length; j++) {
+    for (let j = enemies.length - 1; j >= 0; j--) {
       const e = enemies[j];
       if (!e || !e.pos || e.dying) continue;
       const dx = e.pos.x - p.pos.x;
       const dz = e.pos.z - p.pos.z;
       if (dx * dx + dz * dz < r2) {
         e.hp -= p.dps * dt;
+        if (e.hp <= 0 && typeof window !== 'undefined' && window.__killEnemyAtIdx) {
+          try { window.__killEnemyAtIdx(e); } catch (_) {}
+        }
       }
     }
     // Damage player if they walk through it too. Lower DPS than the
@@ -724,15 +728,19 @@ export function updateMines(dt) {
       puff.mesh.scale.setScalar(s);
       puff.mat.opacity = (0.45 + 0.15 * Math.sin(c.life * 4 + puff.phase)) * (1 - f);
     }
-    // Damage enemies inside the cloud.
+    // Damage enemies inside the cloud. Backwards iteration matches the
+    // mine + patch loops above.
     const r2 = c.radius * c.radius;
-    for (let j = 0; j < enemies.length; j++) {
+    for (let j = enemies.length - 1; j >= 0; j--) {
       const e = enemies[j];
       if (!e || !e.pos || e.dying) continue;
       const dx = e.pos.x - c.pos.x;
       const dz = e.pos.z - c.pos.z;
       if (dx * dx + dz * dz < r2) {
         e.hp -= c.dps * dt;
+        if (e.hp <= 0 && typeof window !== 'undefined' && window.__killEnemyAtIdx) {
+          try { window.__killEnemyAtIdx(e); } catch (_) {}
+        }
       }
     }
     // Player DoT if standing in the cloud.
@@ -759,9 +767,11 @@ function _detonateMine(m) {
   if (m.light.parent) m.light.visible = false;
 
   const cfg = m.cfg;
-  // Burst-style AoE damage in the configured radius.
+  // Burst-style AoE damage in the configured radius. Iterate BACKWARDS
+  // because the kill hook splices the live enemies array — going
+  // forward would skip enemies as the array shrinks behind us.
   const r2 = cfg.aoeRadius * cfg.aoeRadius;
-  for (let i = 0; i < enemies.length; i++) {
+  for (let i = enemies.length - 1; i >= 0; i--) {
     const e = enemies[i];
     if (!e || !e.pos || e.dying) continue;
     const dx = e.pos.x - m.pos.x;
@@ -771,6 +781,13 @@ function _detonateMine(m) {
       const falloff = 1 - Math.sqrt(d2) / cfg.aoeRadius;
       e.hp -= cfg.aoeDamage * falloff;
       e.hitFlash = 0.18;
+      // Finish the kill via the global bridge (set up in main.js as
+      // window.__killEnemyAtIdx). Without this, mines damaged enemies
+      // but never actually killed them — they'd walk around at -150 hp
+      // because the standard score/loot/splice pipeline never fired.
+      if (e.hp <= 0 && typeof window !== 'undefined' && window.__killEnemyAtIdx) {
+        try { window.__killEnemyAtIdx(e); } catch (_) {}
+      }
     }
   }
 
