@@ -3618,6 +3618,23 @@ function applyArmoryToRunStart(armory) {
   S.hpMax = eff.hpMax;
   S.hp = eff.hpMax;
   S.playerSpeed = eff.speed;
+  // ---- ARMORY-UNLOCKED WEAPONS ----
+  // Any weapon the player has unlocked in the armory (paid XP for) is
+  // permanently theirs across all subsequent runs. resetGame() seeds
+  // S.ownedWeapons with just ['pistol', 'pickaxe']; we union the
+  // armory unlocks on top so the player walks into chapter 1 already
+  // holding whatever they bought between runs. The boss-reward
+  // pipeline in waves.js (grantBossReward) iterates the chapter
+  // weapon list and grants the first one NOT already owned, so
+  // pre-owning shotgun/smg/etc. just shifts the reward to the next
+  // un-owned weapon — no double-grant, no broken progression.
+  if (armory && armory.unlocked) {
+    for (const id of ARMORY_WEAPON_IDS) {
+      if (armory.unlocked[id]) {
+        S.ownedWeapons.add(id);
+      }
+    }
+  }
   // Initialize ammo state for the active weapon (reload mechanic
   // wires this up later). We seed S.ammo as a per-weapon map so
   // switching weapons mid-run preserves each gun's mag state.
