@@ -857,20 +857,69 @@ class AudioEngine {
     // Intentionally empty — see comment above.
   }
 
-  // Truck engine rumble — a slow, low truck-idle sound. Called every
-  // ~0.5s by escortTruck.js's update tick during travel. Only the
-  // `moving=true` case fires sound — when the truck is stopped/
-  // blocked, this is a no-op (silence reads as "engine off / paused").
-  // Single low rumble layer instead of the old multi-layer engine
-  // mix; lets the truck audibly chug forward without competing
-  // against combat sfx.
+  // Truck engine rumble — a low, sustained diesel chug. Called every
+  // ~0.5s by escortTruck.js's update tick while travelling.
+  //
+  // The previous implementation was two oscillators with steep gain
+  // decay (`exponentialRampToValueAtTime` 0.20 → 0.001 over 0.55s) and
+  // pitch ramps — a combination that lands as a percussive "boing"
+  // envelope on a tone, repeating like a bouncing ball. Per playtester
+  // feedback that's exactly how it sounded.
+  //
+  // The replacement uses LOW-CUT FILTERED NOISE (real diesel idle is
+  // broadband rumble, not pure tones) with a flat-sustain envelope
+  // (slow attack, flat middle, slow release) so it reads as a chuggy
+  // engine rather than a discrete musical event. Volume is dropped
+  // significantly so it sits well under combat audio.
   truckEngine(moving = true) {
     if (!moving) return;
-    // Slow diesel idle rumble — low fundamental + warm mid harmonic.
-    // 0.55s envelope gives a chuggy, lazy feel. Volume tuned to sit
-    // under combat sfx comfortably.
-    this._beep({ type: 'sawtooth', freqStart: 60, freqEnd: 55, dur: 0.55, gainStart: 0.20 });
-    this._beep({ type: 'square',   freqStart: 120, freqEnd: 110, dur: 0.50, gainStart: 0.08, delay: 0.05 });
+    if (!this.ctx || this.muted) return;
+    const t = this.ctx.currentTime;
+    const DUR = 0.55;
+    // Low-passed noise burst — this is the engine "body". Cutoff at
+    // 180 Hz keeps it strictly in the rumble band; anything brighter
+    // and it would compete with combat sfx. Buffer is filled with
+    // amplitude-decaying noise but the real envelope shape comes from
+    // the gain node below.
+    const buf = this.ctx.createBuffer(1, this.ctx.sampleRate * DUR, this.ctx.sampleRate);
+    const d = buf.getChannelData(0);
+    for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+    const src = this.ctx.createBufferSource();
+    src.buffer = buf;
+    const filt = this.ctx.createBiquadFilter();
+    filt.type = 'lowpass';
+    filt.frequency.value = 180;       // strictly low rumble; no tonal "boing"
+    filt.Q.value = 0.4;
+    const g = this.ctx.createGain();
+    // Slow attack (120ms), flat sustain (~0.20s at peak), slow release
+    // (230ms). Linear ramps — exponential ramps were what made the
+    // previous version read as percussive. Peak gain 0.06 — about
+    // 1/3 the previous level, so it sits unobtrusively in the mix.
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(0.06, t + 0.12);
+    g.gain.setValueAtTime(0.06, t + 0.32);
+    g.gain.linearRampToValueAtTime(0.0001, t + DUR);
+    src.connect(filt);
+    filt.connect(g);
+    g.connect(this.sfxGain);
+    src.start(t);
+    src.stop(t + DUR + 0.05);
+    // A whisper of mid-range body so the rumble has SHAPE, not just
+    // bottom-end mush. Single sawtooth at 90 Hz with a gentle envelope
+    // of its own — just enough to give the noise a sense of pitch
+    // without becoming the dominant tone.
+    const osc = this.ctx.createOscillator();
+    const og = this.ctx.createGain();
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(90, t);
+    og.gain.setValueAtTime(0.0001, t);
+    og.gain.linearRampToValueAtTime(0.025, t + 0.14);
+    og.gain.setValueAtTime(0.025, t + 0.30);
+    og.gain.linearRampToValueAtTime(0.0001, t + DUR);
+    osc.connect(og);
+    og.connect(this.sfxGain);
+    osc.start(t);
+    osc.stop(t + DUR + 0.05);
   }
 
   // Truck arrival — cork pop. Sharp pitch-dropping "THOCK" + tiny
