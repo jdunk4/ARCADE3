@@ -176,6 +176,7 @@ import { spawnPellets, despawnPellets, updatePellets } from './pacmanPellets.js'
 import { buildCrowd, updateCrowd, recolorCrowd } from './crowd.js';
 import { spawnGravestones, recolorGravestones, clearGravestones } from './gravestones.js';
 import { playMatrixRain } from './matrixRain.js';
+import { play3DMatrixRain, update3DMatrixRain, clearMatrixRain3D } from './matrixRain3D.js';
 import { prefetchMeebits, pickRandomMeebitId } from './meebitsPublicApi.js';
 import {
   spawnPickup, updatePickups as updateNewPickups, clearAllPickups,
@@ -3329,6 +3330,10 @@ function _exitTutorialIfActive() {
   try { clearAllMines(); } catch (e) {}
   try { clearStratagemTurrets(); } catch (e) {}
   try { disarmSecretListener(); } catch (e) {}
+  // 3D matrix rain — kill any in-flight transition cascade so a
+  // restart-mid-transition doesn't leave sprites floating in the
+  // new level.
+  try { clearMatrixRain3D(); } catch (e) {}
   // Re-show the player avatar in case the player was piloting a
   // mech when they bailed.
   if (player && player.obj) player.obj.visible = true;
@@ -4264,6 +4269,15 @@ function animate() {
           try {
             playMatrixRain(CHAPTERS[S.chapter % CHAPTERS.length].full.grid1);
           } catch (e) { console.warn('[matrixRain] play', e); }
+          // 3D matrix rain in the arena — falls onto/around objects so
+          // the chapter handover feels like a world transformation, not
+          // just a screen flash. Anchored to the player so the rain
+          // covers wherever the camera is looking. Tints to the
+          // incoming chapter's grid1 color, same source as the 2D rain.
+          try {
+            const tint = CHAPTERS[S.chapter % CHAPTERS.length].full.grid1;
+            play3DMatrixRain(tint, 1800, player && player.pos);
+          } catch (e) { console.warn('[matrixRain3D] play', e); }
         }
         // Confirm the ally was applied (or wasn't because chapter doesn't have one).
         if (S.chapter === 1) console.log(`[chapter-change] galaga ship active=${isGalagaShipActive()}`);
@@ -4421,6 +4435,12 @@ function animate() {
     updateSavedPigs(dt);
     updateParticles(worldDt);
     updateRain(dt, player.pos);
+    // 3D matrix rain — tick the in-arena chapter-transition cascade.
+    // No-op when no transition is active (cheap null check inside).
+    // Use plain `dt` (not worldDt) so the rain still flows during
+    // pause / cutscene moments — it's an out-of-game UI effect, not
+    // a gameplay animation.
+    update3DMatrixRain(dt);
     updateGooSplats(worldDt);
     updateHazards(worldDt, S.timeElapsed);
     updateNewPickups(worldDt, player.pos);
