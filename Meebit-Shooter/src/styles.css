@@ -2075,3 +2075,86 @@ canvas { display: block; cursor: var(--matrix-cursor); }
   background: radial-gradient(circle, rgba(0, 255, 102, 0.45), rgba(0, 0, 0, 0.7));
   box-shadow: 0 0 22px rgba(0, 255, 102, 0.95), inset 0 0 12px rgba(0, 255, 102, 0.4);
 }
+
+/* ============================================================================
+ * SOFT TUTORIAL GATE — first-ever-visit lock on the ATTACK THE AI card
+ *
+ * On a player's first visit (no localStorage flag, no armory XP, no recorded
+ * highest wave), we mark the ATTACK THE AI card with .locked. It stays
+ * visible — the user wants the lock to be EDUCATIONAL ("you need to do the
+ * tutorial first") rather than hiding the option entirely. Clicking the
+ * locked card flashes a hint instead of starting the game; the title-card
+ * click forwarder reads the .locked class and routes accordingly.
+ *
+ * Once the player completes the tutorial (or already has any prior progress
+ * on this device), the .locked class is removed and the card behaves
+ * normally. The flag is stored at module scope in main.js as a single
+ * device-wide localStorage key (`mbs_tutorial_completed_v1`).
+ * ========================================================================= */
+.mode-card.locked {
+  /* Heavier desaturation + darker so it reads "off" at a glance. Keep
+     the green border so the matrix theme stays consistent — the card
+     isn't disabled, just gated. */
+  filter: saturate(0.18) brightness(0.45);
+  cursor: not-allowed;
+}
+/* Hover doesn't perform the brighten-up the unlocked card does. We
+   override the existing .mode-card:hover transform/filter rules with
+   the same dimmed values. The :hover selector is more specific than
+   the base, so we have to repeat the dimming here. */
+.mode-card.locked:hover {
+  filter: saturate(0.20) brightness(0.50);
+  transform: none;
+  box-shadow: 0 0 18px rgba(255, 60, 60, 0.45),
+              inset 0 0 18px rgba(255, 60, 60, 0.10);
+  border-color: #ff5520;
+}
+.mode-card.locked:hover .mode-card-img {
+  transform: none;
+}
+/* Lock badge — a "COMPLETE TUTORIAL FIRST" ribbon that sits at the top
+   center of the card so the player understands WHY the card is dim.
+   Uses a CSS ::before so we don't have to add markup to index.html. */
+.mode-card.locked::before {
+  content: '🔒  COMPLETE TUTORIAL FIRST';
+  position: absolute;
+  top: 14px; left: 14px; right: 14px;
+  padding: 8px 10px;
+  background: rgba(20, 4, 4, 0.92);
+  border: 2px solid #ff5520;
+  color: #ffaa88;
+  font-family: 'Impact', 'Arial Black', sans-serif;
+  font-size: 14px;
+  letter-spacing: 3px;
+  text-align: center;
+  text-shadow: 0 0 8px rgba(255, 85, 32, 0.6);
+  z-index: 4;     /* above the card image (~1) and label (~2) */
+  /* Don't intercept clicks — we want them to land on the card so
+     the click forwarder can flash the hint. */
+  pointer-events: none;
+}
+/* Subtle pulse on the lock badge so it draws the eye toward the
+   tutorial card next to it. Pure CSS keyframe. */
+@keyframes _lockedCardPulse {
+  0%, 100% { box-shadow: 0 0 0 rgba(255, 85, 32, 0); }
+  50%      { box-shadow: 0 0 14px rgba(255, 85, 32, 0.45); }
+}
+.mode-card.locked::before {
+  animation: _lockedCardPulse 2.2s ease-in-out infinite;
+}
+
+/* Hint flash on the locked card — added by JS for ~1s after a click,
+   then removed. Visually shakes the lock badge + flashes red border. */
+@keyframes _lockedCardShake {
+  0%, 100% { transform: translateX(0); }
+  20%      { transform: translateX(-8px); }
+  40%      { transform: translateX(8px); }
+  60%      { transform: translateX(-5px); }
+  80%      { transform: translateX(5px); }
+}
+.mode-card.locked.hint-flash {
+  animation: _lockedCardShake 0.6s ease-out;
+  border-color: #ff2020 !important;
+  box-shadow: 0 0 32px rgba(255, 32, 32, 0.85),
+              inset 0 0 24px rgba(255, 32, 32, 0.25) !important;
+}

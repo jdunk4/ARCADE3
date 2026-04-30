@@ -3068,6 +3068,12 @@ function _grantTutorialArmoryXP() {
 }
 
 function _showTutorialCompleteModal() {
+  // Unlock the soft tutorial gate — reaching this modal means the
+  // player finished wave 11 of the tutorial. Sets the device-wide
+  // localStorage flag and live-removes .locked from the title's
+  // ATTACK THE AI card (so when the modal closes and the title
+  // re-appears, the card is already enabled).
+  try { _markTutorialCompleted(); } catch (e) { console.warn('[tutorial-gate] mark', e); }
   if (!_tutCompleteModal) {
     const m = document.createElement('div');
     m.id = 'tutorial-complete-modal';
@@ -3142,6 +3148,10 @@ function _showTutorialCompleteModal() {
       document.getElementById('gameover').classList.add('hidden');
       const _t = document.getElementById('title');
       if (_t) _t.classList.remove('hidden');
+      // The tutorial-complete modal already called _markTutorialCompleted
+      // above, but explicitly re-apply the gate here so the visual
+      // unlock is guaranteed when the player lands back on the title.
+      _applyTutorialGate();
     });
     _tutCompleteModal = m;
   }
@@ -3512,7 +3522,107 @@ function _updateTutorialFloorGlow(dt) {
   if (_tutMeebitLight) _tutMeebitLight.color.lerp(_tutCellTargetColor, 0.25);
 }
 
-document.getElementById('start-btn').addEventListener('click', () => {
+// =====================================================================
+// SOFT TUTORIAL GATE
+// =====================================================================
+// First-time visitors on a device must complete the tutorial before they
+// can launch ATTACK THE AI. Returning players (anyone with the unlock
+// flag set, OR any prior armory XP, OR any recorded chapter/wave
+// progress) bypass the gate. Per playtester request:
+// "We want the tutorial always accessible and visible, but I think we
+//  lock game for first time ever users. Let's do soft gate so if they
+//  return on the same device they don't have to do the tutorial to
+//  unlock main game."
+//
+// The lock is purely device-local — one localStorage key. No
+// per-username storage; if a player switches usernames they don't
+// have to re-do the tutorial. The TUTORIAL card itself is always
+// available (the gate only applies to the ATTACK THE AI card).
+const _TUTORIAL_GATE_KEY = 'mbs_tutorial_completed_v1';
+function _hasCompletedTutorial() {
+  try {
+    if (localStorage.getItem(_TUTORIAL_GATE_KEY) === '1') return true;
+    // Permissive fallbacks — if the player has ANY prior progress
+    // markers on this device (from before this gate existed, or
+    // because they played the game directly via a dev/test path),
+    // they count as a returning player. Any of:
+    //   - armory XP > 0  (earned on any prior run)
+    //   - highestWave > 1 (they got past wave 1 on something)
+    //   - highestChapter > 0
+    const p = (Save && Save.load) ? Save.load() : null;
+    if (p) {
+      if ((p.armory && (p.armory.xp || 0) > 0)) return true;
+      if ((p.highestWave || 0) > 1) return true;
+      if ((p.highestChapter || 0) > 0) return true;
+    }
+  } catch (e) { /* localStorage disabled — fail open, don't lock */ return true; }
+  return false;
+}
+function _markTutorialCompleted() {
+  try { localStorage.setItem(_TUTORIAL_GATE_KEY, '1'); } catch (e) {}
+  // Live-unlock the title card if it's currently in the DOM, so a
+  // player who finishes the tutorial and returns to the title sees
+  // the ATTACK THE AI card unlocked without a page refresh.
+  const card = document.getElementById('mode-card-game');
+  if (card) card.classList.remove('locked');
+}
+// Apply the gate to the title card. Call this every time the title
+// screen is shown so a state change (e.g. localStorage cleared in
+// devtools, or another tab completed the tutorial) is reflected.
+function _applyTutorialGate() {
+  const card = document.getElementById('mode-card-game');
+  if (!card) return;
+  if (_hasCompletedTutorial()) {
+    card.classList.remove('locked');
+  } else {
+    card.classList.add('locked');
+    // Default-select the TUTORIAL card so first-time players see the
+    // intended path highlighted. The index.html click forwarder
+    // selects mode-card-game on init; we override that here on
+    // first-visit. Re-running select() requires accessing the
+    // index.html IIFE's closure, which we don't have — instead we
+    // simulate it: remove .selected from the game card and add it
+    // to the tutorial card. The DESCRIPTIONS panel update is small
+    // collateral damage (it'll still show the game-card description
+    // until the player hovers), but the visual highlight reads
+    // correctly.
+    const tutorialCard = document.getElementById('mode-card-tutorial');
+    if (tutorialCard) {
+      card.classList.remove('selected');
+      tutorialCard.classList.add('selected');
+    }
+  }
+}
+// Run once on module load — the title screen exists in the DOM at
+// page load time, even though it might be visually hidden behind the
+// boot/loading overlay.
+_applyTutorialGate();
+// Expose for re-application from any other title-show site (the
+// title is shown from several code paths — game over → main menu,
+// tutorial complete → return, etc.). Cheap to call repeatedly.
+window.__applyTutorialGate = _applyTutorialGate;
+
+document.getElementById('start-btn').addEventListener('click', (e) => {
+  // SOFT GATE — block the launch if the player hasn't yet completed
+  // the tutorial on this device. Don't show an alert(); instead flash
+  // the locked card so the visual gating mechanism is reinforced.
+  if (!_hasCompletedTutorial()) {
+    e.stopImmediatePropagation();
+    const card = document.getElementById('mode-card-game');
+    if (card) {
+      card.classList.add('hint-flash');
+      // CSS animation is 0.6s; remove the class after so the next
+      // click can re-trigger it. Safe even if the player rage-clicks
+      // — the class is idempotent.
+      setTimeout(() => card.classList.remove('hint-flash'), 700);
+    }
+    // Audio cue so the gate is felt, not just seen. Audio.damage()
+    // is a descending square-wave tone — reads as "denied / blocked"
+    // in this UI context. Wrapped in try/catch in case Audio isn't
+    // initialized yet (player clicked before init() fired).
+    try { Audio.damage && Audio.damage(); } catch (_) {}
+    return;
+  }
   // If we somehow got here from a tutorial run, make sure the rainbow
   // floor + tutorial state are gone before the real game starts.
   _exitTutorialIfActive();
@@ -3555,6 +3665,9 @@ document.getElementById('restart-btn').addEventListener('click', () => {
       document.querySelectorAll('.hidden-ui').forEach(el => el.style.display = 'none');
       document.getElementById('gameover').classList.add('hidden');
       document.getElementById('title').classList.remove('hidden');
+      // Re-apply the soft tutorial gate so a player who just finished
+      // the tutorial sees the ATTACK THE AI card unlocked.
+      _applyTutorialGate();
     });
   }
 }
@@ -3581,6 +3694,9 @@ PauseMenu.setHandlers({
     document.querySelectorAll('.hidden-ui').forEach(el => el.style.display = 'none');
     document.getElementById('gameover').classList.add('hidden');
     document.getElementById('title').classList.remove('hidden');
+    // Re-apply soft tutorial gate so the title's ATTACK THE AI card
+    // reflects current completion state on every return-to-title.
+    _applyTutorialGate();
   },
 });
 
