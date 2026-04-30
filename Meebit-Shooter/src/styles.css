@@ -184,22 +184,11 @@ canvas { display: block; cursor: var(--matrix-cursor); }
    (emoji) layout or interfere with the active-slot transform. */
 .slot-ammo-arc {
   position: absolute;
-  /* Sized considerably larger than the slot itself (inset: -16px on
-     a 64px slot → 96px SVG canvas) so the arc has room to draw
-     outside the slot's border without colliding with the icon. The
-     bottom-half arc inside the SVG sits about 4–6px clear of the
-     slot's outer edge — readable at a glance, doesn't crowd the
-     glyph. */
-  inset: -16px;
+  /* The arc lives a few px outside the slot so it doesn't crowd
+     the icon. The overall size is matched to slot size + 2 *
+     overshoot. */
+  inset: -6px;
   pointer-events: none;
-  /* Sit above the slot's border + glow so the arc is never hidden
-     behind active-slot box-shadow. The pip strokes have their own
-     drop-shadow that reads cleanly on top of either dark backdrop
-     or the active-slot yellow glow. */
-  z-index: 1;
-  /* Allow strokes' rounded caps and drop-shadow to extend just
-     beyond the SVG canvas without being clipped. */
-  overflow: visible;
   /* Don't fade the arc with the slot's owned-or-not opacity —
      we want it to be readable even when the slot is dimmed
      (active state will still pop visually because the arc gets
@@ -211,20 +200,20 @@ canvas { display: block; cursor: var(--matrix-cursor); }
    color (filled vs spent) cheaply. */
 .slot-ammo-arc .ammo-pip-filled {
   stroke: var(--xp-yellow);
-  filter: drop-shadow(0 0 4px var(--xp-yellow));
+  filter: drop-shadow(0 0 3px var(--xp-yellow));
 }
 .slot-ammo-arc .ammo-pip-spent {
-  stroke: rgba(255, 255, 255, 0.30);
+  stroke: rgba(255, 255, 255, 0.18);
 }
 /* Bar mode (raygun / flamethrower): continuous arc, two layered
    <path> elements — a faint background and a foreground that sweeps
    the filled portion. */
 .slot-ammo-arc .ammo-bar-bg {
-  stroke: rgba(255, 255, 255, 0.30);
+  stroke: rgba(255, 255, 255, 0.18);
 }
 .slot-ammo-arc .ammo-bar-fg {
   stroke: var(--xp-yellow);
-  filter: drop-shadow(0 0 4px var(--xp-yellow));
+  filter: drop-shadow(0 0 3px var(--xp-yellow));
   transition: stroke-dasharray 0.08s linear;
 }
 /* When the player is actively reloading we want the arc to flash
