@@ -20,21 +20,42 @@
 //   C-drone.mp3   (ambient drone layered UNDER the phone ring during the
 //                  matrix-dive so the ring doesn't feel naked)
 //
-// Playlist order (loops indefinitely):
-//   AwakenArena → Arena I → II → III → IV → XIAN → YOMI → ZION → TheOtherSide → Underworld → AwakenArena → ...
+// Playlist sections (indexes into SOUNDTRACK_FILES below):
+//   • 'main' — chapters 1-6 rotation:
+//     AwakenArena → Arena I → II → III → IV → XIAN → YOMI → ZION → loop back
+//   • 'paradise_fallen' — chapter 7 rotation (revealed only after the
+//     player completes chapter 6 and steps into chapter 7):
+//     TheOtherSide → Underworld → loop back
+//
+// The MAIN section deliberately stops short at ZION; TheOtherSide and
+// Underworld are saved as a "second-half-of-the-game" reward so that
+// stepping into chapter 7 brings a fresh sound palette the player
+// hasn't heard yet. main.js calls Audio.setMusicSection('paradise_fallen')
+// from the chapter-7-entry block; startGame resets back to 'main'.
 
 const SOUNDTRACK_FILES = [
-  'assets/AwakenArena.mp3',
-  'assets/Arena I.mp3',
-  'assets/Arena II.mp3',
-  'assets/Arena III.mp3',
-  'assets/Arena IV.mp3',
-  'assets/XIAN.mp3',
-  'assets/YOMI.mp3',
-  'assets/ZION.mp3',
-  'assets/TheOtherSide.mp3',
-  'assets/Underworld.mp3',
+  'assets/AwakenArena.mp3',     // 0
+  'assets/Arena I.mp3',         // 1
+  'assets/Arena II.mp3',        // 2
+  'assets/Arena III.mp3',       // 3
+  'assets/Arena IV.mp3',        // 4
+  'assets/XIAN.mp3',            // 5
+  'assets/YOMI.mp3',            // 6
+  'assets/ZION.mp3',            // 7
+  'assets/TheOtherSide.mp3',    // 8 — chapter-7 only
+  'assets/Underworld.mp3',      // 9 — chapter-7 only
 ];
+
+// Section → ordered list of indexes into SOUNDTRACK_FILES. Auto-advance
+// walks within the active section's list and loops back to its first
+// entry, so playing chapters 1-6 will never spill into the chapter-7
+// tracks even if the player camps on a single chapter for a long time.
+const MUSIC_SECTIONS = {
+  main:             [0, 1, 2, 3, 4, 5, 6, 7],
+  paradise_fallen:  [8, 9],
+};
+const DEFAULT_MUSIC_SECTION = 'main';
+
 // The phone-ring asset has shipped under several names in this project.
 // We try them in order until one loads; whichever works becomes the source.
 const PHONE_RING_CANDIDATES = [
@@ -93,6 +114,12 @@ class AudioEngine {
     this._trackEls = [];          // HTMLAudioElement[]
     this._currentTrackIdx = -1;   // which track is currently assigned
     this._musicOn = false;
+    // Active playlist section. Defines which subset of SOUNDTRACK_FILES
+    // is in rotation right now and therefore what the auto-advance
+    // ('ended' handler on each track) walks through. Switched via
+    // setMusicSection(); see MUSIC_SECTIONS table at module top. Default
+    // is the main chapter-1-to-6 rotation.
+    this._currentSection = DEFAULT_MUSIC_SECTION;
 
     // Phone ring
     this._phoneRingEl = null;
@@ -143,12 +170,29 @@ class AudioEngine {
         el.preload = 'auto';
         el.loop = false;    // playlist mode: advance to next track when this ends
         el.volume = this._effectiveMusicVolume();
-        // When this track ends, advance to the next one in the playlist.
+        // When this track ends, advance to the next track in the
+        // CURRENT SECTION, not the global playlist. This is how
+        // TheOtherSide + Underworld stay locked behind chapter 7 even
+        // when the chapter-1-6 playlist rolls around its end —
+        // looping the 'main' section sends us back to AwakenArena
+        // rather than spilling into the chapter-7-exclusive tracks.
         el.addEventListener('ended', () => {
           // Only auto-advance if music is still enabled and this is the active track
           if (!this._musicOn) return;
           if (this._currentTrackIdx !== i) return;
-          const nextIdx = (i + 1) % this._trackEls.length;
+          const section = MUSIC_SECTIONS[this._currentSection] || MUSIC_SECTIONS[DEFAULT_MUSIC_SECTION];
+          if (!section || !section.length) return;
+          // Find this track's position in the section list. If it's
+          // not in the current section (e.g. section was just changed
+          // mid-track), bail to the section's first entry rather than
+          // trying to compute a "next" relative to a non-member.
+          const posInSection = section.indexOf(i);
+          let nextIdx;
+          if (posInSection < 0) {
+            nextIdx = section[0];
+          } else {
+            nextIdx = section[(posInSection + 1) % section.length];
+          }
           this._playTrackAt(nextIdx, /*fadeIn*/ true);
         });
         this._trackEls.push(el);
@@ -251,27 +295,75 @@ class AudioEngine {
   // ---------------------------------------------------------------
 
   /**
-   * Start the soundtrack in playlist mode. Tracks advance automatically:
-   *   AwakenArena → Arena I → II → III → IV → XIAN → YOMI → ZION
-   *   → TheOtherSide → Underworld → AwakenArena → ... (loops indefinitely)
-   * The `wave` argument is kept for backward compatibility but no longer
-   * tied to gameplay -- calling with no args (or wave=1) starts from
-   * AwakenArena (the opening track).
+   * Start the soundtrack in playlist mode within the active section.
+   * Sections (set via setMusicSection):
+   *   • 'main'            — chapters 1-6: AwakenArena → ... → ZION → loop
+   *   • 'paradise_fallen' — chapter 7:    TheOtherSide → Underworld → loop
+   *
+   * The `wave` argument is kept for backward compatibility. When given,
+   * it picks an entry within the active section (modulo the section
+   * length), so `startMusic(1)` always plays the section's first track.
+   * Calling with no args resumes the current track (or starts the
+   * section's first track if nothing's been played yet).
    */
   startMusic(wave) {
     if (!this.ctx) this.init();
     if (this._trackEls.length === 0) return;
+    const section = MUSIC_SECTIONS[this._currentSection] || MUSIC_SECTIONS[DEFAULT_MUSIC_SECTION];
+    if (!section || !section.length) return;
 
     let idx;
     if (typeof wave === 'number' && wave > 0) {
-      idx = (wave - 1) % this._trackEls.length;
+      // Pick the (wave-1)th entry of the active section. So
+      // startMusic(1) always plays the section's opener — for 'main'
+      // that's AwakenArena; for 'paradise_fallen' that's TheOtherSide.
+      idx = section[(wave - 1) % section.length];
+    } else if (this._currentTrackIdx >= 0 && section.indexOf(this._currentTrackIdx) >= 0) {
+      // Resume current track only if it's a member of the active
+      // section. If we just switched sections (e.g. into chapter 7),
+      // _currentTrackIdx still points at the previous section's track
+      // and we want to start fresh on the new section's opener
+      // instead.
+      idx = this._currentTrackIdx;
     } else {
-      idx = this._currentTrackIdx >= 0 ? this._currentTrackIdx : 0;
+      idx = section[0];
     }
 
     this._musicOn = true;
     this._playTrackAt(idx, /*fadeIn*/ true);
   }
+
+  /**
+   * Switch the active playlist section. Called from main.js's
+   * chapter-7-entry block to unlock the chapter-7 soundtrack
+   * (TheOtherSide + Underworld), and called again at start-of-run
+   * to reset back to the main section. If the currently playing
+   * track is not a member of the new section, we fade out and
+   * start the new section's opener; if it IS a member (or no track
+   * is playing) we leave playback alone — auto-advance will pick
+   * up the new section on the next 'ended' event.
+   */
+  setMusicSection(name) {
+    if (!MUSIC_SECTIONS[name]) {
+      console.warn('[audio] unknown music section:', name);
+      return;
+    }
+    if (this._currentSection === name) return;       // no-op
+    this._currentSection = name;
+    if (!this._musicOn) return;                      // nothing to swap right now
+    const section = MUSIC_SECTIONS[name];
+    if (!section.length) return;
+    // Is the active track still appropriate for the new section?
+    if (this._currentTrackIdx >= 0 && section.indexOf(this._currentTrackIdx) >= 0) {
+      // The current track is a member of the new section — let it
+      // finish; auto-advance will then walk the new section.
+      return;
+    }
+    // Otherwise swap to the new section's opener with a smooth
+    // crossfade. _playTrackAt fades out the old element internally.
+    this._playTrackAt(section[0], /*fadeIn*/ true);
+  }
+
 
   /** Internal: play a specific track index, fading out any currently active one. */
   _playTrackAt(idx, fadeIn) {

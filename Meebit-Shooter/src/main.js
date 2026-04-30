@@ -2180,6 +2180,13 @@ function startGame() {
   // from a previous run's SIGNAL LOST screen. Idempotent — no-op
   // if never started, never lazy-loaded the asset, etc.
   Audio.stopDeathMusic && Audio.stopDeathMusic();
+  // Reset the music section to the chapters 1-6 rotation. If the
+  // player ended a previous run mid-chapter-7, the audio engine
+  // would still have _currentSection = 'paradise_fallen' from that
+  // run's chapter-7 entry; clearing it here ensures a fresh REBOOT
+  // starts in chapter 1 with the AwakenArena → ZION rotation, and
+  // re-locks TheOtherSide/Underworld behind the chapter-7 reveal.
+  Audio.setMusicSection && Audio.setMusicSection('main');
 
   // Build the player-centered fog ring. Idempotent — safe to call on
   // replay. Restricts visibility to a uniform ~22u radius around the
@@ -2628,6 +2635,12 @@ function startTutorial() {
   // LOST loop is still playing. Symmetric with startGame — either
   // entry point into a fresh run silences the death loop.
   Audio.stopDeathMusic && Audio.stopDeathMusic();
+  // Reset the music section to the chapters 1-6 rotation. The
+  // tutorial doesn't actually use the chapter playlist (it has its
+  // own TeachingWar.mp3 loop), but clearing the section here means
+  // that when the player exits the tutorial and starts a real run,
+  // the section is already in the expected 'main' state.
+  Audio.setMusicSection && Audio.setMusicSection('main');
 
   // Reset per-session armory-XP grant flags so a brand-new tutorial
   // run is eligible to award the full 400-XP base reward (and the
@@ -4137,6 +4150,19 @@ function animate() {
           } catch (e) {
             console.error('[chapter-7-entry] FAIL 6: UI refresh —', e);
           }
+          // STEP 7: Switch the music playlist to the chapter-7 section.
+          // TheOtherSide + Underworld have been gated out of the
+          // chapter-1-6 rotation specifically so this moment plays
+          // the player a fresh sound palette they haven't heard yet
+          // — the audio engine crossfades into TheOtherSide here.
+          // The reverse switch (back to 'main') is wired into the
+          // chapter-7-exit branch a little further below.
+          try {
+            Audio.setMusicSection && Audio.setMusicSection('paradise_fallen');
+            console.log('[chapter-7-entry] OK 7: music section → paradise_fallen');
+          } catch (e) {
+            console.error('[chapter-7-entry] FAIL 7: music section switch —', e);
+          }
           console.log('[chapter-7-entry] END — all steps attempted');
         }
         // -------- CHAPTER 7 EXIT (e.g. game reset to ch 0) --------
@@ -4169,6 +4195,17 @@ function animate() {
               recolorGun(WEAPONS[S.currentWeapon].color);
               _syncWeaponCursor();
             } catch (e) {}
+          }
+          // Restore the chapter-1-6 music section. Symmetric with the
+          // ch7-entry switch above — if the player jumps backward
+          // (cheat path) or restarts mid-chapter-7 the rotation should
+          // go back to AwakenArena/Arena/XIAN/YOMI/ZION rather than
+          // continuing to play TheOtherSide/Underworld in earlier
+          // chapters.
+          try {
+            Audio.setMusicSection && Audio.setMusicSection('main');
+          } catch (e) {
+            console.warn('[chapter-7-exit] music section restore failed:', e);
           }
           S._preCh7Weapon = null;
         }
