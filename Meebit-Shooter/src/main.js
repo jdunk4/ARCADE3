@@ -7260,28 +7260,20 @@ animate();
     try { clearStratagemTurrets(); } catch (e) {}
     try { if (Array.isArray(enemyProjectiles)) enemyProjectiles.length = 0; } catch (e) {}
 
-    // Walk the player through waves 1..(waveNum-1) silently, calling
-    // startWave then silentlyEndCurrentWave for each. silentlyEndCurrentWave
-    // runs the SAME wave-specific teardown that endWave runs (clears
-    // blocks/ores for mining, clears zones for powerup, clears hive
-    // wave flags, etc.) but skips FX, intermission gating, save calls,
-    // and the chapter-7 finale handoff — all of which would either
-    // disrupt the iteration or spam the player with toasts.
+    // ONE-SHOT cleanup. silentlyEndCurrentWave is now an unconditional
+    // kitchen-sink sweep — clears every wave-scoped prop in the world
+    // (boss bar, blocks, ores, egg shower, escort truck, EMP launcher,
+    // charge cubes, server warehouse, safety pod, hive lasers, turrets,
+    // hive shields, boss cubes, capture zones, rescue NPCs, objective
+    // HUD). Each clear*() is a no-op if its target isn't on the field,
+    // so calling them all unconditionally is safe + fast.
     //
-    // Performance: each iteration is microseconds (we're just
-    // setting/clearing flags). At worst-case waveNum=35 this loop
-    // runs 34 times — under 1ms total.
+    // Per playtester scope: this cleanup is dev-skip only. Normal
+    // wave-end transitions still use endWave() which gates its
+    // teardown on the wave type that just finished.
     try {
-      for (let w = 1; w < waveNum; w++) {
-        startWave(w);
-        silentlyEndCurrentWave();
-        // Belt-and-suspenders: re-clear any stragglers that the
-        // iteration spawned (e.g. mining wave's startWave triggers
-        // ore drops that we don't want piling up across iterations).
-        try { clearAllEnemies(); } catch (e) {}
-        try { clearAllPickups(); } catch (e) {}
-      }
-      // Land on the target wave. This call does the full setup
+      silentlyEndCurrentWave();
+      // Land on the target wave. startWave does the full setup
       // (theme, dormant props, hazard hooks, hud) just like a normal
       // "wave N starts" flow.
       startWave(waveNum);
@@ -7296,7 +7288,7 @@ animate();
     if (UI && UI.toast) {
       UI.toast(`DEV: JUMP → CH ${chap} (${chName}) · WAVE ${lw}`, '#00ff66', 1800);
     }
-    console.log(`[dev-cheat] jumped to wave ${waveNum} (chapter ${chap}, local wave ${lw}) — fast-forwarded through ${waveNum - 1} prior waves`);
+    console.log(`[dev-cheat] jumped to wave ${waveNum} (chapter ${chap}, local wave ${lw})`);
   }
 
   // Public power-user globals for devtools console use.
