@@ -2,43 +2,45 @@
 // the SENTRY TURRET stratagem. Distinct from src/turrets.js which is
 // the *enemy*-side compound turret tied to chapter waveProps.
 //
-// Four variants, picked via in-menu digit keys 1-4 before throwing
-// the beacon:
+// Variants — picked AFTER deploy via a floating screen-space picker:
 //
 //   'mg'        — Rapid hitscan tracers. Good crowd control, modest
 //                 per-hit damage. Tint defaults to chapter color.
+//   'fire'      — Short-range cone DoT (the old 'flame' variant,
+//                 renamed for the picker label). Shreds packed
+//                 groups but doesn't reach far.
+//   'poison'    — Short-range cone that applies _poisonedUntil to
+//                 hit enemies — slows them and ticks DoT through the
+//                 existing poison-trail infrastructure (powerups.js).
 //   'tesla'     — Chains lightning between nearby enemies. Lower
 //                 fire rate but each shot can hit several enemies.
-//   'flame'     — Short-range cone DoT. Shreds packed groups but
-//                 doesn't reach far.
-//   'antitank'  — Slow heavy single-shot rockets with AoE. Built for
-//                 elites; pokey vs swarms.
+//
+// Per playtester redesign: variants are NOT pre-chosen at call-in.
+// The turret deploys as a "pending" frame (chassis only, no barrel,
+// no firing). A floating HTML picker UI appears above the turret;
+// the player clicks one of the 4 icons to commit. The turret then
+// builds its barrel mesh, recolors accents, and starts firing.
+// While pending, the turret is idle (no aggro, no fire, immune to
+// the ammo-zero despawn).
 //
 // Each turret:
 //   • drops from height with a landing impact burst (matches mech)
-//   • acquires the closest enemy within range every 0.25s
-//   • aims its head smoothly toward the target
-//   • fires per-variant on its own cadence
+//   • once committed: acquires the closest enemy within range every
+//     0.25s, aims smoothly, fires per-variant cadence
 //   • has HP and is destroyed if damaged enough; explodes + leaves
-//     a small impact burst. Currently turrets take damage only via
-//     the optional `damageTurret(t, dmg)` API — wire to enemy melee
-//     when desired. Default lifetime is finite (TURRET_LIFETIME_SEC)
-//     so a turret will eventually self-decommission.
+//     a small impact burst.
 //
 // Public API:
-//   spawnTurret(pos, tint, variant)   — drop one turret
-//   updateTurrets(dt)                 — per-frame tick (already called
-//                                       by the existing turrets.js
-//                                       updateTurrets path? NO — that's
-//                                       a different module. main.js
-//                                       wires this directly.)
+//   spawnTurret(pos, tint)            — drop one pending turret
+//   commitTurretVariant(t, variantId) — applies variant after pickup
+//   updateTurrets(dt)                 — per-frame tick (called by main.js)
 //   clearStratagemTurrets()           — wipe all
 //   damageTurret(t, dmg)              — apply damage (optional hook
 //                                       for future enemy-attacks-turret
 //                                       wiring)
 
 import * as THREE from 'three';
-import { scene } from './scene.js';
+import { scene, camera } from './scene.js';
 import { hitBurst } from './effects.js';
 import { enemies, applyKnockback } from './enemies.js';
 import { Audio } from './audio.js';
@@ -101,8 +103,8 @@ const _VARIANT_CONFIG = {
     accentHex: 0x66ccff,                  // electric blue regardless of chapter
     fire: (t, target) => _fireTesla(t, target),
   },
-  flame: {
-    label: 'FLAME',
+  fire: {
+    label: 'FIRE',                        // renamed from FLAME for the picker UI
     range: 8,
     fireInterval: 0.04,                   // continuous stream
     ammoMax: 200,
@@ -113,19 +115,35 @@ const _VARIANT_CONFIG = {
     accentHex: 0xff7a30,
     fire: (t, target) => _fireFlame(t, target),
   },
-  antitank: {
-    label: 'AT',
-    range: 28,
-    fireInterval: 1.30,                   // slow heavy
-    ammoMax: 12,
-    barrelGeo: new THREE.CylinderGeometry(0.18, 0.22, 1.70, 10),
-    barrelOffset: 0.85,
-    bodyHex: 0x4a4d54,
-    headHex: 0x1a1a1a,
-    accentHex: 0xff5520,
-    fire: (t, target) => _fireAntitank(t, target),
+  // POISON — replaces antitank in the variant slate. Continuous
+  // short-range cone (similar to flame) but instead of high DPS does
+  // moderate damage + applies _poisonedUntil to enemies, which the
+  // existing poison-trail infrastructure already reads for slow +
+  // residual DPS via getEnemySpeedMult and the poison tick. Per
+  // playtester: "Fire, Poison, Tesla, or General Machine gun."
+  poison: {
+    label: 'POISON',
+    range: 9,
+    fireInterval: 0.06,                   // slower than fire (less spammy)
+    ammoMax: 180,
+    barrelGeo: new THREE.CylinderGeometry(0.20, 0.28, 0.90, 12),
+    barrelOffset: 0.50,
+    bodyHex: 0x1f3018,
+    headHex: 0x14241a,
+    accentHex: 0x66ff44,                  // toxic green regardless of chapter
+    fire: (t, target) => _firePoison(t, target),
   },
 };
+
+// Canonical pickable order — drives the icon row in the picker UI.
+// Per playtester: "Fire, Poison, Tesla, or General Machine gun."
+// Icons + labels also drive what the picker displays.
+const VARIANT_PICKER_ORDER = [
+  { id: 'mg',     label: 'MG',     icon: '🔫', desc: 'Rapid fire' },
+  { id: 'fire',   label: 'FIRE',   icon: '🔥', desc: 'Flame cone' },
+  { id: 'poison', label: 'POISON', icon: '☣',  desc: 'Slow + DoT' },
+  { id: 'tesla',  label: 'TESLA',  icon: '⚡', desc: 'Chain lightning' },
+];
 
 // =====================================================================
 // SHARED GEOMETRY
@@ -166,15 +184,28 @@ const _activeFlames  = [];                 // flame turret particles
 // =====================================================================
 // SPAWN
 // =====================================================================
-export function spawnTurret(pos, tint, variantId) {
-  const cfg = _VARIANT_CONFIG[variantId] || _VARIANT_CONFIG.mg;
-  // Color palette — uniformly olive-green like the reference. Each
-  // variant gets the same body but a distinct emissive accent on the
-  // sensor lens + barrel emissive (chapter tint or fixed per variant).
+/**
+ * Spawn a turret. Per playtester redesign: variants are no longer
+ * pre-selected at call-in time. The turret drops as a NEUTRAL frame
+ * (chassis + base + head + sensor lens, but NO BARREL and no variant
+ * coloring). A floating picker UI appears above the turret; the
+ * player clicks one of {MG, FIRE, POISON, TESLA} to commit the
+ * variant. Until then the turret idles — no firing.
+ *
+ * The picker is implemented in HTML/CSS (see _ensurePickerEl) and
+ * tracks the turret's screen-projected position each frame via
+ * _tickVariantPicker.
+ */
+export function spawnTurret(pos, tint) {
+  // No variant config until commit. Starting cfg is a placeholder
+  // ("mg" defaults) used only for the chassis defaults (range, ammo
+  // baselines) — overwritten on commit.
+  const cfg = _VARIANT_CONFIG.mg;
   const OLIVE_BODY = 0x55624a;        // olive military green
   const OLIVE_TRIM = 0x6c7861;        // slightly lighter green for raised trim
   const STEEL_TRIM = 0x8c8e90;        // brushed-steel grey for foot pads + barrels
-  const accentHex = cfg.accentHex != null ? cfg.accentHex : tint;
+  // Pre-commit accent — neutral steel grey. Recolored on commit.
+  const accentHex = STEEL_TRIM;
   const accentColor = new THREE.Color(accentHex);
   const tintColor = new THREE.Color(tint);
 
@@ -204,10 +235,12 @@ export function spawnTurret(pos, tint, variantId) {
     roughness: 0.55,
     metalness: 0.65,
   });
+  // Barrel material is built on commit (color depends on variant accent).
+  // Pre-commit we use a neutral grey for any temporary visuals.
   const barrelMat = new THREE.MeshStandardMaterial({
     color: 0x2a2c34,
-    emissive: accentColor,
-    emissiveIntensity: 0.15,
+    emissive: 0x000000,
+    emissiveIntensity: 0,
     roughness: 0.50,
     metalness: 0.90,
   });
@@ -219,9 +252,8 @@ export function spawnTurret(pos, tint, variantId) {
     depthWrite: false,
     toneMapped: false,
   });
-  // Variant-color highlight (used on the eye for chapter-tinted
-  // hint of which variant this is — kept faint so the body still
-  // reads as olive-green).
+  // Variant-color highlight on the eye. Faint pre-commit grey;
+  // recolored to the variant accent on commit.
   const eyeMat = new THREE.MeshBasicMaterial({
     color: accentColor,
     transparent: true,
@@ -315,66 +347,22 @@ export function spawnTurret(pos, tint, variantId) {
   eye.position.set(0, 0.10, 0.54);
   head.add(eye);
 
-  // ---- BARREL YOKE + BARRELS ----
+  // ---- BARREL YOKE ----
   // The yoke is a small box at the front-bottom of the head; barrels
-  // emerge from it. For 'twin' variants we mount two barrels side-by-
-  // side; otherwise a single central barrel.
+  // emerge from it once the variant is committed. Pre-commit: yoke
+  // is mounted but no barrels yet — the picker UI will make it clear
+  // the player needs to choose.
   const yoke = new THREE.Mesh(_YOKE_GEO, steelMat);
   yoke.position.set(0, -0.18, 0.55);
   head.add(yoke);
 
-  // Determine twin or single by variant id. MG and antitank get twin
-  // barrels (matches the photo's twin-cannon feel); tesla and flame
-  // stay single-barrel for visual identity.
-  const isTwin = (variantId === 'mg' || variantId === 'antitank');
-  // Build barrels.
-  let primaryMuzzle;
-  if (isTwin) {
-    // Two barrels side by side using the variant's barrel geometry.
-    const offsets = [-0.13, 0.13];
-    let i = 0;
-    let upperZ = null, lowerZ = null;
-    for (const ox of offsets) {
-      const b = new THREE.Mesh(cfg.barrelGeo, barrelMat);
-      b.rotation.x = Math.PI / 2;
-      // Stagger barrel z-offset slightly so they read as upper/lower
-      // (matches the reference's offset twin barrels).
-      const zJitter = i === 0 ? 0.05 : -0.02;
-      b.position.set(ox, -0.18, cfg.barrelOffset + zJitter);
-      head.add(b);
-      if (i === 0) upperZ = cfg.barrelOffset + zJitter;
-      i++;
-    }
-    // Muzzle anchor — between the two barrels, at the upper barrel's
-    // tip so tracer FX line up cleanly.
-    primaryMuzzle = new THREE.Group();
-    primaryMuzzle.position.set(0, -0.18, cfg.barrelOffset + 0.92);
-    head.add(primaryMuzzle);
-  } else {
-    const b = new THREE.Mesh(cfg.barrelGeo, barrelMat);
-    b.rotation.x = Math.PI / 2;
-    b.position.set(0, -0.18, cfg.barrelOffset);
-    head.add(b);
-    primaryMuzzle = new THREE.Group();
-    primaryMuzzle.position.set(0, -0.18, cfg.barrelOffset + 0.85);
-    head.add(primaryMuzzle);
-  }
-  const muzzle = primaryMuzzle;
-
-  // Tesla coil ornament — additive sphere atop the head for tesla.
-  if (variantId === 'tesla') {
-    const coilMat = new THREE.MeshBasicMaterial({
-      color: accentColor,
-      transparent: true,
-      opacity: 0.95,
-      blending: THREE.AdditiveBlending,
-      depthWrite: false,
-      toneMapped: false,
-    });
-    const coil = new THREE.Mesh(new THREE.SphereGeometry(0.18, 12, 8), coilMat);
-    coil.position.set(0, 0.78, 0);
-    head.add(coil);
-  }
+  // Muzzle anchor — placeholder until commit attaches the variant
+  // barrel. Position chosen to roughly match the average variant
+  // muzzle so any pre-commit visuals (e.g. the picker's fly-up
+  // animation origin) look correct.
+  const muzzle = new THREE.Group();
+  muzzle.position.set(0, -0.18, 1.30);
+  head.add(muzzle);
 
   scene.add(root);
 
@@ -383,9 +371,15 @@ export function spawnTurret(pos, tint, variantId) {
     head,
     eye, eyeMat,
     muzzle,
+    yoke,                              // refer back to attach barrels on commit
     bodyMat, trimMat, steelMat, louverMat, barrelMat, lensMat,
-    variant: variantId,
-    cfg,
+    // Variant slot is null until the player picks. Picker UI is
+    // surfaced for any turret with `pending: true && !destroyed`.
+    variant: null,
+    cfg,                               // baseline cfg, replaced on commit
+    pending: true,                     // picker UI shows for this turret
+    barrels: [],                       // barrel meshes, populated on commit
+    teslaCoilMesh: null,               // tesla-only ornament, populated on commit
     tint,
     accentHex,
     accentColor,
@@ -405,14 +399,11 @@ export function spawnTurret(pos, tint, variantId) {
     // so any external code still referencing it doesn't break, but
     // the active despawn condition is ammo === 0.
     //
-    // Chapter 7 override: 20× ammo capacity + 2.5× longer fire
-    // interval (= 0.4× fire rate). Per playtester: "Turret 20× ammo
-    // throughout chapter 7 ... It maybe needs to shoot a lot slower."
-    // The slower rate balances the much-longer uptime so the turret
-    // doesn't trivialize the wave; effective shot count is 8× a
-    // baseline turret over the full ammo span.
-    ammo: (S.chapter === PARADISE_FALLEN_CHAPTER_IDX) ? cfg.ammoMax * 20 : cfg.ammoMax,
-    ammoMax: (S.chapter === PARADISE_FALLEN_CHAPTER_IDX) ? cfg.ammoMax * 20 : cfg.ammoMax,
+    // Initialized at variant commit, NOT here — pre-commit there's
+    // no ammo to track since the turret can't fire. Defaults below
+    // prevent NaN if anything reads early.
+    ammo: 0,
+    ammoMax: 0,
     fireIntervalMul: (S.chapter === PARADISE_FALLEN_CHAPTER_IDX) ? 2.5 : 1.0,
     dropping: true,
     dropT: 0,
@@ -422,6 +413,83 @@ export function spawnTurret(pos, tint, variantId) {
   };
   _activeTurrets.push(t);
   return t;
+}
+
+/**
+ * Commit a variant choice to a pending turret. Called by the picker
+ * UI when the player clicks one of the icons. Builds the barrel
+ * mesh(es), the variant-specific accent color recoloring, the tesla
+ * coil ornament if applicable, sets up ammo, and clears the pending
+ * flag so the per-frame fire loop starts running.
+ */
+export function commitTurretVariant(t, variantId) {
+  if (!t || t.destroyed || !t.pending) return;
+  const cfg = _VARIANT_CONFIG[variantId];
+  if (!cfg) return;
+  // Resolve accent (variant's fixed hex, or chapter tint fallback).
+  const accentHex = cfg.accentHex != null ? cfg.accentHex : t.tint;
+  const accentColor = new THREE.Color(accentHex);
+  // Recolor the eye + barrel emissive to the variant accent.
+  if (t.eyeMat && t.eyeMat.color) t.eyeMat.color.copy(accentColor);
+  if (t.barrelMat) {
+    if (t.barrelMat.emissive) t.barrelMat.emissive.copy(accentColor);
+    t.barrelMat.emissiveIntensity = 0.15;
+  }
+
+  // Build barrels. MG gets twin barrels; tesla / fire / poison are single.
+  const isTwin = (variantId === 'mg');
+  const yPos = -0.18;
+  if (isTwin) {
+    const offsets = [-0.13, 0.13];
+    let i = 0;
+    for (const ox of offsets) {
+      const b = new THREE.Mesh(cfg.barrelGeo, t.barrelMat);
+      b.rotation.x = Math.PI / 2;
+      const zJitter = i === 0 ? 0.05 : -0.02;
+      b.position.set(ox, yPos, cfg.barrelOffset + zJitter);
+      t.head.add(b);
+      t.barrels.push(b);
+      i++;
+    }
+    // Re-anchor muzzle to barrel tip.
+    t.muzzle.position.set(0, yPos, cfg.barrelOffset + 0.92);
+  } else {
+    const b = new THREE.Mesh(cfg.barrelGeo, t.barrelMat);
+    b.rotation.x = Math.PI / 2;
+    b.position.set(0, yPos, cfg.barrelOffset);
+    t.head.add(b);
+    t.barrels.push(b);
+    t.muzzle.position.set(0, yPos, cfg.barrelOffset + 0.85);
+  }
+
+  // Tesla ornament — additive sphere atop head.
+  if (variantId === 'tesla') {
+    const coilMat = new THREE.MeshBasicMaterial({
+      color: accentColor,
+      transparent: true,
+      opacity: 0.95,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      toneMapped: false,
+    });
+    const coil = new THREE.Mesh(new THREE.SphereGeometry(0.18, 12, 8), coilMat);
+    coil.position.set(0, 0.78, 0);
+    t.head.add(coil);
+    t.teslaCoilMesh = coil;
+  }
+
+  // Apply variant config + ammo. Chapter 7 still gets the 20× ammo
+  // override per the existing rule.
+  t.variant = variantId;
+  t.cfg = cfg;
+  t.accentHex = accentHex;
+  t.accentColor = accentColor;
+  t.ammo = (S.chapter === PARADISE_FALLEN_CHAPTER_IDX) ? cfg.ammoMax * 20 : cfg.ammoMax;
+  t.ammoMax = t.ammo;
+  t.pending = false;
+
+  // Audio cue — small confirm chirp so the player feels the click landed.
+  try { Audio.pickup && Audio.pickup(); } catch (_) {}
 }
 
 // =====================================================================
@@ -480,6 +548,13 @@ export function updateTurrets(dt) {
       _destroyTurret(t);
       continue;
     }
+    // Pending turret — variant not yet committed by the player.
+    // Skip target acquisition + fire loop entirely; the turret
+    // sits idle while the picker UI is up. Per playtester:
+    // "The player will deploy the turret and then when the turret
+    // is ready they can select from several options Fire, Poison,
+    // Tesla, or General Machine gun." Idle forever — no auto-default.
+    if (t.pending) continue;
     if (t.ammo <= 0) {
       _destroyTurret(t);
       continue;
@@ -537,10 +612,14 @@ export function updateTurrets(dt) {
 
   // --- TRACERS (mg + tesla visuals) ---
   _tickTracers(dt);
-  // --- ROCKETS (antitank) ---
+  // --- ROCKETS (legacy antitank — array stays empty after removal) ---
   _tickRockets(dt);
-  // --- FLAME PARTICLES (flame turret) ---
+  // --- FLAME PARTICLES (fire turret) ---
   _tickFlames(dt);
+  // --- POISON PARTICLES (poison turret) ---
+  _tickPoisonParticles(dt);
+  // --- PICKER UI (pending turrets) ---
+  _tickVariantPicker();
 }
 
 // =====================================================================
@@ -685,50 +764,84 @@ function _fireFlame(t, target) {
   }
 }
 
-const _AT_ROCKET_GEO = new THREE.CylinderGeometry(0.10, 0.14, 0.85, 8);
-function _fireAntitank(t, target) {
+// POISON — short-range cone, like flame but greener and slower-paced.
+// Damage per call is moderate, but it APPLIES `_poisonedUntil` to hit
+// enemies. The poison-trail infrastructure already reads this field
+// in two places: getEnemySpeedMult (slows enemies) and the per-frame
+// poison tick in powerups.js (residual DoT). So this turret variant
+// is effectively "chip damage + persistent slow" rather than burst.
+function _firePoison(t, target) {
+  const RANGE = t.cfg.range;
+  const CONE_HALF = 0.45;
+  const PER_CALL_DAMAGE = 12;       // direct hit damage per fire tick
+  const POISON_DURATION = 3.0;      // seconds of slow + DoT after spray
+  const ang = t.aimYaw;
+  const dirX = Math.sin(ang), dirZ = Math.cos(ang);
+  const nowSec = (typeof performance !== 'undefined') ? performance.now() / 1000 : Date.now() / 1000;
+  // Apply damage + poison stamp once per call to anything in cone.
+  // Backwards iteration — splice safety.
+  for (let i = enemies.length - 1; i >= 0; i--) {
+    const e = enemies[i];
+    if (!e || !e.pos || e.dying) continue;
+    const ex = e.pos.x - t.pos.x;
+    const ez = e.pos.z - t.pos.z;
+    const along = ex * dirX + ez * dirZ;
+    if (along < 0 || along > RANGE) continue;
+    const perp = Math.sqrt(Math.max(0, (ex * ex + ez * ez) - along * along));
+    if (perp / Math.max(0.5, along) > CONE_HALF) continue;
+    e.hp -= PER_CALL_DAMAGE;
+    e.hitFlash = 0.06;
+    // Stamp poison expiry — refreshes existing poison if already
+    // applied. The slow + DoT pipeline reads this field via
+    // getEnemySpeedMult (powerups.js) and the poison tick.
+    e._poisonedUntil = nowSec + POISON_DURATION;
+    if (e.hp <= 0 && typeof window !== 'undefined' && window.__killEnemyAtIdx) {
+      try { window.__killEnemyAtIdx(e); } catch (_) {}
+    }
+  }
+  // Particle — green vapor cloud puff.
   const muzzleWorld = new THREE.Vector3();
   t.muzzle.getWorldPosition(muzzleWorld);
-  // Aim a leading shot at the target's current position. Simple: no
-  // velocity prediction; antitank turret is meant for slow elites
-  // anyway.
-  const tx = target.pos.x;
-  const tz = target.pos.z;
-  const dx = tx - muzzleWorld.x;
-  const dz = tz - muzzleWorld.z;
-  const dist = Math.sqrt(dx * dx + dz * dz) || 0.001;
-  const SPEED = 32;
-  const vx = (dx / dist) * SPEED;
-  const vz = (dz / dist) * SPEED;
-
-  const mat = new THREE.MeshStandardMaterial({
-    color: 0xfff3d0,
-    emissive: t.accentColor,
-    emissiveIntensity: 2.5,
-    roughness: 0.30,
-  });
-  const mesh = new THREE.Mesh(_AT_ROCKET_GEO, mat);
-  mesh.position.copy(muzzleWorld);
-  // Orient along velocity.
-  const ang = Math.atan2(vx, vz);
-  mesh.rotation.y = ang;
-  mesh.rotation.x = Math.PI / 2;
-  scene.add(mesh);
-
-  _activeRockets.push({
-    mesh, mat,
-    pos: muzzleWorld.clone(),
-    vel: new THREE.Vector3(vx, 0, vz),
-    life: 0,
-    maxLife: 2.0,
-    accentHex: t.accentHex,
-  });
-
-  // Backblast.
-  hitBurst(muzzleWorld, t.accentHex, 8);
-  hitBurst(muzzleWorld, 0xffffff, 4);
-  try { Audio.turretAntitank(); } catch (_) {}
+  _spawnPoisonParticle(muzzleWorld, ang, t.accentColor);
+  // Throttle audio — poison fires every 0.06s, hiss every ~5 calls.
+  t._poisonAudioCount = (t._poisonAudioCount || 0) + 1;
+  if (t._poisonAudioCount >= 5) {
+    t._poisonAudioCount = 0;
+    try { Audio.turretFlame && Audio.turretFlame(); } catch (_) {}    // reuse flame hiss for now
+  }
 }
+
+// Poison particle — small green cloud puff that drifts forward and
+// fades. Visually distinct from the bright orange flame particle.
+const _POISON_PARTICLE_GEO = new THREE.SphereGeometry(0.18, 8, 6);
+function _spawnPoisonParticle(originWorld, ang, accentColor) {
+  const mat = new THREE.MeshStandardMaterial({
+    color: 0xaaffaa,
+    emissive: accentColor,
+    emissiveIntensity: 1.4,
+    transparent: true,
+    opacity: 0.65,
+    depthWrite: false,
+  });
+  const mesh = new THREE.Mesh(_POISON_PARTICLE_GEO, mat);
+  mesh.position.copy(originWorld);
+  scene.add(mesh);
+  // Drift forward + slight rise + outward jitter, expand as it goes.
+  const dirX = Math.sin(ang), dirZ = Math.cos(ang);
+  const SPEED = 8 + Math.random() * 2;
+  const SPREAD = (Math.random() - 0.5) * 0.6;
+  const px = dirX + Math.cos(ang + Math.PI / 2) * SPREAD;
+  const pz = dirZ + Math.sin(ang + Math.PI / 2) * SPREAD;
+  _poisonParticles.push({
+    mesh, mat,
+    pos: originWorld.clone(),
+    vel: new THREE.Vector3(px * SPEED, 0.6, pz * SPEED),
+    life: 0,
+    maxLife: 0.55 + Math.random() * 0.2,
+  });
+}
+
+const _poisonParticles = [];
 
 // =====================================================================
 // TRACER FX (mg + tesla)
@@ -936,6 +1049,34 @@ function _tickFlames(dt) {
   }
 }
 
+// Poison particles — green vapor cloud puffs that drift, expand,
+// and fade. Visually distinct from the orange flame particle:
+// constant green tint, larger end scale, slower fade.
+function _tickPoisonParticles(dt) {
+  for (let i = _poisonParticles.length - 1; i >= 0; i--) {
+    const p = _poisonParticles[i];
+    p.life += dt;
+    const f = p.life / p.maxLife;
+    if (f >= 1) {
+      if (p.mesh.parent) p.mesh.parent.remove(p.mesh);
+      if (p.mat) p.mat.dispose();
+      _poisonParticles.splice(i, 1);
+      continue;
+    }
+    p.pos.x += p.vel.x * dt;
+    p.pos.y += p.vel.y * dt * 0.4;     // less rise than flame, hangs low
+    p.pos.z += p.vel.z * dt;
+    p.vel.x *= 0.92; p.vel.z *= 0.92;  // drag — clouds settle quickly
+    p.mesh.position.copy(p.pos);
+    // Expand from 0.5x → 1.8x as it disperses.
+    p.mesh.scale.setScalar(0.5 + f * 1.3);
+    // Two-stage tint: bright green start, mossy fade.
+    if (f < 0.4) p.mat.color.setHex(0xaaffaa);
+    else p.mat.color.setHex(0x66cc66);
+    p.mat.opacity = 0.65 * (1 - f);
+  }
+}
+
 // =====================================================================
 // DAMAGE / DESTRUCTION
 // =====================================================================
@@ -991,4 +1132,155 @@ export function clearStratagemTurrets() {
     if (p.mat) p.mat.dispose();
   }
   _activeFlames.length = 0;
+  for (const p of _poisonParticles) {
+    if (p.mesh.parent) p.mesh.parent.remove(p.mesh);
+    if (p.mat) p.mat.dispose();
+  }
+  _poisonParticles.length = 0;
+  // Hide + reset picker UI on full teardown.
+  _hidePicker();
+}
+
+// =====================================================================
+// VARIANT PICKER UI
+// =====================================================================
+// HTML/CSS panel that floats above a deployed-but-not-yet-committed
+// turret. Player clicks one of MG/FIRE/POISON/TESLA to commit. Per
+// playtester: "Floating 3D-ish HTML/CSS panel pinned in screen-space
+// above the turret's projected position (4 icons in a row)."
+//
+// Strategy:
+//   - Single shared DOM element (built once, lazy on first show).
+//   - Each frame, find the FIRST pending turret (we only show the
+//     picker for one at a time — if multiple pending turrets exist,
+//     the most-recently-deployed gets focus).
+//   - Project that turret's world position to screen space via
+//     camera.project(); convert NDC → CSS pixel coordinates.
+//   - Position the picker just above the turret's screen position.
+//   - When no pending turret exists, hide the picker.
+//
+// Click handlers are bound once on element creation. They look up the
+// currently-tracked turret and call commitTurretVariant.
+
+let _pickerEl = null;
+let _pickerForTurret = null;        // the turret the picker is currently showing for
+
+function _ensurePickerEl() {
+  if (_pickerEl) return _pickerEl;
+  const el = document.createElement('div');
+  el.id = 'stratagem-turret-picker';
+  el.style.cssText = [
+    'position: fixed',
+    'left: 0', 'top: 0',                    // overridden each frame
+    'transform: translate(-50%, -100%)',     // anchor = bottom-center → above turret
+    'z-index: 60',                           // above HUD (~20-50), below pause (~9000)
+    'display: none',
+    'flex-direction: row',
+    'gap: 6px',
+    'padding: 8px 10px',
+    'background: rgba(8, 8, 8, 0.85)',
+    'border: 2px solid #ffffff',
+    'border-radius: 6px',
+    'box-shadow: 0 0 16px rgba(255, 255, 255, 0.2)',
+    "font-family: 'Impact', 'Arial Black', sans-serif",
+    'pointer-events: auto',
+    'user-select: none',
+    '-webkit-user-select: none',
+  ].join(';');
+
+  // Build one button per variant, in canonical pickable order.
+  for (const v of VARIANT_PICKER_ORDER) {
+    const btn = document.createElement('button');
+    btn.dataset.variant = v.id;
+    btn.title = v.label + ' — ' + v.desc;
+    btn.style.cssText = [
+      'min-width: 56px',
+      'padding: 8px 4px',
+      'background: rgba(40, 40, 40, 0.7)',
+      'border: 1.5px solid #888',
+      'border-radius: 4px',
+      'color: #fff',
+      'cursor: pointer',
+      'transition: background 0.12s ease, border-color 0.12s ease, transform 0.08s ease',
+      'display: flex',
+      'flex-direction: column',
+      'align-items: center',
+      'gap: 2px',
+    ].join(';');
+    btn.innerHTML = `
+      <div style="font-size:18px;line-height:1;">${v.icon}</div>
+      <div style="font-size:10px;letter-spacing:1px;">${v.label}</div>
+    `;
+    // Hover feedback.
+    btn.addEventListener('mouseenter', () => {
+      btn.style.background = 'rgba(80, 80, 80, 0.9)';
+      btn.style.borderColor = '#fff';
+    });
+    btn.addEventListener('mouseleave', () => {
+      btn.style.background = 'rgba(40, 40, 40, 0.7)';
+      btn.style.borderColor = '#888';
+    });
+    // Commit handler — both click and touchstart so mobile responds
+    // immediately without the 300ms tap delay.
+    const onPick = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (!_pickerForTurret) return;
+      try {
+        commitTurretVariant(_pickerForTurret, v.id);
+      } catch (err) { console.warn('[turret] commit failed', err); }
+      // Hide immediately; the next frame's _tickVariantPicker will
+      // search for the next pending turret and re-show if found.
+      _hidePicker();
+    };
+    btn.addEventListener('click', onPick);
+    btn.addEventListener('touchstart', onPick, { passive: false });
+    el.appendChild(btn);
+  }
+  document.body.appendChild(el);
+  _pickerEl = el;
+  return el;
+}
+
+function _hidePicker() {
+  if (_pickerEl) _pickerEl.style.display = 'none';
+  _pickerForTurret = null;
+}
+
+function _tickVariantPicker() {
+  // Find a pending turret to show the picker for. Prefer the latest
+  // deployed (last in the array) since it's most likely the one the
+  // player just dropped. Skip dropping-state turrets — wait until
+  // they've finished their rise animation so the picker doesn't
+  // pop in mid-deploy.
+  let target = null;
+  for (let i = _activeTurrets.length - 1; i >= 0; i--) {
+    const t = _activeTurrets[i];
+    if (t.pending && !t.destroyed && !t.dropping) {
+      target = t;
+      break;
+    }
+  }
+  if (!target) {
+    if (_pickerForTurret) _hidePicker();
+    return;
+  }
+  const el = _ensurePickerEl();
+  _pickerForTurret = target;
+
+  // Project turret head world-pos to screen NDC. Anchor the picker
+  // at head-top (~y=2.4) so it floats clearly above the turret.
+  const worldPos = new THREE.Vector3(target.pos.x, 2.4, target.pos.z);
+  worldPos.project(camera);
+  // Behind camera? Hide.
+  if (worldPos.z > 1) {
+    el.style.display = 'none';
+    return;
+  }
+  // NDC → CSS pixels.
+  const screenX = (worldPos.x * 0.5 + 0.5) * window.innerWidth;
+  const screenY = (-worldPos.y * 0.5 + 0.5) * window.innerHeight;
+  el.style.left = screenX + 'px';
+  el.style.top = (screenY - 18) + 'px';      // small gap above the head
+  el.style.display = 'flex';
 }

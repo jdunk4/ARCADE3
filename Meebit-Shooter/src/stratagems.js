@@ -99,7 +99,13 @@ const _STRATAGEMS = [
     code: ['down', 'up', 'right', 'down', 'up'],
     armTime: 6.0,
     icon: '⊞',
-    variant: ['mg', 'tesla', 'flame', 'antitank'],
+    // Variants are no longer pre-selected. Per playtester redesign:
+    // "The player will deploy the turret and then when the turret is
+    // ready they can select from several options Fire, Poison, Tesla,
+    // or General Machine gun." The HTML picker UI in stratagemTurret.js
+    // handles variant choice after deploy. No variant array here means
+    // the in-menu 1/2/3/4 cycle is suppressed for turrets — they
+    // commit on the field, not in the menu.
     payload: (pos, tint) => _firePayloadTurret(pos, tint),
   },
 ];
@@ -351,11 +357,11 @@ function _firePayloadMines(pos, tint) {
 }
 
 function _firePayloadTurret(pos, tint) {
-  // Variant chosen by the in-menu cycle (digit keys 1-4). Default
-  // to 'mg' if nothing was set (the picker defaults to mg too).
-  const variant = S.stratagemTurretVariant || 'mg';
+  // Variant is no longer pre-selected — see catalog comment. The
+  // turret deploys as a "pending" frame and the player commits the
+  // variant via the floating picker UI (stratagemTurret.js).
   if (typeof window !== 'undefined' && window.__stratagemDeployTurret) {
-    window.__stratagemDeployTurret(pos, tint, variant);
+    window.__stratagemDeployTurret(pos, tint);
   }
 }
 

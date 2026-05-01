@@ -444,11 +444,13 @@ window.__stratagemDeployMines = function(pos, tint, kind) {
   deployMineField(pos, tint, kind || 'explosion');
 };
 
-// Turret payload — delegate to stratagemTurret.js. The variant
-// argument chooses between 'mg' / 'tesla' / 'flame' / 'antitank',
-// driven by the in-menu 1/2/3/4 cycle key.
-window.__stratagemDeployTurret = function(pos, tint, variant) {
-  spawnTurret(pos, tint, variant || 'mg');
+// Turret payload — delegate to stratagemTurret.js.
+// Bridge: stratagems.js calls this when a turret beacon detonates.
+// Per playtester redesign, turrets now deploy as a "pending" frame —
+// the player picks the variant (MG / FIRE / POISON / TESLA) via a
+// floating picker UI in stratagemTurret.js. No variant arg needed.
+window.__stratagemDeployTurret = function(pos, tint) {
+  spawnTurret(pos, tint);
 };
 
 // No-artifact feedback toast.
