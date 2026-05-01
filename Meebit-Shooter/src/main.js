@@ -6229,11 +6229,18 @@ function _addDyingEnemy(obj, animType) {
     if (Array.isArray(node.material)) {
       for (const m of node.material) {
         // Force transparent flag on so opacity changes actually render.
+        // depthWrite off so the dying mesh fades smoothly without
+        // writing depth (otherwise the mostly-transparent corpse
+        // can occlude things behind it during fade).
         m.transparent = true;
+        m.depthWrite = false;
+        m.needsUpdate = true;
         materials.push(m);
       }
     } else {
       node.material.transparent = true;
+      node.material.depthWrite = false;
+      node.material.needsUpdate = true;
       materials.push(node.material);
     }
   });
@@ -6244,6 +6251,12 @@ function _addDyingEnemy(obj, animType) {
     type: animType || 'shrivel',
     materials,
     initialY: obj.position.y,
+    // Capture the enemy's INITIAL world scale. Different enemy meshes
+    // bake their own scale on group.scale (e.g. ant uses 0.55) — if
+    // the shrivel anim sets scale.set(1.0) it would visually DOUBLE
+    // the ant first then shrink. We multiply through this base scale
+    // so the corpse starts at its actual rendered size.
+    initialScale: obj.scale.clone(),
   });
 }
 
@@ -6262,13 +6275,19 @@ function _tickDyingEnemies(dt) {
       // (legs buckle, body flattens), then a slower fade-and-sink
       // dissolve in the last 40% as the corpse evaporates.
       //
-      // Scale: 1.0 → 0.20 over the curve. X/Z shrink ~uniformly so
-      // the corpse compresses laterally; Y shrinks faster so it
-      // also flattens toward the ground (reads as "collapsing").
+      // Scale multipliers: lateral 1.0 → 0.45, vertical 1.0 → 0.15
+      // (faster vertical so the corpse flattens to the ground).
+      // Multiplied THROUGH the captured initialScale so meshes that
+      // bake their own group.scale (ant = 0.55) start at the right
+      // visual size instead of suddenly inflating to 1×.
       const collapse = Math.min(1, t / 0.6);
-      const sxz = 1 - collapse * 0.55;     // 1.0 → 0.45 lateral
-      const sy  = 1 - collapse * 0.85;     // 1.0 → 0.15 vertical
-      d.obj.scale.set(sxz, sy, sxz);
+      const sxz = 1 - collapse * 0.55;
+      const sy  = 1 - collapse * 0.85;
+      d.obj.scale.set(
+        d.initialScale.x * sxz,
+        d.initialScale.y * sy,
+        d.initialScale.z * sxz,
+      );
       // Sink slightly into the ground so the bottom edge doesn't
       // float when Y collapses (the body shrinks toward its origin
       // point, which is at the feet). Without sink it can float
