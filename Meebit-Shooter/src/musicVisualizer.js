@@ -34,6 +34,7 @@ const MODES = [
   { id: 'bars',      label: 'BARS' },
   { id: 'waveform',  label: 'WAVEFORM' },
   { id: 'matrix',    label: 'MATRIX RAIN' },
+  { id: 'rings',     label: 'RINGS' },
 ];
 
 // Matrix-rain glyph palette — classic katakana half-width + digits +
@@ -300,6 +301,268 @@ export function createVisualizer({ canvas, getTint, getActive }) {
     }
   }
 
+  // -------- RINGS — concentric beat-reactive rings + spark particles --------
+  //
+  // Reference: user provided red-orange ember screenshots showing
+  // tilted concentric rings on the ground with sparks lifting off.
+  //
+  // Approach:
+  //   - 6 rings drawn as squashed ellipses (height = 28% of width)
+  //     to fake a ground-plane perspective tilt.
+  //   - Outer rings = bass; inner rings = treble. Each ring averages
+  //     a slice of the FFT bins and tracks its own rolling-average
+  //     baseline. When energy > avg × 1.4 it's "activated" and gets
+  //     a brightness pulse + spark burst.
+  //   - Sparks emit at random points along the activated ring,
+  //     shoot outward + slightly upward, fade out over ~1.5s.
+  //   - Tint variance: each spark's hue is randomized within ±15°
+  //     of the chapter tint so the burst reads as a colored spray
+  //     rather than a uniform color blob.
+  //
+  // Note: this 2D canvas can't represent true 3D height; "upward"
+  // particle motion is fake-perspective via dy offset, biased so
+  // sparks rise above the ring plane visually.
+
+  // Per-ring state. Allocated once per visualizer instance.
+  // bandLo/bandHi are FFT bin index ranges (set at first frame from
+  // analyser size, since fftSize affects bin count).
+  // emaEnergy is the rolling average; activated flips true on spike.
+  // pulseT decays from 1 → 0 after activation (controls brightness).
+  const RING_COUNT = 6;
+  let _rings = null;        // Array of ring state objects, lazy-built
+  let _sparks = [];         // Active spark particles
+  let _ringsLastT = 0;      // Last frame timestamp for dt calc
+
+  function _ensureRings() {
+    if (_rings) return;
+    _rings = new Array(RING_COUNT);
+    // Distribute bin ranges logarithmically: outer rings (low index)
+    // grab the first few bass bins, inner rings (high index) span
+    // wider treble ranges. This gives the visualizer real bass
+    // sensitivity since music has more concentrated low-frequency
+    // energy than spread-out highs.
+    // Bin layout assumes fftSize=1024 (512 bins). At 44.1kHz sample
+    // rate that's ~43Hz per bin.
+    const ranges = [
+      [1, 4],      // ring 0 (outermost) — sub-bass / kick (~43-172Hz)
+      [4, 10],     // ring 1 — bass (~172-430Hz)
+      [10, 22],    // ring 2 — low-mid (~430-946Hz)
+      [22, 50],    // ring 3 — mid (~946-2150Hz)
+      [50, 110],   // ring 4 — high-mid (~2.1-4.7kHz)
+      [110, 240],  // ring 5 (innermost) — treble (~4.7-10.3kHz)
+    ];
+    for (let i = 0; i < RING_COUNT; i++) {
+      _rings[i] = {
+        binLo: ranges[i][0],
+        binHi: ranges[i][1],
+        emaEnergy: 0,           // rolling average band energy 0..1
+        pulseT: 0,              // brightness pulse decay 0..1
+        lastEnergy: 0,          // raw energy this frame
+      };
+    }
+  }
+
+  // Spawn `count` sparks along a ring's circumference. Each spark
+  // gets a random position on the ring, a random outward+upward
+  // velocity, and a hue offset within ±15° of the chapter tint.
+  function _spawnSparks(ringIdx, ringRadiusX, ringRadiusY, cx, cy, count) {
+    for (let i = 0; i < count; i++) {
+      const a = Math.random() * Math.PI * 2;
+      const px = cx + Math.cos(a) * ringRadiusX;
+      const py = cy + Math.sin(a) * ringRadiusY;
+      // Outward direction in canvas space (away from ring center).
+      // Add a strong upward (-y) bias so sparks fly up off the ring.
+      const ox = Math.cos(a);
+      const oy = Math.sin(a);
+      const speed = 80 + Math.random() * 90;     // px/sec
+      _sparks.push({
+        x: px,
+        y: py,
+        vx: ox * speed * 0.4,
+        vy: oy * speed * 0.4 - 90 - Math.random() * 60,    // strong upward bias
+        life: 0,
+        maxLife: 1.2 + Math.random() * 0.4,
+        // Hue offset for color variety. Stored as -1..1; multiplied
+        // by 15° at render time and added to the tint hue.
+        hueOffset: (Math.random() - 0.5) * 2,
+        size: 1.5 + Math.random() * 2,
+      });
+    }
+  }
+
+  // Convert RGB to HSL once, shift hue, return CSS rgba. Cached for
+  // each tint change so we're not recomputing every spark.
+  let _tintHsl = { h: 22, s: 100, l: 55 };       // initial = orange
+  let _tintHslHex = -1;
+  function _refreshTintHsl() {
+    if (_tintHslHex === _lastTintHex) return;
+    _tintHslHex = _lastTintHex;
+    const r = _tintRgb.r / 255, g = _tintRgb.g / 255, b = _tintRgb.b / 255;
+    const mx = Math.max(r, g, b), mn = Math.min(r, g, b);
+    let h = 0, s = 0;
+    const l = (mx + mn) / 2;
+    if (mx !== mn) {
+      const d = mx - mn;
+      s = l > 0.5 ? d / (2 - mx - mn) : d / (mx + mn);
+      switch (mx) {
+        case r: h = (g - b) / d + (g < b ? 6 : 0); break;
+        case g: h = (b - r) / d + 2; break;
+        case b: h = (r - g) / d + 4; break;
+      }
+      h *= 60;
+    }
+    _tintHsl = { h, s: s * 100, l: l * 100 };
+  }
+
+  function drawRings(w, h) {
+    if (!analyser) return;
+    analyser.getByteFrequencyData(freqBuf);
+    _ensureRings();
+    _refreshTintHsl();
+
+    const now = performance.now();
+    const dt = _ringsLastT === 0 ? 0.016 : Math.min(0.05, (now - _ringsLastT) * 0.001);
+    _ringsLastT = now;
+
+    // Center the rings slightly below center so there's room for
+    // sparks to rise above. Tilted ellipse aspect = 0.28 mimics the
+    // ground-plane perspective in the user's reference.
+    const cx = w * 0.5;
+    const cy = h * 0.62;
+    const ASPECT = 0.28;
+    const maxRingW = Math.min(w * 0.45, h * 0.85);
+
+    // Update each ring's energy + activation.
+    for (let i = 0; i < RING_COUNT; i++) {
+      const ring = _rings[i];
+      // Average frequency-domain energy across the band.
+      let sum = 0;
+      let count = 0;
+      const lo = Math.min(ring.binLo, freqBuf.length - 1);
+      const hi = Math.min(ring.binHi, freqBuf.length);
+      for (let b = lo; b < hi; b++) {
+        sum += freqBuf[b];
+        count++;
+      }
+      const energy = (count > 0) ? (sum / count) / 255 : 0;
+      ring.lastEnergy = energy;
+      // Rolling average — slower lerp so a beat hit stands out
+      // against the baseline. dt-aware so frame-rate changes don't
+      // shift the threshold behavior.
+      const emaAlpha = Math.min(1, dt * 1.8);
+      ring.emaEnergy = ring.emaEnergy * (1 - emaAlpha) + energy * emaAlpha;
+      // Activation threshold: per playtester spec, energy > avg × 1.4.
+      // Also require absolute energy > 0.18 so quiet ambient noise
+      // doesn't flicker the rings constantly when a track is in a
+      // quiet section.
+      const ACTIV_MULT = 1.4;
+      const ACTIV_FLOOR = 0.18;
+      if (energy > ring.emaEnergy * ACTIV_MULT && energy > ACTIV_FLOOR) {
+        // Only re-trigger if the previous pulse has decayed enough.
+        // Keeps a sustained loud band from continuously spawning
+        // sparks every frame.
+        if (ring.pulseT < 0.55) {
+          ring.pulseT = 1.0;
+          // Spark count scales with which ring — outer (bass) gets
+          // bigger bursts because bass hits feel like impact;
+          // inner (treble) gets fewer, snappier sparks.
+          const baseCount = 14 - i * 1.5;
+          const bonusFromEnergy = Math.floor(energy * 8);
+          const sparkCount = Math.max(4, Math.floor(baseCount + bonusFromEnergy));
+          // Compute this ring's current radii to pass to spawn so
+          // sparks emit from the actual ring path.
+          const tNorm = i / (RING_COUNT - 1);          // 0 outer .. 1 inner
+          const ringW = maxRingW * (1 - tNorm * 0.78);
+          const ringH = ringW * ASPECT;
+          _spawnSparks(i, ringW, ringH, cx, cy, sparkCount);
+        }
+      }
+      // Pulse decay — exponential so the bright pulse falls off fast
+      // initially but lingers as a fading glow.
+      if (ring.pulseT > 0) {
+        ring.pulseT -= dt * 1.8;
+        if (ring.pulseT < 0) ring.pulseT = 0;
+      }
+    }
+
+    // Draw the rings — outer first so inner ones layer on top.
+    // Each ring's brightness is base + pulseT contribution. Stroke
+    // width also scales so activated rings feel chunky.
+    ctx2d.save();
+    ctx2d.lineCap = 'round';
+    for (let i = 0; i < RING_COUNT; i++) {
+      const ring = _rings[i];
+      const tNorm = i / (RING_COUNT - 1);
+      const ringW = maxRingW * (1 - tNorm * 0.78);
+      const ringH = ringW * ASPECT;
+      // Base alpha scales with rolling energy so quiet sections
+      // dim the rings; pulse adds a sharp brightness boost on hit.
+      const base = 0.28 + ring.emaEnergy * 0.22;
+      const pulse = ring.pulseT * 0.55;
+      const alpha = Math.min(1, base + pulse);
+      const strokeW = 1.5 + ring.pulseT * 3.0;
+      // Outer rings shift slightly toward red, inner toward yellow
+      // — small hue spread within the chapter tint so the layered
+      // rings don't all read as a single uniform color.
+      const hShift = (tNorm - 0.5) * 12;
+      ctx2d.strokeStyle = `hsla(${_tintHsl.h + hShift}, ${_tintHsl.s}%, ${_tintHsl.l + ring.pulseT * 18}%, ${alpha})`;
+      ctx2d.lineWidth = strokeW;
+      ctx2d.beginPath();
+      ctx2d.ellipse(cx, cy, ringW, ringH, 0, 0, Math.PI * 2);
+      ctx2d.stroke();
+      // Activated rings get an additional inner glow stroke for
+      // "bloom" — a wider faint stroke layered underneath so the
+      // bright moment looks like it's emitting light, not just
+      // changing color.
+      if (ring.pulseT > 0.15) {
+        ctx2d.strokeStyle = `hsla(${_tintHsl.h + hShift}, 100%, ${Math.min(85, _tintHsl.l + 30)}%, ${ring.pulseT * 0.35})`;
+        ctx2d.lineWidth = strokeW * 3;
+        ctx2d.beginPath();
+        ctx2d.ellipse(cx, cy, ringW, ringH, 0, 0, Math.PI * 2);
+        ctx2d.stroke();
+      }
+    }
+    ctx2d.restore();
+
+    // Update + draw sparks. Iterate backwards to splice safely.
+    ctx2d.save();
+    for (let i = _sparks.length - 1; i >= 0; i--) {
+      const s = _sparks[i];
+      s.life += dt;
+      if (s.life >= s.maxLife) {
+        _sparks.splice(i, 1);
+        continue;
+      }
+      // Drift physics: gravity pulls vy down over time, gentle drag.
+      s.vy += 60 * dt;             // gravity (canvas y is positive-down)
+      s.vx *= 0.98;
+      s.vy *= 0.99;
+      s.x += s.vx * dt;
+      s.y += s.vy * dt;
+      // Color: chapter hue + per-spark variance (-15°..+15°).
+      // Brighter early in life, fading to dim at end.
+      const t01 = s.life / s.maxLife;
+      const fade = 1 - t01;
+      const sparkH = _tintHsl.h + s.hueOffset * 15;
+      const sparkL = _tintHsl.l + 25 - t01 * 30;
+      ctx2d.fillStyle = `hsla(${sparkH}, ${_tintHsl.s}%, ${sparkL}%, ${fade})`;
+      // Spark = a small filled circle. Glow trail done as a wider
+      // semi-transparent halo, drawn first.
+      ctx2d.beginPath();
+      ctx2d.arc(s.x, s.y, s.size * (1 + fade * 0.5), 0, Math.PI * 2);
+      ctx2d.fill();
+    }
+    ctx2d.restore();
+
+    // Cap spark count to prevent runaway memory if many beats stack
+    // (e.g. heavy techno with sub-bass + kick on every 16th note).
+    // Drop oldest sparks first.
+    const SPARK_CAP = 200;
+    if (_sparks.length > SPARK_CAP) {
+      _sparks.splice(0, _sparks.length - SPARK_CAP);
+    }
+  }
+
   // ---------- Loop ----------
 
   function _frame() {
@@ -335,6 +598,7 @@ export function createVisualizer({ canvas, getTint, getActive }) {
     if (mode.id === 'bars') trailAlpha = 0.45;
     else if (mode.id === 'waveform') trailAlpha = 0.25;
     else if (mode.id === 'matrix') trailAlpha = 0.12;     // long persistence for rain trails
+    else if (mode.id === 'rings') trailAlpha = 0.18;      // medium trail — sparks need time to fade
     else trailAlpha = 0.35;
     ctx2d.fillStyle = `rgba(0, 0, 0, ${trailAlpha})`;
     ctx2d.fillRect(0, 0, canvas.width, canvas.height);
@@ -346,6 +610,7 @@ export function createVisualizer({ canvas, getTint, getActive }) {
     if (mode.id === 'bars') drawBars(cssW, cssH);
     else if (mode.id === 'waveform') drawWaveform(cssW, cssH);
     else if (mode.id === 'matrix') drawMatrix(cssW, cssH);
+    else if (mode.id === 'rings') drawRings(cssW, cssH);
     ctx2d.restore();
   }
 
