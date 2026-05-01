@@ -412,81 +412,125 @@ canvas { display: block; cursor: var(--matrix-cursor); }
 #title-row {
   display: flex;
   flex-direction: row;
-  align-items: center;
+  align-items: flex-start;            /* top-align so columns of different heights line up at the top */
   justify-content: center;
-  gap: 36px;
+  gap: 48px;
   width: 100%;
-  /* Bumped 1500 → 1700px to accommodate the larger PC cards
-     (480px each) + the 540px center column + 72px of gaps =
-     1572px total. The previous 1500px cap clamped the row and
-     forced the cards to wrap below the title text on wide
-     screens. */
-  max-width: 1700px;
+  /* Two-column layout: title-left-col + title-right-stack.
+     Left ~520px, right ~480px, gap 48px = 1048px total.
+     1200px cap is plenty of headroom on wide screens. */
+  max-width: 1200px;
   margin-top: 10px;
   flex-wrap: wrap;
 }
-#title-center {
+/* LEFT COLUMN — title text + control hints + save panel + mode-picker
+   description + ARMORY/CONNECT WALLET buttons. Left-aligned (not
+   centered) so the column reads as a tidy info stack. Per playtester:
+   "We move the title and information to the left. Armory connect
+   wallet underneath left side." */
+#title-left-col {
   display: flex;
   flex-direction: column;
-  align-items: center;
-  /* Hard-cap the center column so the title text stays readable
-     and doesn't push the cards too far to the edges. */
-  flex: 0 1 540px;
-  min-width: 360px;
+  align-items: flex-start;
+  text-align: left;
+  flex: 0 0 520px;
+  min-width: 320px;
 }
-/* Override the global .overlay rules just for the center column —
-   smaller H1, narrower paragraph, no extra bottom margin on the
-   save panel. The defaults outside the title row stay untouched. */
-#title-center h1 {
+#title-left-col h1 {
   font-size: 72px;
   margin-bottom: 12px;
   line-height: 0.95;
+  text-align: left;
 }
-#title-center h2 {
+#title-left-col h2 {
   font-size: 16px;
   letter-spacing: 4px;
   margin-bottom: 18px;
+  text-align: left;
 }
-#title-center p {
+#title-left-col p {
   font-size: 12px;
   letter-spacing: 1.5px;
   line-height: 1.8;
   max-width: 520px;
   margin-bottom: 18px;
+  text-align: left;
 }
-#title-center #title-save-panel {
-  margin: 0;
+#title-left-col #title-save-panel {
+  margin: 0 0 18px 0;
+  align-self: stretch;
+}
+#title-left-col #mode-picker-hint {
+  margin: 8px 0 6px 0;
+  text-align: left;
+}
+#title-left-col #mode-picker-desc {
+  margin: 0 0 20px 0;
+  text-align: left;
+  min-height: 18px;
+}
+/* Buttons block at the bottom of the left column. wallet-btn defaults
+   are kept; we just constrain the wrapper width so buttons don't
+   stretch to the full left-col width on wide screens. */
+#title-left-buttons {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  width: 100%;
+  max-width: 320px;
 }
 
-/* Right-side stack — holds ATTACK THE AI + ENDLESS GLYPHS. Per
-   playtester: "Maybe make these two landscape images?" The two cards
-   stack vertically with the same gap as the title-row's horizontal
-   gap, and each card uses the .mode-card-landscape modifier (wider
-   than tall) instead of the default portrait. Total stack height
-   matches the portrait TUTORIAL card on the left so the row reads
-   as visually balanced. */
+/* Right-side stack — holds TUTORIAL + ATTACK THE AI + ENDLESS GLYPHS.
+   Per playtester redesign: "Can we make the cards on the main screen
+   sit on top of one another. The tutorial should be top card on
+   right. The main game ATTACK THE AI should be underneath it. The
+   Endless GLYPHS should be underneath that." All three are landscape.
+   Three stacked landscape cards × 200px tall + 2 × 14px gap = 628px
+   total — comfortably fits in a typical viewport's vertical space. */
 #title-right-stack {
   display: flex;
   flex-direction: column;
-  gap: 18px;
+  gap: 14px;
   flex: 0 0 auto;
 }
-/* Landscape variant — 480px wide × 300px tall (~1.6:1 ratio). Two
-   stacked landscape cards = 600px + 18px gap = 618px, close to the
-   620px height of the portrait sibling. */
+/* Landscape variant — 480px wide × 200px tall (~2.4:1 ratio).
+   Slightly more elongated than the previous 480×300 because we now
+   stack THREE cards instead of two; flatter cards keep the total
+   stack height within a normal viewport. */
 .mode-card.mode-card-landscape {
   width: 480px;
-  height: 300px;
+  height: 200px;
 }
 @media (max-width: 1200px) {
-  .mode-card.mode-card-landscape { width: 420px; height: 260px; }
-  #title-right-stack { gap: 14px; }
+  .mode-card.mode-card-landscape { width: 420px; height: 175px; }
+  #title-right-stack { gap: 12px; }
+  #title-left-col { flex: 0 0 460px; }
+  #title-left-col h1 { font-size: 60px; }
 }
 @media (max-width: 980px) {
-  .mode-card.mode-card-landscape { width: 360px; height: 224px; }
+  .mode-card.mode-card-landscape { width: 380px; height: 158px; }
+  #title-left-col { flex: 0 0 400px; }
+  #title-left-col h1 { font-size: 52px; }
 }
 @media (max-width: 760px) {
-  .mode-card.mode-card-landscape { width: 300px; height: 188px; }
+  .mode-card.mode-card-landscape { width: 320px; height: 134px; }
+  #title-row { gap: 24px; }
+  #title-left-col { flex: 0 0 100%; min-width: 0; align-items: center; text-align: center; }
+  #title-left-col h1, #title-left-col h2, #title-left-col p { text-align: center; }
+  #title-left-col #title-save-panel { align-self: center; max-width: 320px; }
+  #title-left-col #mode-picker-hint, #title-left-col #mode-picker-desc { text-align: center; align-self: center; }
+  #title-left-buttons { align-items: center; }
+}
+@media (max-width: 480px) {
+  /* Phone — three landscape cards × ~95px tall + 8px gap × 2 = ~301px
+     vertical. Plus title text + save panel + buttons compresses to
+     fit a typical mobile viewport without much scrolling. */
+  .mode-card.mode-card-landscape { width: 280px; height: 95px; }
+  #title-right-stack { gap: 8px; }
+  #title-row { gap: 14px; }
+  #title-left-col h1 { font-size: 38px; }
+  #title-left-col h2 { font-size: 12px; letter-spacing: 2px; }
+  #title-left-col p { font-size: 10px; line-height: 1.5; margin-bottom: 10px; }
 }
 /* Procedural placeholder image for the ENDLESS GLYPHS card. Per
    playtester: "Placeholder for now." Builds a blueprint-blue
