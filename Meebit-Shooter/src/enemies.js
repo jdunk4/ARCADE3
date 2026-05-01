@@ -33,6 +33,11 @@ export function applyKnockback(enemy, fromPos, units = 0.3) {
   if (!enemy || !enemy.pos || !fromPos) return;
   if (enemy.isBoss) return;          // bosses immune — scripted movement
   if (enemy.dead) return;
+  // Shielded enemies (jumpers w/ shield up, NIGHT_HERALD pre-50%-HP)
+  // are knockback-immune. Per playtester: "when the shield is active
+  // it experiences no knockback." Hits drain shieldHp instead but
+  // don't push.
+  if (enemy.shielded) return;
   // Direction vector, normalized.
   const dx = enemy.pos.x - fromPos.x;
   const dz = enemy.pos.z - fromPos.z;
@@ -1212,6 +1217,130 @@ function makeGooSpitter(tintHex, scale) {
 }
 
 // ============================================================================
+// JUMPER — Halo-style shielded swordsman boss
+// ============================================================================
+//
+// Mesh layout, top-down:
+//   - Reuses the standard humanoid as the body (head + torso + arms + legs)
+//     so movement animations work without bespoke arm/leg references.
+//   - Adds a SWORD mesh parented to the right hand: a long thin blade
+//     with a glowing edge (chapter-tinted emissive). Held vertically
+//     while idle, swings forward during a jump-attack.
+//   - Adds a SHIELD OUTLINE mesh: an additively-blended translucent
+//     replica of the humanoid silhouette, scaled ~1.18× and offset
+//     slightly so it reads as an energy field hugging the body. The
+//     shield material's emissive intensity is the LIVE indicator —
+//     boosted on hit (shieldHitFlashT), dimming back after.
+//
+// Returned object includes `shieldMesh` and `shieldMat` so the per-frame
+// damage code in main.js can manipulate them (color flash, scale pop,
+// removal on shield-break).
+function makeJumper(tintHex, scale) {
+  // Build a humanoid body first — gives us head/arms/legs to animate.
+  const base = makeHumanoid(tintHex, 1, 0.4, null);
+  const group = base.group;
+  const body = base.body;
+  const bodyMat = base.bodyMat;
+  const tint = new THREE.Color(tintHex);
+
+  // -- SWORD --
+  // Long thin blade attached to the right hand. Built as a tapered
+  // box with an emissive cyan-white edge so it reads as energy-edged
+  // (Halo aesthetic). The sword is parented to the right arm group
+  // so it inherits the arm's swing animation automatically.
+  const swordGroup = new THREE.Group();
+  // Hilt
+  const hiltMat = new THREE.MeshStandardMaterial({
+    color: 0x222229, roughness: 0.7, metalness: 0.6,
+  });
+  const hilt = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.10, 0.10, 0.45, 8),
+    hiltMat,
+  );
+  hilt.position.y = -0.10;
+  swordGroup.add(hilt);
+  // Crossguard
+  const guard = new THREE.Mesh(
+    new THREE.BoxGeometry(0.45, 0.10, 0.18),
+    new THREE.MeshStandardMaterial({ color: 0x444450, roughness: 0.5, metalness: 0.85 }),
+  );
+  guard.position.y = 0.16;
+  swordGroup.add(guard);
+  // Blade — tapered using a stretched cone for the tip + cylinder body.
+  const bladeMat = new THREE.MeshStandardMaterial({
+    color: 0xddeeff,
+    emissive: 0xaaccff,
+    emissiveIntensity: 1.4,
+    roughness: 0.20,
+    metalness: 0.95,
+  });
+  const blade = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.06, 0.10, 1.6, 6),
+    bladeMat,
+  );
+  blade.position.y = 1.05;
+  blade.scale.set(1, 1, 0.3);    // squish into a flat blade silhouette
+  swordGroup.add(blade);
+  const tip = new THREE.Mesh(
+    new THREE.ConeGeometry(0.06, 0.30, 6),
+    bladeMat,
+  );
+  tip.position.y = 2.00;
+  tip.scale.set(1, 1, 0.3);
+  swordGroup.add(tip);
+  // Attach to right arm. The humanoid builder positions arms around
+  // y=1.6-2.2 with the elbow at the bottom; sword anchored at the
+  // arm's bottom and rotated to point upward so the blade extends
+  // past the arm.
+  if (base.armR) {
+    swordGroup.position.set(0, -0.55, 0);   // hand position relative to arm origin
+    base.armR.add(swordGroup);
+  } else {
+    swordGroup.position.set(0.55, 1.5, 0);
+    group.add(swordGroup);
+  }
+
+  // -- SHIELD OUTLINE --
+  // Additive transparent silhouette wrapper. Built as a single
+  // capsule-like ellipsoid (using stretched sphere) covering the
+  // whole humanoid — body + head — at ~1.18× scale. Energy-shield
+  // look: cyan-blue, additive blend, subtle inner pulse via
+  // emissive. The mesh is "owned by" the enemy state and removed
+  // on shield-break.
+  const shieldMat = new THREE.MeshBasicMaterial({
+    color: 0x66ccff,
+    transparent: true,
+    opacity: 0.22,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+    toneMapped: false,
+  });
+  // Shield silhouette — stretched sphere covering entire humanoid
+  // body height (head at y≈3.0, feet at y≈0). Center the sphere
+  // around y=1.6 (mid-height), stretch vertically to wrap the full
+  // figure.
+  const shieldMesh = new THREE.Mesh(
+    new THREE.SphereGeometry(1.0, 16, 12),
+    shieldMat,
+  );
+  shieldMesh.position.y = 1.6;
+  shieldMesh.scale.set(0.85, 1.85, 0.85);   // tall, narrow, wraps the body
+  group.add(shieldMesh);
+
+  group.scale.setScalar(scale);
+  return {
+    group, body, bodyMat,
+    armL: base.armL, armR: base.armR, legL: base.legL, legR: base.legR,
+    head: base.head,
+    // Jumper-specific extras — exposed to makeEnemy so the per-frame
+    // damage routing can find them by reference.
+    swordGroup,
+    shieldMesh, shieldMat,
+  };
+}
+
+// ============================================================================
 // MAKE ENEMY — dispatches to the right factory
 // ============================================================================
 export function makeEnemy(typeKey, tintHex, pos) {
@@ -1261,6 +1390,7 @@ export function makeEnemy(typeKey, tintHex, pos) {
   else if (typeKey === 'red_devil') built = makeRedDevil(tintHex, scale);
   else if (typeKey === 'wizard')   built = makeWizard(tintHex, scale);
   else if (typeKey === 'goospitter') built = makeGooSpitter(tintHex, scale);
+  else if (typeKey === 'jumper')   built = makeJumper(tintHex, scale);
   else                             built = makeHumanoid(tintHex, scale, 0, typeKey);
 
   const { group, body, bodyMat, armL, armR, legL, legR } = built;
@@ -1338,6 +1468,46 @@ export function makeEnemy(typeKey, tintHex, pos) {
   if (hpMul !== 1) {
     enemy.hp = Math.round(enemy.hp * hpMul);
     enemy.hpMax = Math.round(enemy.hpMax * hpMul);
+  }
+  // -- JUMPER state --
+  // shieldHp/shieldHpMax: separate health pool that absorbs damage
+  // until depleted. While > 0, enemy.shielded = true (hooked into
+  // the existing shield-immunity infrastructure used by NIGHT_HERALD
+  // boss + applyKnockback).
+  // shieldMesh/shieldMat: refs to the additive outline mesh; per-
+  // frame update flashes its emissive on hit, fades back, then
+  // disposes on break.
+  // shieldHitFlashT: counts down on hit for the glow-on-hit pulse.
+  // jumpTimer / jumpState: jump-attack cadence machine.
+  if (spec.isJumper) {
+    enemy.isJumper = true;
+    enemy.shieldHp = spec.shieldHp || 200;
+    enemy.shieldHpMax = enemy.shieldHp;
+    if (hpMul !== 1) {
+      // Wave-scaled: shields scale with HP multiplier so endless-mode
+      // ×1.05/wave growth applies to shields too.
+      enemy.shieldHp = Math.round(enemy.shieldHp * hpMul);
+      enemy.shieldHpMax = enemy.shieldHp;
+    }
+    enemy.shielded = true;
+    enemy.shieldMesh = built.shieldMesh || null;
+    enemy.shieldMat = built.shieldMat || null;
+    enemy.shieldHitFlashT = 0;
+    // Jump cadence — first jump fires after a randomized partial
+    // interval so a wave's jumpers don't all leap in lockstep.
+    enemy.jumpInterval = spec.jumpInterval || 4.5;
+    enemy.jumpRange = spec.jumpRange || 12;
+    enemy.jumpTimer = enemy.jumpInterval * (0.4 + Math.random() * 0.6);
+    enemy.jumpState = 'idle';     // 'idle' | 'crouch' | 'leap' | 'land'
+    enemy.jumpStateT = 0;
+    enemy.jumpFromY = 0;
+    enemy.jumpPeakY = 0;
+    enemy.swordGroup = built.swordGroup || null;
+    // Jumpers are bosses for knockback purposes (immune while
+    // shielded — even after shield breaks they only get standard
+    // knockback, not boss-immunity). Use the existing isBoss flag
+    // sparingly; instead the applyKnockback function will check
+    // `enemy.shielded` directly.
   }
   enemies.push(enemy);
   return enemy;

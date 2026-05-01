@@ -273,6 +273,60 @@ window.__killEnemyAtIdx = function(enemyOrIdx) {
   killEnemy(idx);
 };
 
+// =====================================================================
+// SHIELD ABSORB — JUMPER + LEGACY SHIELDED BOSSES
+// =====================================================================
+// Centralized routing for damage hitting a shielded enemy. Two cases:
+//
+//   (a) Jumper (e.isJumper && e.shielded): drains e.shieldHp by `dmg`.
+//       If shieldHp drops to 0, plays a break burst, removes the
+//       shield mesh, flips e.shielded = false. Body hp is UNCHANGED
+//       this hit. Returns false (no body damage was dealt).
+//
+//   (b) Legacy shielded boss (e.shielded but no shieldHp): blocks
+//       damage entirely (existing NIGHT_HERALD behavior). Returns
+//       false so the caller skips its kill check.
+//
+//   (c) Not shielded: returns true so the caller proceeds with
+//       e.hp -= dmg + knockback + kill check.
+//
+// Hit visuals (body flash, hitBurst at hitPos) are still the caller's
+// responsibility — this only mediates the HP arithmetic + shield state.
+// hitPos is used for the shield-break burst position.
+window.__shieldAbsorbOrPass = function(e, dmg, hitPos) {
+  if (!e || !e.shielded) return true;          // no shield → pass through
+  if (e.isJumper) {
+    e.shieldHp -= dmg;
+    e.shieldHitFlashT = 0.18;                  // glow on hit
+    if (e.shieldHp <= 0) {
+      e.shielded = false;
+      e.shieldHp = 0;
+      // Break burst — bigger than a hit flash, white-cyan to read
+      // as the shield collapsing. Two layered bursts at the enemy's
+      // position so the effect feels significant. Audio cue too.
+      const bp = e.pos ? e.pos.clone() : (hitPos ? hitPos.clone() : null);
+      if (bp) {
+        bp.y = 1.6;
+        hitBurst(bp, 0xffffff, 22);
+        hitBurst(bp, 0x66ccff, 18);
+      }
+      try { Audio.shieldHit && Audio.shieldHit(); } catch (_) {}
+      // Remove the outline mesh so the body becomes the rendered
+      // silhouette. Material is held by the mesh; both disposed
+      // in clearAllEnemies on wave end too.
+      if (e.shieldMesh) {
+        if (e.shieldMesh.parent) e.shieldMesh.parent.remove(e.shieldMesh);
+        if (e.shieldMat) e.shieldMat.dispose();
+        e.shieldMesh = null;
+        e.shieldMat = null;
+      }
+    }
+    return false;                              // body hp not touched this hit
+  }
+  // Legacy shielded boss — block entirely (NIGHT_HERALD pattern).
+  return false;
+};
+
 // THERMONUCLEAR payload — massive AoE detonation. Bigger radius and
 // more layered FX than a stratagem rocket; signals "you summoned
 // something terrible" and is balanced as a wave-clear panic button.
@@ -6177,6 +6231,95 @@ function updateEnemies(dt) {
       e.antWings[1].rotation.z = -flap;
     }
 
+    // ---- JUMPER ----
+    // Two visual systems: shield outline pulse/flash + jump-attack
+    // animation. Shield mesh is parented to e.obj so its world
+    // position tracks the body automatically — only the local
+    // material state needs updating here.
+    if (e.isJumper) {
+      // Shield visual update — only when shield is still up.
+      if (e.shielded && e.shieldMat) {
+        // Decay the hit-flash timer; bright pulse fades back to base.
+        if (e.shieldHitFlashT > 0) {
+          e.shieldHitFlashT -= dt;
+          if (e.shieldHitFlashT < 0) e.shieldHitFlashT = 0;
+        }
+        // Base opacity scales with REMAINING shield % so a near-broken
+        // shield reads as visibly weakening. 0.22 baseline → 0.12 at
+        // 0% (just before break). Plus a hit-flash boost on top.
+        const shieldFrac = Math.max(0, e.shieldHp / Math.max(1, e.shieldHpMax));
+        const baseOpacity = 0.12 + shieldFrac * 0.10;
+        const flashBoost = e.shieldHitFlashT * 1.8;     // big punch on hit
+        e.shieldMat.opacity = Math.min(0.85, baseOpacity + flashBoost);
+        // Color flash — base cyan, lerps to white-hot on hit.
+        if (e.shieldHitFlashT > 0) {
+          const t = Math.min(1, e.shieldHitFlashT / 0.18);
+          const r = 0.4 + t * 0.6;
+          const g = 0.8 + t * 0.2;
+          const b = 1.0;
+          e.shieldMat.color.setRGB(r, g, b);
+        } else {
+          e.shieldMat.color.setHex(0x66ccff);
+        }
+        // Subtle idle pulse — slow breath when no hit is active.
+        const breath = 1 + Math.sin((e.walkPhase || 0) + performance.now() * 0.0015) * 0.04;
+        if (e.shieldMesh) {
+          e.shieldMesh.scale.set(0.85 * breath, 1.85 * breath, 0.85 * breath);
+        }
+      }
+
+      // Jump-attack cadence. Only triggers if player is within
+      // jumpRange and the timer is up. State machine:
+      //   idle → crouch (0.4s) → leap (0.8s up + 0.6s fall) → land
+      //
+      // Velocity in Y is faked by directly setting e.obj.position.y;
+      // movement in XZ is suspended during crouch/leap so the jumper
+      // commits to a fixed landing point (telegraphed).
+      e.jumpTimer -= dt;
+      if (e.jumpState === 'idle' && e.jumpTimer <= 0 && dist < e.jumpRange) {
+        e.jumpState = 'crouch';
+        e.jumpStateT = 0;
+        e.jumpFromY = 0;
+      }
+      if (e.jumpState !== 'idle') {
+        e.jumpStateT += dt;
+        if (e.jumpState === 'crouch') {
+          // Crouch dip — body sinks 0.3u while preparing.
+          if (e.obj) e.obj.position.y = -0.3 * Math.min(1, e.jumpStateT / 0.4);
+          if (e.jumpStateT >= 0.4) {
+            e.jumpState = 'leap';
+            e.jumpStateT = 0;
+          }
+        } else if (e.jumpState === 'leap') {
+          // Parabolic arc — peaks at 4u over 1.4s.
+          const t01 = Math.min(1, e.jumpStateT / 1.4);
+          const archY = Math.sin(t01 * Math.PI) * 4.0;
+          if (e.obj) e.obj.position.y = archY;
+          // Sword swing — rotate the sword group during the descent.
+          if (e.swordGroup && t01 > 0.5) {
+            const swingT = (t01 - 0.5) / 0.5;
+            e.swordGroup.rotation.x = -swingT * 1.4;
+          }
+          if (e.jumpStateT >= 1.4) {
+            e.jumpState = 'land';
+            e.jumpStateT = 0;
+            // Landing burst — dust kick + audio cue.
+            const lp = new THREE.Vector3(e.pos.x, 0.1, e.pos.z);
+            hitBurst(lp, 0x8a6a44, 14);
+            try { Audio.bigBoom && Audio.bigBoom(); } catch (_) {}
+          }
+        } else if (e.jumpState === 'land') {
+          // Brief recovery — body returns to neutral, sword resets.
+          if (e.obj) e.obj.position.y = 0;
+          if (e.swordGroup) e.swordGroup.rotation.x = 0;
+          if (e.jumpStateT >= 0.5) {
+            e.jumpState = 'idle';
+            e.jumpTimer = e.jumpInterval * (0.85 + Math.random() * 0.3);
+          }
+        }
+      }
+    }
+
     let moveTargetX = player.pos.x, moveTargetZ = player.pos.z;
     if (S.rescueMeebit && !S.rescueMeebit.freed && !S.rescueMeebit.killed) {
       const cx = S.rescueMeebit.pos.x, cz = S.rescueMeebit.pos.z;
@@ -6498,9 +6641,9 @@ function updateBullets(dt) {
       const dx = e.pos.x - b.position.x;
       const dz = e.pos.z - b.position.z;
       if (dx*dx + dz*dz < hitRange) {
-        // Shield guard — bullet detonates on shield (consumed) but
-        // does no damage. shieldHit visual + audio.
-        if (e.shielded) {
+        // Shield absorb — jumper drains shieldHp, NIGHT_HERALD blocks
+        // entirely. Returns true if damage should pass through to hp.
+        if (!window.__shieldAbsorbOrPass(e, b.userData.damage, b.position)) {
           e.hitFlash = 0.15;
           hitBurst(b.position, 0xffffff, 4);
           try { Audio.shieldHit && Audio.shieldHit(); } catch (err) {}

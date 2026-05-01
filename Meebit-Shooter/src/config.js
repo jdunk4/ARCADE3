@@ -737,6 +737,44 @@ export const ENEMY_TYPES = {
     customMesh: 'roach',
   },
 
+  // -------- ENDLESS GLYPHS BOSS — JUMPER --------
+  // HALO-style shielded swordsman. Per playtester: "We need to
+  // introduce a new enemy on wave 5. It should be a jumping enemy
+  // with a sword. This enemy has a shield that is very high HP,
+  // when the shield is active it experiences no knockback. The
+  // shield should appear like an outline of the enemy mesh. We
+  // need to see a visual glow on when this is being hit and then
+  // destroyed. Then the enemy takes damage and can die. This is
+  // our boss and as the waves progress we'll see more of them.
+  // Think HALO enemies."
+  //
+  // Behavior: closes on the player, periodically jumps into the air
+  // and crashes down (telegraphed). While shielded: immune to
+  // knockback, all incoming damage drains shieldHp instead of hp.
+  // Shield breaks → visible burst → enemy is now vulnerable. Then
+  // dies normally. Mesh is built by makeJumper() with a custom
+  // shield outline (slightly larger transparent body wrapper).
+  jumper: {
+    speed: 2.6,
+    hp: 120,                     // body hp (after shield breaks)
+    xp: 8,
+    score: 1800,
+    scale: 1.0,
+    damage: 22,                  // sword swing
+    name: 'JUMPER',
+    customMesh: 'jumper',
+    isJumper: true,              // flag for behavior tick + damage routing
+    // Shield: drains by 1 per damage point. Tuned high so a few
+    // shots from a basic weapon (~10-20 dmg/round) feels meaningful
+    // but mid-tier weapons clear it in a half-magazine. Wave 1-5
+    // appearance is intentional first-encounter — give the player
+    // time to learn the shield-break rhythm before later waves
+    // throw multiple jumpers at once.
+    shieldHp: 200,
+    // Jump cadence — telegraphed crouch + leap + slam.
+    jumpInterval: 4.5,           // seconds between jump attacks
+    jumpRange: 12,               // close in if player is further than this
+  },
   // -------- CH.7 MEGA BRUTE --------
   // Reveals from mining blocks instead of ore in chapter 7 wave 1.
   // Slow, beefy, lots of HP. On death, "explodes" into 5 ROACH spawnlings
