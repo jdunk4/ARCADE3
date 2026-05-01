@@ -61,6 +61,16 @@ export function startEndlessGlyphs(playerCount = 1) {
   S.endlessKills = 0;                   // total kills this run
   S.endlessVictory = false;
 
+  // Clear any other run mode that might still be active (defensive —
+  // main.js's mode-entry guards should already handle this, but the
+  // second line of defense is cheap). Without this, switching from
+  // tutorial → endless can leak the tutorial-tile floor + lesson
+  // controller state.
+  if (S.tutorialMode) {
+    S.tutorialMode = false;
+    setTutorialActive(false);
+  }
+
   Audio.stopPhoneRing && Audio.stopPhoneRing();
   Audio.stopCDrone && Audio.stopCDrone();
   Audio.stopDeathMusic && Audio.stopDeathMusic();

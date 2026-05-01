@@ -2405,6 +2405,14 @@ initGamepad({
 
 // ---- GAME LIFECYCLE ----
 function startGame() {
+  // Make sure ENDLESS GLYPHS isn't still active from a previous run.
+  // The endless mode owns a locker mesh + tutorial-tile floor + own
+  // wave runner; if its flag stays set when startGame() runs, the
+  // endless tick continues on top of the chapter run, the locker
+  // visibly appears mid-arena, and the tutorial-tile floor doesn't
+  // get restored. Per playtester: "when I select main game attack
+  // the AI it plays endless glyphs on top of main game."
+  _exitEndlessIfActive();
   // Make sure the phone ring + C-drone aren't still playing if we got here
   // via the incoming-call accept path (or any other unusual entry).
   Audio.stopPhoneRing && Audio.stopPhoneRing();
@@ -2862,6 +2870,11 @@ function startGame() {
 // systems boot identically.
 // ---------------------------------------------------------------------
 function startTutorial() {
+  // Make sure ENDLESS GLYPHS isn't still active. Without this, the
+  // endless locker mesh stays in the scene and a "glyphstone" appears
+  // in the tutorial. Per playtester: "When I select the tutorial a
+  // glyphstone appears and it should not be there."
+  _exitEndlessIfActive();
   Audio.stopPhoneRing && Audio.stopPhoneRing();
   Audio.stopCDrone && Audio.stopCDrone();
   // Stop the death-screen song (Beyond.mp3) if a prior run's SIGNAL
@@ -3454,6 +3467,19 @@ function _exitTutorialIfActive() {
   S.tutorialRequestOverdrive = false;
 }
 
+// Endless Glyphs cleanup mirror of _exitTutorialIfActive. Called by
+// every other mode-entry point (startGame, startTutorial) to make
+// SURE the endless mode is fully torn down before another mode
+// starts. Without this, S.endlessGlyphs stays true after a player
+// quits the mode, and the endless tick keeps running on top of the
+// next selected mode — the symptom is "I selected ATTACK THE AI but
+// the locker keeps appearing" or "tutorial has a glyphstone in it."
+// exitEndlessGlyphs() is itself idempotent (no-op when not active).
+function _exitEndlessIfActive() {
+  if (!S.endlessGlyphs) return;
+  try { exitEndlessGlyphs(); } catch (e) { console.warn('[glyphs] exit', e); }
+}
+
 // Tutorial-only — highlights the rainbow grid cell the player is
 // CURRENTLY STANDING ON. Two layers:
 //
@@ -3798,7 +3824,12 @@ document.getElementById('glyphs-btn').addEventListener('click', (e) => {
     try { Audio.damage && Audio.damage(); } catch (_) {}
     return;
   }
-  Audio.init();
+  // Audio.init can throw on rare browser configurations; never let
+  // that block the modal from opening — the modal is the entire
+  // entry-point UX. Wrap defensively. Per playtester: "Endless
+  // glyphs is not selectable" — most likely a downstream call
+  // throwing synchronously and short-circuiting the modal display.
+  try { Audio.init(); } catch (_) {}
   // Show the player-count picker. Per playtester: "Hot-seat /
   // matchmaking room UI but actually solo for now — the UI shows the
   // 1-3 players choice, but only solo actually works." Modal markup
@@ -3871,6 +3902,7 @@ document.getElementById('restart-btn').addEventListener('click', () => {
       S.running = false;
       Audio.stopMusic();
       _exitTutorialIfActive();
+      _exitEndlessIfActive();
       // Hide all the in-game HUD bits (joystick, fire button, score,
       // pause button, etc.). The .hidden-ui class is applied to all
       // such elements so a single querySelectorAll handles the lot.
@@ -3880,6 +3912,7 @@ document.getElementById('restart-btn').addEventListener('click', () => {
       // Re-apply the soft tutorial gate so a player who just finished
       // the tutorial sees the ATTACK THE AI card unlocked.
       _applyTutorialGate();
+      _applyGlyphsGate();
     });
   }
 }
@@ -3903,12 +3936,15 @@ PauseMenu.setHandlers({
     // If quitting a tutorial run, drop the rainbow floor so the title
     // screen + any subsequent normal run look right.
     _exitTutorialIfActive();
+    // Same for endless glyphs — drop the locker + tutorial-tile floor.
+    _exitEndlessIfActive();
     document.querySelectorAll('.hidden-ui').forEach(el => el.style.display = 'none');
     document.getElementById('gameover').classList.add('hidden');
     document.getElementById('title').classList.remove('hidden');
     // Re-apply soft tutorial gate so the title's ATTACK THE AI card
     // reflects current completion state on every return-to-title.
     _applyTutorialGate();
+    _applyGlyphsGate();
   },
 });
 
