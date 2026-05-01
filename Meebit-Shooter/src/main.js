@@ -3480,6 +3480,124 @@ function _exitEndlessIfActive() {
   try { exitEndlessGlyphs(); } catch (e) { console.warn('[glyphs] exit', e); }
 }
 
+// =====================================================================
+// ENDLESS GLYPHS — CLEAN LOBBY ARENA
+// =====================================================================
+// Per playtester: "for endless glyphs we need to clear all enemies fog
+// waveprops / hives shields etc. It needs to look like the tutorial
+// but with no obstacles. The player navigates to a locker selects a
+// weapon and then boom."
+//
+// Mirrors the cleanup section of startTutorial() — clears every
+// chapter-prop type, hazards, pickups, weather effects, etc — but
+// does NOT touch tutorialMode flags. Called by endlessGlyphs.js
+// when entering the lobby; intentionally NEW code that doesn't
+// modify the existing tutorial or main-game setup paths.
+//
+// Wraps every call in try/catch because some of these clears assume
+// the chapter system has been initialized (matrix rain, blueprints,
+// etc.); if endless glyphs is launched directly from a fresh page
+// load, several of those modules may be in an empty state and would
+// throw on a cold call.
+function _setupEndlessCleanArena() {
+  // -- Active wave systems --
+  try { resetWaves(); } catch (e) {}
+  try { clearAllEnemies(); } catch (e) {}
+  // Defensive: zero the per-wave activity flags. resetGame() clears
+  // most of them, but resetWaves() may set a few back as a side
+  // effect of clearing intermission state.
+  S.waveActive = false;
+  S.miningActive = false;
+  S.spawnerWaveActive = false;
+  S.bonusWaveActive = false;
+  S.hyperdriveActive = false;
+  S.bossRef = null;
+  S.objectiveZone = null;
+
+  // -- Chapter-scoped dormant props (each chapter spawns these on
+  //    its first wave; we kill them all so the lobby is empty) --
+  try { clearCannon(); } catch (e) {}
+  try { clearQueenHive(); } catch (e) {}
+  try { clearCrusher(); } catch (e) {}
+  try { clearChargeCubes(); } catch (e) {}
+  try { clearEscortTruck(); } catch (e) {}
+  try { clearServerWarehouse(); } catch (e) {}
+  try { clearSafetyPod(); } catch (e) {}
+  try { clearCockroachBoss(); } catch (e) {}
+  try { clearAllPortals(); } catch (e) {}                  // hives/spawners + their shields
+  try { clearBlueprints(); } catch (e) {}                  // ch7 blueprint/glyphstone
+
+  // -- Per-wave scenery --
+  try { clearAllBlocks(); } catch (e) {}                   // mining blocks
+  try { clearAllEggs(); } catch (e) {}
+  try { clearGooSplats(); } catch (e) {}
+  try { clearHazards(); } catch (e) {}                     // weather / floor hazards
+  try { clearAllPickups(); } catch (e) {}                  // potions / grenades / loot
+  try { clearAllPowerups(); } catch (e) {}
+  try { clearInfectors(); } catch (e) {}                   // ch7 parasites
+  try { clearAllPixlPals(); } catch (e) {}
+  try { clearAllFlingers(); } catch (e) {}
+
+  // -- Special-event entities (tutorial / chapter-specific minis) --
+  try { despawnGalagaShip(); } catch (e) {}
+  try { despawnPacman(); } catch (e) {}
+  try { despawnPellets(); } catch (e) {}
+
+  // -- Player-deployed stuff (carries over from a previous run) --
+  try { resetStratagems(); } catch (e) {}                  // beacons + active mech
+  try { clearAllMines(); } catch (e) {}
+  try { clearStratagemTurrets(); } catch (e) {}
+
+  // -- Bullets + projectiles --
+  try { clearBullets(); } catch (e) {}
+  try { clearRockets(); } catch (e) {}
+  try { hideMissileArrow(); } catch (e) {}
+
+  // -- Weather + atmosphere — flat, calm look like the tutorial --
+  // Per playtester: "It needs to look like the tutorial but with no
+  // obstacles." Tutorial disposes rain + disables fog + boosts
+  // lighting — same here.
+  try { disposeRain(); } catch (e) {}
+  try { disableShadows(renderer); } catch (e) {}
+  try { disableFog(); } catch (e) {}
+  try { setFogVisible(false); } catch (e) {}
+  try { boostTutorialLighting(); } catch (e) {}
+  // Chapter 7 has its own dim-purple atmosphere override; force it
+  // off in case the player came from a ch7 run.
+  try { exitChapter7Atmosphere(); } catch (e) {}
+  S.chapter7Atmosphere = false;
+
+  // -- 3D matrix rain (chapter intro effect) --
+  try { clearMatrixRain3D(); } catch (e) {}
+
+  // -- Hide HUD chrome that doesn't apply to endless mode --
+  // chapter / wave / kills counter is meaningless in lobby; the
+  // wave runner (Phase 3b) will re-show its own indicator.
+  const _hudTop = document.getElementById('hud-top');
+  if (_hudTop) _hudTop.style.display = 'none';
+  // Hero hexagons are chapter-themed; hide them.
+  try { setHeroHexagonsVisible(false); } catch (e) {}
+}
+// Expose so endlessGlyphs.js can call without touching the rest of
+// main.js's surface area. NEW symbol — doesn't change any existing
+// tutorial or main-game code path.
+window.__setupEndlessCleanArena = _setupEndlessCleanArena;
+
+// Inverse of _setupEndlessCleanArena — restores fog / shadows /
+// lighting / hero hexagons so that the NEXT mode the player picks
+// (tutorial, main game, restart) doesn't inherit the lobby's flat
+// no-fog, no-shadow look. Called by endlessGlyphs.exitEndlessGlyphs()
+// via window.__teardownEndlessCleanArena.
+function _teardownEndlessCleanArena() {
+  try { restoreShadows(renderer); } catch (e) {}
+  try { restoreFog(); } catch (e) {}
+  try { restoreTutorialLighting(); } catch (e) {}
+  try { setFogVisible(true); } catch (e) {}
+  // Don't force hero hexagons back on here — the next mode's
+  // setup (startGame, startTutorial) will manage their visibility.
+}
+window.__teardownEndlessCleanArena = _teardownEndlessCleanArena;
+
 // Tutorial-only — highlights the rainbow grid cell the player is
 // CURRENTLY STANDING ON. Two layers:
 //

@@ -99,6 +99,20 @@ export function startEndlessGlyphs(playerCount = 1) {
   S.endlessKills = 0;
   S.endlessVictory = false;
 
+  // Wipe everything that could leak in from a prior run or from
+  // chapter-prop spawning that resetGame doesn't touch. Per
+  // playtester: "for endless glyphs we need to clear all enemies fog
+  // waveprops / hives shields etc. It needs to look like the tutorial
+  // but with no obstacles."
+  // The helper is a NEW function in main.js exposed via
+  // window.__setupEndlessCleanArena — wraps a sweep of every clear*
+  // / dispose* / disable* call in try/catch. Doesn't touch tutorial
+  // or main-game setup paths.
+  if (typeof window.__setupEndlessCleanArena === 'function') {
+    try { window.__setupEndlessCleanArena(); }
+    catch (e) { console.warn('[glyphs] clean arena', e); }
+  }
+
   // Apply rainbow tile floor — the lobby visually matches the tutorial.
   // Per playtester: "The same rainbow tile grid that the tutorial uses."
   // setTutorialActive flips a flag that other systems (under-foot glow,
@@ -163,6 +177,14 @@ export function exitEndlessGlyphs() {
   setTutorialActive(false);
   _disposeLocker();
   clearAllEnemies();
+
+  // Restore fog / shadows / lighting so the next mode the player
+  // picks doesn't inherit the lobby's flat no-fog look. Helper
+  // exposed by main.js — see _teardownEndlessCleanArena.
+  if (typeof window.__teardownEndlessCleanArena === 'function') {
+    try { window.__teardownEndlessCleanArena(); }
+    catch (e) { console.warn('[glyphs] teardown', e); }
+  }
 }
 
 // =====================================================================
