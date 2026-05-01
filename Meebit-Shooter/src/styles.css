@@ -2114,24 +2114,46 @@ canvas { display: block; cursor: var(--matrix-cursor); }
 }
 /* Lock badge — a "COMPLETE TUTORIAL FIRST" ribbon that sits at the top
    center of the card so the player understands WHY the card is dim.
-   Uses a CSS ::before so we don't have to add markup to index.html. */
+   Uses a CSS ::before so we don't have to add markup to index.html.
+
+   On hover, the lock + text turn yellow (caution color) for stronger
+   feedback that the player tried to interact with a locked card.
+   Per playtester: "When the mouse hovers over it, the lock and text
+   are in yellow color. Can we also make that a lot bigger and bolder?"
+   The 14px → 22px bump + heavier letter-spacing + thicker border
+   makes the badge dominate the card visually so it can't be missed. */
 .mode-card.locked::before {
   content: '🔒  COMPLETE TUTORIAL FIRST';
   position: absolute;
   top: 14px; left: 14px; right: 14px;
-  padding: 8px 10px;
+  padding: 14px 12px;
   background: rgba(20, 4, 4, 0.92);
-  border: 2px solid #ff5520;
+  border: 3px solid #ff5520;
   color: #ffaa88;
   font-family: 'Impact', 'Arial Black', sans-serif;
-  font-size: 14px;
-  letter-spacing: 3px;
+  font-weight: 900;
+  font-size: 22px;
+  letter-spacing: 4px;
   text-align: center;
-  text-shadow: 0 0 8px rgba(255, 85, 32, 0.6);
+  text-shadow: 0 0 10px rgba(255, 85, 32, 0.7);
   z-index: 4;     /* above the card image (~1) and label (~2) */
   /* Don't intercept clicks — we want them to land on the card so
      the click forwarder can flash the hint. */
   pointer-events: none;
+  /* Smooth color/border transition for the hover state below. */
+  transition: color 0.18s ease, border-color 0.18s ease,
+              background 0.18s ease, text-shadow 0.18s ease;
+}
+
+/* Hover state — lock + text flip to caution yellow. The hover
+   target is the card itself (since ::before doesn't take hover events
+   directly — they bubble from the parent). */
+.mode-card.locked:hover::before {
+  color: #ffd93d;                              /* bright caution yellow */
+  border-color: #ffd93d;
+  background: rgba(28, 22, 4, 0.94);           /* warm dark to match yellow */
+  text-shadow: 0 0 12px rgba(255, 217, 61, 0.85),
+               0 0 24px rgba(255, 217, 61, 0.45);
 }
 /* Subtle pulse on the lock badge so it draws the eye toward the
    tutorial card next to it. Pure CSS keyframe. */
