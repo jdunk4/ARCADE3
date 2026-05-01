@@ -2092,22 +2092,35 @@ canvas { display: block; cursor: var(--matrix-cursor); }
  * device-wide localStorage key (`mbs_tutorial_completed_v1`).
  * ========================================================================= */
 .mode-card.locked {
-  /* Heavier desaturation + darker so it reads "off" at a glance. Keep
-     the green border so the matrix theme stays consistent — the card
-     isn't disabled, just gated. */
-  filter: saturate(0.18) brightness(0.45);
+  /* No filter on the card root — applying saturate/brightness here
+     cascades down to ALL children including the ::before lock badge,
+     dragging its bright yellow into a dull grey-ish dim. Per
+     playtester: "We need complete tutorial to be bright. It looks
+     like it's being greyed out because the module for the game is
+     greyed out." Solution: dim the IMAGE and LABEL specifically
+     (rules below), and leave the card root + its ::before badge
+     un-filtered so the yellow caution ribbon stays vivid. */
   cursor: not-allowed;
 }
+/* Dim the card's visual content (image + label) for the locked
+   state — but NOT the lock badge ::before, which sits on the card
+   root and renders at full saturation/brightness. */
+.mode-card.locked .mode-card-img,
+.mode-card.locked .mode-card-label {
+  filter: saturate(0.18) brightness(0.45);
+}
 /* Hover doesn't perform the brighten-up the unlocked card does. We
-   override the existing .mode-card:hover transform/filter rules with
-   the same dimmed values. The :hover selector is more specific than
-   the base, so we have to repeat the dimming here. */
+   override the existing .mode-card:hover transform rule with no
+   transform, and keep the dimmed values on the inner content. */
 .mode-card.locked:hover {
-  filter: saturate(0.20) brightness(0.50);
   transform: none;
-  box-shadow: 0 0 18px rgba(255, 60, 60, 0.45),
-              inset 0 0 18px rgba(255, 60, 60, 0.10);
-  border-color: #ff5520;
+  box-shadow: 0 0 18px rgba(255, 217, 61, 0.45),
+              inset 0 0 18px rgba(255, 217, 61, 0.10);
+  border-color: #ffd93d;
+}
+.mode-card.locked:hover .mode-card-img,
+.mode-card.locked:hover .mode-card-label {
+  filter: saturate(0.20) brightness(0.50);
 }
 .mode-card.locked:hover .mode-card-img {
   transform: none;
