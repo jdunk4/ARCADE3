@@ -34,7 +34,7 @@ const MODES = [
   { id: 'bars',      label: 'BARS' },
   { id: 'waveform',  label: 'WAVEFORM' },
   { id: 'matrix',    label: 'MATRIX RAIN' },
-  { id: 'rings',     label: 'RINGS' },
+  { id: 'rings',     label: 'SPEAKER' },
 ];
 
 // Matrix-rain glyph palette — classic katakana half-width + digits +
@@ -301,48 +301,46 @@ export function createVisualizer({ canvas, getTint, getActive }) {
     }
   }
 
-  // -------- RINGS — concentric beat-reactive rings + spark particles --------
+  // -------- SPEAKER — cinematic subwoofer cone visualization --------
   //
   // Reference: user provided red-orange ember screenshots showing
-  // tilted concentric rings on the ground with sparks lifting off.
+  // tilted concentric rings on the ground with sparks lifting off,
+  // then asked to upgrade them into a cinematic "SPEAKER" — a
+  // pumping subwoofer cone framed by reactive rings + light beams
+  // + atmospheric haze + edge vignette.
   //
-  // Approach:
-  //   - 6 rings drawn as squashed ellipses (height = 28% of width)
-  //     to fake a ground-plane perspective tilt.
-  //   - Outer rings = bass; inner rings = treble. Each ring averages
-  //     a slice of the FFT bins and tracks its own rolling-average
-  //     baseline. When energy > avg × 1.4 it's "activated" and gets
-  //     a brightness pulse + spark burst.
-  //   - Sparks emit at random points along the activated ring,
-  //     shoot outward + slightly upward, fade out over ~1.5s.
-  //   - Tint variance: each spark's hue is randomized within ±15°
-  //     of the chapter tint so the burst reads as a colored spray
-  //     rather than a uniform color blob.
-  //
-  // Note: this 2D canvas can't represent true 3D height; "upward"
-  // particle motion is fake-perspective via dy offset, biased so
-  // sparks rise above the ring plane visually.
+  // Layer stack (back to front):
+  //   1. Atmospheric haze — drifting radial gradient breathes with
+  //      bass (sub-bass band drives the haze brightness).
+  //   2. Volumetric light beams — long thin rays from center,
+  //      pulse brighter on bass hits, slow rotation for life.
+  //   3. Rings — concentric circles AROUND the cone, beat-reactive
+  //      per-band (same logic as before but tinted as the cone's
+  //      surround).
+  //   4. Subwoofer cone — central dome with radial gradient.
+  //      Scales (z-axis fake) on bass hits — pumps in/out.
+  //   5. Center dust cap — small bright disc at the very center
+  //      of the cone.
+  //   6. Sparks — emitted from cone perimeter on bass hits.
+  //   7. Vignette — radial dark-edge gradient on top, gives the
+  //      "looking through a lens" cinematic frame.
 
-  // Per-ring state. Allocated once per visualizer instance.
-  // bandLo/bandHi are FFT bin index ranges (set at first frame from
-  // analyser size, since fftSize affects bin count).
-  // emaEnergy is the rolling average; activated flips true on spike.
-  // pulseT decays from 1 → 0 after activation (controls brightness).
   const RING_COUNT = 6;
-  let _rings = null;        // Array of ring state objects, lazy-built
-  let _sparks = [];         // Active spark particles
-  let _ringsLastT = 0;      // Last frame timestamp for dt calc
+  let _rings = null;
+  let _sparks = [];
+  let _ringsLastT = 0;
+  // Cone scale tracking — independent breath so the cone always has
+  // some life even when no beat is hitting. Driven by sub-bass EMA.
+  let _conePump = 0;          // 0..1 — recent bass impulse
+  let _coneIdle = 0;          // continuous oscillation phase
+  // Beam state — slow rotation around the center.
+  let _beamRot = 0;
+  // Haze state — phase for drift animation.
+  let _hazePhase = 0;
 
   function _ensureRings() {
     if (_rings) return;
     _rings = new Array(RING_COUNT);
-    // Distribute bin ranges logarithmically: outer rings (low index)
-    // grab the first few bass bins, inner rings (high index) span
-    // wider treble ranges. This gives the visualizer real bass
-    // sensitivity since music has more concentrated low-frequency
-    // energy than spread-out highs.
-    // Bin layout assumes fftSize=1024 (512 bins). At 44.1kHz sample
-    // rate that's ~43Hz per bin.
     const ranges = [
       [1, 4],      // ring 0 (outermost) — sub-bass / kick (~43-172Hz)
       [4, 10],     // ring 1 — bass (~172-430Hz)
@@ -355,44 +353,38 @@ export function createVisualizer({ canvas, getTint, getActive }) {
       _rings[i] = {
         binLo: ranges[i][0],
         binHi: ranges[i][1],
-        emaEnergy: 0,           // rolling average band energy 0..1
-        pulseT: 0,              // brightness pulse decay 0..1
-        lastEnergy: 0,          // raw energy this frame
+        emaEnergy: 0,
+        pulseT: 0,
+        lastEnergy: 0,
       };
     }
   }
 
-  // Spawn `count` sparks along a ring's circumference. Each spark
-  // gets a random position on the ring, a random outward+upward
-  // velocity, and a hue offset within ±15° of the chapter tint.
+  // Spark emission — now from the cone perimeter rather than ring
+  // circumference, since the cone is the focal element. The user
+  // perceives sparks as flying off the speaker driver itself.
   function _spawnSparks(ringIdx, ringRadiusX, ringRadiusY, cx, cy, count) {
     for (let i = 0; i < count; i++) {
       const a = Math.random() * Math.PI * 2;
       const px = cx + Math.cos(a) * ringRadiusX;
       const py = cy + Math.sin(a) * ringRadiusY;
-      // Outward direction in canvas space (away from ring center).
-      // Add a strong upward (-y) bias so sparks fly up off the ring.
       const ox = Math.cos(a);
       const oy = Math.sin(a);
-      const speed = 80 + Math.random() * 90;     // px/sec
+      const speed = 80 + Math.random() * 90;
       _sparks.push({
         x: px,
         y: py,
         vx: ox * speed * 0.4,
-        vy: oy * speed * 0.4 - 90 - Math.random() * 60,    // strong upward bias
+        vy: oy * speed * 0.4 - 90 - Math.random() * 60,
         life: 0,
         maxLife: 1.2 + Math.random() * 0.4,
-        // Hue offset for color variety. Stored as -1..1; multiplied
-        // by 15° at render time and added to the tint hue.
         hueOffset: (Math.random() - 0.5) * 2,
         size: 1.5 + Math.random() * 2,
       });
     }
   }
 
-  // Convert RGB to HSL once, shift hue, return CSS rgba. Cached for
-  // each tint change so we're not recomputing every spark.
-  let _tintHsl = { h: 22, s: 100, l: 55 };       // initial = orange
+  let _tintHsl = { h: 22, s: 100, l: 55 };
   let _tintHslHex = -1;
   function _refreshTintHsl() {
     if (_tintHslHex === _lastTintHex) return;
@@ -423,97 +415,133 @@ export function createVisualizer({ canvas, getTint, getActive }) {
     const now = performance.now();
     const dt = _ringsLastT === 0 ? 0.016 : Math.min(0.05, (now - _ringsLastT) * 0.001);
     _ringsLastT = now;
+    _coneIdle += dt;
+    _beamRot += dt * 0.18;          // very slow drift, ~10°/sec
+    _hazePhase += dt * 0.4;
 
-    // Center the rings slightly below center so there's room for
-    // sparks to rise above. Tilted ellipse aspect = 0.28 mimics the
-    // ground-plane perspective in the user's reference.
     const cx = w * 0.5;
-    const cy = h * 0.62;
-    const ASPECT = 0.28;
-    const maxRingW = Math.min(w * 0.45, h * 0.85);
+    const cy = h * 0.58;             // slightly above center
+    const ASPECT = 0.32;              // slightly less squashed than before
+    const maxRingW = Math.min(w * 0.46, h * 0.85);
 
-    // Update each ring's energy + activation.
+    // --- Per-band energy update + activation (unchanged logic) ---
     for (let i = 0; i < RING_COUNT; i++) {
       const ring = _rings[i];
-      // Average frequency-domain energy across the band.
-      let sum = 0;
-      let count = 0;
+      let sum = 0, count = 0;
       const lo = Math.min(ring.binLo, freqBuf.length - 1);
       const hi = Math.min(ring.binHi, freqBuf.length);
-      for (let b = lo; b < hi; b++) {
-        sum += freqBuf[b];
-        count++;
-      }
+      for (let b = lo; b < hi; b++) { sum += freqBuf[b]; count++; }
       const energy = (count > 0) ? (sum / count) / 255 : 0;
       ring.lastEnergy = energy;
-      // Rolling average — slower lerp so a beat hit stands out
-      // against the baseline. dt-aware so frame-rate changes don't
-      // shift the threshold behavior.
       const emaAlpha = Math.min(1, dt * 1.8);
       ring.emaEnergy = ring.emaEnergy * (1 - emaAlpha) + energy * emaAlpha;
-      // Activation threshold: per playtester spec, energy > avg × 1.4.
-      // Also require absolute energy > 0.18 so quiet ambient noise
-      // doesn't flicker the rings constantly when a track is in a
-      // quiet section.
       const ACTIV_MULT = 1.4;
       const ACTIV_FLOOR = 0.18;
       if (energy > ring.emaEnergy * ACTIV_MULT && energy > ACTIV_FLOOR) {
-        // Only re-trigger if the previous pulse has decayed enough.
-        // Keeps a sustained loud band from continuously spawning
-        // sparks every frame.
         if (ring.pulseT < 0.55) {
           ring.pulseT = 1.0;
-          // Spark count scales with which ring — outer (bass) gets
-          // bigger bursts because bass hits feel like impact;
-          // inner (treble) gets fewer, snappier sparks.
           const baseCount = 14 - i * 1.5;
           const bonusFromEnergy = Math.floor(energy * 8);
           const sparkCount = Math.max(4, Math.floor(baseCount + bonusFromEnergy));
-          // Compute this ring's current radii to pass to spawn so
-          // sparks emit from the actual ring path.
-          const tNorm = i / (RING_COUNT - 1);          // 0 outer .. 1 inner
-          const ringW = maxRingW * (1 - tNorm * 0.78);
-          const ringH = ringW * ASPECT;
-          _spawnSparks(i, ringW, ringH, cx, cy, sparkCount);
+          // Spawn sparks from the OUTER cone perimeter so they read
+          // as flying off the speaker, not from arbitrary rings.
+          const coneR = maxRingW * 0.30;
+          _spawnSparks(i, coneR, coneR * ASPECT, cx, cy, sparkCount);
         }
       }
-      // Pulse decay — exponential so the bright pulse falls off fast
-      // initially but lingers as a fading glow.
       if (ring.pulseT > 0) {
         ring.pulseT -= dt * 1.8;
         if (ring.pulseT < 0) ring.pulseT = 0;
       }
     }
 
-    // Draw the rings — outer first so inner ones layer on top.
-    // Each ring's brightness is base + pulseT contribution. Stroke
-    // width also scales so activated rings feel chunky.
+    // Bass-driven cone pump — exponential approach to sub-bass energy
+    // so the cone "breathes" with the kick. _rings[0] is sub-bass.
+    const bassEma = _rings[0].emaEnergy;
+    const bassPulse = _rings[0].pulseT;
+    const targetPump = Math.min(1, bassEma * 1.4 + bassPulse * 0.7);
+    _conePump = _conePump + (targetPump - _conePump) * Math.min(1, dt * 8);
+
+    // --- LAYER 1: ATMOSPHERIC HAZE ---
+    // Big drifting radial gradient that breathes with bass. Two
+    // overlapping clouds offset by hazePhase so they drift past each
+    // other slowly, giving the impression of fog rolling through the
+    // scene. Tinted toward chapter hue but kept low-saturation.
+    ctx2d.save();
+    {
+      const hazeIntensity = 0.18 + bassEma * 0.32 + bassPulse * 0.18;
+      // Cloud A
+      const cax = cx + Math.cos(_hazePhase * 0.7) * w * 0.08;
+      const cay = cy + Math.sin(_hazePhase * 0.5) * h * 0.05;
+      const gA = ctx2d.createRadialGradient(cax, cay, 0, cax, cay, maxRingW * 1.6);
+      gA.addColorStop(0, `hsla(${_tintHsl.h}, 60%, 22%, ${hazeIntensity})`);
+      gA.addColorStop(0.5, `hsla(${_tintHsl.h - 10}, 50%, 14%, ${hazeIntensity * 0.5})`);
+      gA.addColorStop(1, 'hsla(0, 0%, 0%, 0)');
+      ctx2d.fillStyle = gA;
+      ctx2d.fillRect(0, 0, w, h);
+      // Cloud B — offset, mirrored phase
+      const cbx = cx + Math.cos(_hazePhase * 0.5 + 2.1) * w * 0.10;
+      const cby = cy + Math.sin(_hazePhase * 0.7 + 1.3) * h * 0.07;
+      const gB = ctx2d.createRadialGradient(cbx, cby, 0, cbx, cby, maxRingW * 1.4);
+      gB.addColorStop(0, `hsla(${_tintHsl.h + 12}, 55%, 18%, ${hazeIntensity * 0.7})`);
+      gB.addColorStop(1, 'hsla(0, 0%, 0%, 0)');
+      ctx2d.fillStyle = gB;
+      ctx2d.fillRect(0, 0, w, h);
+    }
+    ctx2d.restore();
+
+    // --- LAYER 2: VOLUMETRIC LIGHT BEAMS ---
+    // Long thin radial rays from center. Slowly rotating set of
+    // 12 beams; brightness scales with bass + ring activations.
+    // Drawn additively so they bloom into the haze.
+    ctx2d.save();
+    ctx2d.globalCompositeOperation = 'lighter';
+    {
+      const BEAM_COUNT = 12;
+      const beamLen = maxRingW * 1.4;
+      const beamGlow = 0.10 + bassEma * 0.20 + bassPulse * 0.50;
+      // Average mid-band pulse adds a treble shimmer.
+      const trebleKick = (_rings[4].pulseT + _rings[5].pulseT) * 0.5;
+      for (let i = 0; i < BEAM_COUNT; i++) {
+        const a = _beamRot + (i / BEAM_COUNT) * Math.PI * 2;
+        // Per-beam jitter from treble — subtle wobble in length.
+        const lenMul = 0.85 + Math.sin(_coneIdle * 4 + i) * 0.05 + trebleKick * 0.25;
+        const ex = cx + Math.cos(a) * beamLen * lenMul;
+        const ey = cy + Math.sin(a) * beamLen * lenMul * ASPECT * 1.4;
+        const grad = ctx2d.createLinearGradient(cx, cy, ex, ey);
+        grad.addColorStop(0, `hsla(${_tintHsl.h}, ${_tintHsl.s}%, ${Math.min(72, _tintHsl.l + 18)}%, ${beamGlow})`);
+        grad.addColorStop(0.6, `hsla(${_tintHsl.h - 6}, ${_tintHsl.s}%, ${_tintHsl.l}%, ${beamGlow * 0.4})`);
+        grad.addColorStop(1, 'hsla(0, 0%, 0%, 0)');
+        ctx2d.strokeStyle = grad;
+        ctx2d.lineWidth = 1.5 + bassPulse * 1.5;
+        ctx2d.beginPath();
+        ctx2d.moveTo(cx, cy);
+        ctx2d.lineTo(ex, ey);
+        ctx2d.stroke();
+      }
+    }
+    ctx2d.restore();
+
+    // --- LAYER 3: RINGS (the cone's surround / suspension) ---
+    // Same per-ring activation logic as before, but the rings now
+    // visually frame the cone — they're the speaker's surround.
     ctx2d.save();
     ctx2d.lineCap = 'round';
     for (let i = 0; i < RING_COUNT; i++) {
       const ring = _rings[i];
       const tNorm = i / (RING_COUNT - 1);
-      const ringW = maxRingW * (1 - tNorm * 0.78);
+      const ringW = maxRingW * (0.45 + (1 - tNorm) * 0.55);
       const ringH = ringW * ASPECT;
-      // Base alpha scales with rolling energy so quiet sections
-      // dim the rings; pulse adds a sharp brightness boost on hit.
-      const base = 0.28 + ring.emaEnergy * 0.22;
+      const base = 0.32 + ring.emaEnergy * 0.22;
       const pulse = ring.pulseT * 0.55;
       const alpha = Math.min(1, base + pulse);
       const strokeW = 1.5 + ring.pulseT * 3.0;
-      // Outer rings shift slightly toward red, inner toward yellow
-      // — small hue spread within the chapter tint so the layered
-      // rings don't all read as a single uniform color.
       const hShift = (tNorm - 0.5) * 12;
       ctx2d.strokeStyle = `hsla(${_tintHsl.h + hShift}, ${_tintHsl.s}%, ${_tintHsl.l + ring.pulseT * 18}%, ${alpha})`;
       ctx2d.lineWidth = strokeW;
       ctx2d.beginPath();
       ctx2d.ellipse(cx, cy, ringW, ringH, 0, 0, Math.PI * 2);
       ctx2d.stroke();
-      // Activated rings get an additional inner glow stroke for
-      // "bloom" — a wider faint stroke layered underneath so the
-      // bright moment looks like it's emitting light, not just
-      // changing color.
       if (ring.pulseT > 0.15) {
         ctx2d.strokeStyle = `hsla(${_tintHsl.h + hShift}, 100%, ${Math.min(85, _tintHsl.l + 30)}%, ${ring.pulseT * 0.35})`;
         ctx2d.lineWidth = strokeW * 3;
@@ -524,7 +552,81 @@ export function createVisualizer({ canvas, getTint, getActive }) {
     }
     ctx2d.restore();
 
-    // Update + draw sparks. Iterate backwards to splice safely.
+    // --- LAYER 4: SUBWOOFER CONE ---
+    // The pumping driver at center. Scales (radial pump) on bass hits
+    // — fakes z-axis displacement. Drawn as concentric layers:
+    //   • outer rim ring (the gasket bolting it to the surround)
+    //   • cone body (radial gradient, dark to mid-tone)
+    //   • subtle highlight ring (suggests light catching the curve)
+    //   • dust cap (small disc at very center, brightest)
+    // The cone idle-oscillates ~3% scale at 0.6Hz so even silence
+    // looks alive.
+    ctx2d.save();
+    {
+      const idleOsc = 1 + Math.sin(_coneIdle * 0.6 * Math.PI * 2) * 0.01;
+      const pumpScale = 1 - _conePump * 0.18;     // pumps INWARD on hit
+      const coneScale = idleOsc * pumpScale;
+      const coneR = maxRingW * 0.30 * coneScale;
+      const coneInnerR = maxRingW * 0.05 * coneScale;
+      // Outer rim — dark thick ring around the cone, suggests the
+      // bolted gasket.
+      ctx2d.strokeStyle = `hsla(${_tintHsl.h}, ${_tintHsl.s * 0.4}%, 8%, 0.95)`;
+      ctx2d.lineWidth = 8;
+      ctx2d.beginPath();
+      ctx2d.ellipse(cx, cy, coneR * 1.05, coneR * 1.05 * ASPECT, 0, 0, Math.PI * 2);
+      ctx2d.stroke();
+      // Cone body — radial gradient from dark center to slightly less
+      // dark edge; pumping cone feels lit-from-edge on hit.
+      const cgrad = ctx2d.createRadialGradient(cx, cy, coneInnerR, cx, cy, coneR);
+      const coneLight = 6 + _conePump * 8;
+      cgrad.addColorStop(0, `hsla(${_tintHsl.h}, 30%, ${coneLight + 4}%, 1)`);
+      cgrad.addColorStop(0.7, `hsla(${_tintHsl.h - 5}, 25%, ${coneLight}%, 1)`);
+      cgrad.addColorStop(1, `hsla(${_tintHsl.h - 10}, 20%, ${coneLight - 3}%, 1)`);
+      ctx2d.fillStyle = cgrad;
+      ctx2d.beginPath();
+      ctx2d.ellipse(cx, cy, coneR, coneR * ASPECT, 0, 0, Math.PI * 2);
+      ctx2d.fill();
+      // Highlight crescent at the top of the cone — fakes light
+      // catching the curved surface, sells the 3D form.
+      ctx2d.save();
+      ctx2d.beginPath();
+      ctx2d.ellipse(cx, cy, coneR, coneR * ASPECT, 0, 0, Math.PI * 2);
+      ctx2d.clip();
+      const hlGrad = ctx2d.createLinearGradient(cx, cy - coneR * ASPECT, cx, cy);
+      hlGrad.addColorStop(0, `hsla(${_tintHsl.h}, 60%, ${30 + _conePump * 20}%, 0.45)`);
+      hlGrad.addColorStop(1, 'hsla(0, 0%, 0%, 0)');
+      ctx2d.fillStyle = hlGrad;
+      ctx2d.fillRect(cx - coneR, cy - coneR * ASPECT, coneR * 2, coneR * ASPECT);
+      ctx2d.restore();
+      // Dust cap — small brighter disc at center. Pumps WITH cone
+      // so it reads as part of the assembly, not independent.
+      const dustR = coneR * 0.25;
+      const dgrad = ctx2d.createRadialGradient(cx, cy, 0, cx, cy, dustR);
+      const dustLight = 18 + _conePump * 22;
+      dgrad.addColorStop(0, `hsla(${_tintHsl.h}, 70%, ${dustLight + 12}%, 1)`);
+      dgrad.addColorStop(1, `hsla(${_tintHsl.h}, 55%, ${dustLight - 6}%, 1)`);
+      ctx2d.fillStyle = dgrad;
+      ctx2d.beginPath();
+      ctx2d.ellipse(cx, cy, dustR, dustR * ASPECT, 0, 0, Math.PI * 2);
+      ctx2d.fill();
+      // Bright pop on heavy bass — small flash bloom around the
+      // dust cap when _conePump is high.
+      if (_conePump > 0.5) {
+        const popAlpha = (_conePump - 0.5) * 0.8;
+        ctx2d.globalCompositeOperation = 'lighter';
+        const pgrad = ctx2d.createRadialGradient(cx, cy, 0, cx, cy, coneR * 0.7);
+        pgrad.addColorStop(0, `hsla(${_tintHsl.h}, 100%, 60%, ${popAlpha})`);
+        pgrad.addColorStop(1, 'hsla(0, 0%, 0%, 0)');
+        ctx2d.fillStyle = pgrad;
+        ctx2d.beginPath();
+        ctx2d.ellipse(cx, cy, coneR * 0.7, coneR * 0.7 * ASPECT, 0, 0, Math.PI * 2);
+        ctx2d.fill();
+        ctx2d.globalCompositeOperation = 'source-over';
+      }
+    }
+    ctx2d.restore();
+
+    // --- LAYER 6: SPARKS (drawn after cone so they read in front) ---
     ctx2d.save();
     for (let i = _sparks.length - 1; i >= 0; i--) {
       const s = _sparks[i];
@@ -533,34 +635,41 @@ export function createVisualizer({ canvas, getTint, getActive }) {
         _sparks.splice(i, 1);
         continue;
       }
-      // Drift physics: gravity pulls vy down over time, gentle drag.
-      s.vy += 60 * dt;             // gravity (canvas y is positive-down)
+      s.vy += 60 * dt;
       s.vx *= 0.98;
       s.vy *= 0.99;
       s.x += s.vx * dt;
       s.y += s.vy * dt;
-      // Color: chapter hue + per-spark variance (-15°..+15°).
-      // Brighter early in life, fading to dim at end.
       const t01 = s.life / s.maxLife;
       const fade = 1 - t01;
       const sparkH = _tintHsl.h + s.hueOffset * 15;
       const sparkL = _tintHsl.l + 25 - t01 * 30;
       ctx2d.fillStyle = `hsla(${sparkH}, ${_tintHsl.s}%, ${sparkL}%, ${fade})`;
-      // Spark = a small filled circle. Glow trail done as a wider
-      // semi-transparent halo, drawn first.
       ctx2d.beginPath();
       ctx2d.arc(s.x, s.y, s.size * (1 + fade * 0.5), 0, Math.PI * 2);
       ctx2d.fill();
     }
     ctx2d.restore();
 
-    // Cap spark count to prevent runaway memory if many beats stack
-    // (e.g. heavy techno with sub-bass + kick on every 16th note).
-    // Drop oldest sparks first.
     const SPARK_CAP = 200;
     if (_sparks.length > SPARK_CAP) {
       _sparks.splice(0, _sparks.length - SPARK_CAP);
     }
+
+    // --- LAYER 7: VIGNETTE ---
+    // Radial dark-edge gradient on top — gives the "looking through
+    // a lens" cinematic frame and forces eye to center. Pulses very
+    // subtly with bass so the whole image feels like it's breathing.
+    ctx2d.save();
+    {
+      const vgrad = ctx2d.createRadialGradient(cx, cy, maxRingW * 0.6, cx, cy, Math.max(w, h) * 0.85);
+      vgrad.addColorStop(0, 'rgba(0, 0, 0, 0)');
+      vgrad.addColorStop(0.5, `rgba(0, 0, 0, ${0.2 + bassEma * 0.05})`);
+      vgrad.addColorStop(1, `rgba(0, 0, 0, ${0.85 - bassPulse * 0.1})`);
+      ctx2d.fillStyle = vgrad;
+      ctx2d.fillRect(0, 0, w, h);
+    }
+    ctx2d.restore();
   }
 
   // ---------- Loop ----------
@@ -598,7 +707,7 @@ export function createVisualizer({ canvas, getTint, getActive }) {
     if (mode.id === 'bars') trailAlpha = 0.45;
     else if (mode.id === 'waveform') trailAlpha = 0.25;
     else if (mode.id === 'matrix') trailAlpha = 0.12;     // long persistence for rain trails
-    else if (mode.id === 'rings') trailAlpha = 0.18;      // medium trail — sparks need time to fade
+    else if (mode.id === 'rings') trailAlpha = 0.85;      // SPEAKER — near full redraw, layers handle trails
     else trailAlpha = 0.35;
     ctx2d.fillStyle = `rgba(0, 0, 0, ${trailAlpha})`;
     ctx2d.fillRect(0, 0, canvas.width, canvas.height);
