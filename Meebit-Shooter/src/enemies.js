@@ -3,7 +3,10 @@ import { scene } from './scene.js';
 import { ENEMY_TYPES, BOSSES } from './config.js';
 import { buildInfectorMesh, buildRoachMesh } from './infector.js';
 import { S } from './state.js';
-import { makeAntFromGLB, hasAntLoaded } from './antMesh.js';
+// Chapter-1 ants always use the procedural makeAnt() box-ant. The
+// GLB-based makeAntFromGLB() variant was removed per playtester:
+// "I'm not using this GLB. I like your square meshes 100x better."
+// The antMesh.js module is no longer imported anywhere.
 
 export const enemies = [];
 export const enemyProjectiles = [];
@@ -1348,30 +1351,27 @@ export function makeEnemy(typeKey, tintHex, pos) {
   const scale = 0.55 * spec.scale;
 
   // Chapter 1 main-enemy substitution. On chapter 0 (INFERNO) the
-  // wave pool's zomeeb / sprinter humanoids are replaced by ants —
-  // matches the chapter's "infested wasteland" theme and gives the
-  // first chapter a distinct enemy silhouette from chapter 2+. The
-  // spec (speed, hp, damage, score, xp) stays unchanged so movement
-  // and combat behavior are identical to the humanoid version. Other
-  // types on chapter 1 (pumpkin, brute, etc.) are NOT substituted —
-  // pumpkinheads in particular are kept as-is per playtester request.
+  // wave pool's zomeeb / sprinter humanoids are visually rendered as
+  // ants — matches the chapter's "infested wasteland" theme and gives
+  // the first chapter a distinct enemy silhouette from chapter 2+.
+  // AI/spawn pacing/damage still come from the original typeKey
+  // (so a "zomeeb-ant" walks and hits like a zomeeb); only the mesh
+  // is overridden. Other types on chapter 1 (pumpkin, brute, etc.)
+  // are NOT substituted — pumpkinheads in particular are kept as-is
+  // per playtester request.
   //
-  // Two ant builders are used in priority order:
-  //   1. makeAntFromGLB — clones the TRELLIS-generated GLB mesh
-  //      (sliced into body + 6 legs with hip pivots). Looks like
-  //      the figurine reference. Used when the GLB has loaded.
-  //   2. makeAnt — fallback procedural box-ant. Looks blockier but
-  //      doesn't depend on assets/. Used during the brief window
-  //      between page load and GLB parse, OR if the GLB failed
-  //      to fetch. Game keeps working either way.
+  // Previously we also tried to load a GLB ant mesh from
+  // assets/enemies/ant.glb and used it when available. That path
+  // was removed per playtester: "I like your square meshes 100x
+  // better." The procedural box ant is now the only choice — no
+  // network fetch, no 404, no preload step needed.
   const _useAntForChapter1 =
     (S && S.chapter === 0) &&
     (typeKey === 'zomeeb' || typeKey === 'sprinter');
 
   let built;
   if (_useAntForChapter1) {
-    built = hasAntLoaded() ? makeAntFromGLB(scale, !!(S && S.tutorialMode)) : null;
-    if (!built) built = makeAnt(tintHex, scale);
+    built = makeAnt(tintHex, scale);
   }
   else if (typeKey === 'infector') {
     const m = buildInfectorMesh(tintHex, scale);

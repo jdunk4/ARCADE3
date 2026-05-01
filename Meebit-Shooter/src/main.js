@@ -63,13 +63,10 @@ import { Audio } from './audio.js';
 import { UI } from './ui.js';
 import { loadPlayer, animatePlayer, player, recolorGun, resetPlayer, swapAvatarGLB } from './player.js';
 import { enemies, enemyProjectiles, spawnEnemyProjectile, makeEnemy, updateVesselZeroAnim, clearAllEnemies, applyKnockback } from './enemies.js';
-import { loadAntMesh } from './antMesh.js';
-
-// Kick off the chapter-1 ant GLB load as soon as the module graph
-// resolves. Async load — by the time the player starts a real run
-// the mesh should be ready. If it isn't (slow network, etc) the
-// makeEnemy dispatch falls back to the procedural box ant.
-loadAntMesh();
+// (Removed: import { loadAntMesh } from './antMesh.js' + the
+// loadAntMesh() startup call. The chapter-1 ant always uses the
+// procedural box-ant builder now — see enemies.js dispatch comment
+// for context.)
 import {
   bullets, spawnBullet, clearBullets,
   rockets, spawnRocket, clearRockets,
