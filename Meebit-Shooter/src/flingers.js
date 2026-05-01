@@ -327,18 +327,19 @@ function _releaseFlingerPoolMesh(mesh, mixer) {
  */
 export function onWaveStartedForFlingers(waveNum) {
   if (waveNum <= lastWaveAwarded) return;
+  // CHAPTER 7 — flingers are removed entirely. The chapter is a
+  // fresh-slate empty arena driven by blueprints + stratagems. Per
+  // playtester: "Can we get rid of the flinger and pixl pal in
+  // chapter 7?"
+  if (S.chapter === PARADISE_FALLEN_CHAPTER_IDX) {
+    lastWaveAwarded = waveNum;   // still mark to keep the dedupe gate honest
+    return;
+  }
   if (FLINGER_WAVE_SCHEDULE.has(waveNum)) {
     S.flingerCharges = Math.min(MAX_CHARGES, (S.flingerCharges || 0) + 1);
-    const ch7Wave = (S.chapter === PARADISE_FALLEN_CHAPTER_IDX);
-    if (ch7Wave) {
-      // Ch 7 — skip the power-plant gate; deploy right away.
-      UI.toast && UI.toast('FLINGER DEPLOYED', '#ff8800', 2200);
-      _tryAutoSummon();
-    } else {
-      _pendingDeploy = true;
-      _pendingDeployWave = waveNum;
-      UI.toast && UI.toast('FLINGER STANDING BY · POWER THE PLANT', '#ff8800', 2600);
-    }
+    _pendingDeploy = true;
+    _pendingDeployWave = waveNum;
+    UI.toast && UI.toast('FLINGER STANDING BY · POWER THE PLANT', '#ff8800', 2600);
     _syncHUD();
   }
   lastWaveAwarded = waveNum;
@@ -412,10 +413,11 @@ export function updateFlingers(dt, playerPos) {
 
     f.life += dt;
 
-    // Despawn conditions — skipped in chapter 7 (PARADISE FALLEN) where
-    // flingers + pals are summoned together and stay to the end of the run.
-    const isCh7 = S.chapter === PARADISE_FALLEN_CHAPTER_IDX;
-    if (!f.despawning && !isCh7 && (
+    // Standard despawn conditions — lifetime expired or kill cap reached.
+    // (Legacy ch7 persistence flag was removed when flingers were
+    // disabled entirely in chapter 7; any flinger still alive in ch7
+    // is a leftover from an earlier chapter and should despawn.)
+    if (!f.despawning && (
         f.life >= f.maxLife ||
         f.killsSinceSummon >= KILLS_TO_DESPAWN
     )) {

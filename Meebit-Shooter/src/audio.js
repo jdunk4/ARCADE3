@@ -681,6 +681,45 @@ class AudioEngine {
 
   pickup() { this._beep({ type: 'triangle', freqStart: 660, freqEnd: 1320, dur: 0.08, gainStart: 0.12 }); }
 
+  // Blueprint pickup snap — a quick percussive "click" plus a short
+  // electronic ping on top, like a tablet locking in a new schematic.
+  // Two layers: a noise burst with a band-pass filter (the snap), and
+  // a short high-frequency tonal beep (the lock-in confirm).
+  blueprintSnap() {
+    if (!this.ctx || this.muted) return;
+    const t = this.ctx.currentTime;
+    // -- Layer 1: noise click (the snap) --
+    // 30ms of band-passed noise at ~3kHz. Sharp, percussive, no tail.
+    const SNAP_DUR = 0.04;
+    const buf = this.ctx.createBuffer(1, this.ctx.sampleRate * SNAP_DUR, this.ctx.sampleRate);
+    const d = buf.getChannelData(0);
+    for (let i = 0; i < d.length; i++) d[i] = (Math.random() * 2 - 1);
+    const src = this.ctx.createBufferSource();
+    src.buffer = buf;
+    const filt = this.ctx.createBiquadFilter();
+    filt.type = 'bandpass';
+    filt.frequency.value = 3200;
+    filt.Q.value = 5;
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(0.001, t);
+    g.gain.exponentialRampToValueAtTime(0.20, t + 0.003);
+    g.gain.exponentialRampToValueAtTime(0.001, t + SNAP_DUR);
+    src.connect(filt);
+    filt.connect(g);
+    g.connect(this.sfxGain);
+    src.start(t);
+    src.stop(t + SNAP_DUR + 0.02);
+    // -- Layer 2: lock-in ping --
+    // Brief sine sweep from 1.6kHz to 2.4kHz for the digital "got it"
+    // confirmation, slightly delayed so it sits just behind the snap.
+    this._beep({
+      type: 'sine',
+      freqStart: 1600, freqEnd: 2400,
+      dur: 0.10, gainStart: 0.14,
+      delay: 0.02,
+    });
+  }
+
   levelup() {
     [523.25, 659.25, 783.99, 1046.5].forEach((f, i) =>
       this._beep({ type: 'triangle', freqStart: f, dur: 0.25, gainStart: 0.15, delay: i * 0.08 })

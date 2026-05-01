@@ -77,21 +77,22 @@ import { setStratagemEndless } from './stratagems.js';
 // trigger the right blueprint.
 const BLUEPRINTS = [
   {
-    id: 'wave1_mines',
+    id: 'wave1_turret',
     waveNum: 31,                          // chapter 7 wave 1
-    label: 'MINEFIELD BLUEPRINT',
-    stratagemId: 'mines',                 // matches _STRATAGEMS in stratagems.js
-    stratagemLabel: 'MINEFIELD',
+    label: 'TURRET BLUEPRINT',
+    stratagemId: 'turret',                // matches _STRATAGEMS in stratagems.js
+    stratagemLabel: 'TURRET',
     blueprintPos: { x: -36, z: -22 },     // side A (south-west)
     glyphstonePos: { x: 36, z: 22 },      // side B (north-east cemetery)
     captureRadius: 4,                     // proximity radius for both pickup + glyphstone
     captureSeconds: 2.0,                  // stand-near-it duration
+    schematicType: 'turret',              // which SVG to render in the pickup overlay
   },
   // Wave 2 (waveNum 32), Wave 3 (waveNum 33), and a fourth slot are
   // scaffolded by the system. Add entries here once those waves are
   // designed. Required fields: id, waveNum, label, stratagemId,
   // stratagemLabel, blueprintPos {x,z}, glyphstonePos {x,z},
-  // captureRadius, captureSeconds.
+  // captureRadius, captureSeconds, schematicType.
 ];
 
 const TOTAL_BLUEPRINTS = 4;     // HUD denominator — show "1/4" not "1/1"
@@ -104,7 +105,8 @@ const TOTAL_BLUEPRINTS = 4;     // HUD denominator — show "1/4" not "1/1"
 const PHASE = {
   DORMANT: 'DORMANT',                   // chapter just loaded, blueprint not yet prepared
   AWAIT_BLUEPRINT: 'AWAIT_BLUEPRINT',   // pillar visible, glyphstone visible-but-inert, no enemies
-  TRICKLE: 'TRICKLE',                   // blueprint captured, slow enemy spawn, glyphstone activatable
+  SCHEMATIC: 'SCHEMATIC',               // blueprint just picked up — schematic overlay shown, player dismisses to continue
+  TRICKLE: 'TRICKLE',                   // schematic dismissed, slow enemy spawn, glyphstone activatable
   OVERLAY: 'OVERLAY',                   // glyphstone activated, "THEY'RE COMING" up, spawning paused
   PREP: 'PREP',                         // overlay dismissed, 30s prep timer running, slow trickle
   FLOOD: 'FLOOD',                       // 30s done, full spawn rate, 90s survival
@@ -132,9 +134,15 @@ let _glyphstoneRing = null;    // proximity ring under the glyphstone
 let _blueprintFillRing = null;
 let _glyphstoneFillRing = null;
 
-// Overlay DOM element + state.
+// Overlay DOM elements + dismiss state.
+//   _overlayEl       — "THEY'RE COMING... PREPARE" (glyphstone activation)
+//   _schematicEl     — schematic preview (blueprint pickup) showing the
+//                      reward's diagram. Dismissed same as overlay.
+// Both are dismissed by any input (key/click/tap/gamepad button).
 let _overlayEl = null;
 let _overlayDismissed = false;
+let _schematicEl = null;
+let _schematicDismissed = false;
 
 // HUD captured-count badge.
 let _hudBadgeEl = null;
@@ -170,6 +178,7 @@ export function prepareBlueprintForWave(waveNum) {
   // Tear down any prior wave's setup.
   _disposeMeshes();
   _hideOverlay();
+  _hideSchematicOverlay();
 
   const bp = _findBlueprintForWave(waveNum);
   if (!bp) {
@@ -185,11 +194,12 @@ export function prepareBlueprintForWave(waveNum) {
   _blueprintCaptureProgress = 0;
   _glyphstoneCaptureProgress = 0;
   _overlayDismissed = false;
+  _schematicDismissed = false;
 
   // Build meshes.
   _blueprintMesh = _buildBlueprintPillar(bp.blueprintPos.x, bp.blueprintPos.z);
   scene.add(_blueprintMesh);
-  _blueprintRing = _buildProximityRing(bp.blueprintPos.x, bp.blueprintPos.z, bp.captureRadius, 0xffffff);
+  _blueprintRing = _buildProximityRing(bp.blueprintPos.x, bp.blueprintPos.z, bp.captureRadius, 0x4aa8ff);
   scene.add(_blueprintRing);
   _blueprintFillRing = _buildFillRing(bp.blueprintPos.x, bp.blueprintPos.z, bp.captureRadius);
   scene.add(_blueprintFillRing);
@@ -266,6 +276,18 @@ export function updateBlueprints(dt, playerPos) {
     }
   }
 
+  // Phase: SCHEMATIC — schematic preview overlay is up. Wait for
+  // the player to dismiss with any input, then advance to TRICKLE
+  // (slow enemy spawning + glyphstone activatable). Trickle is
+  // paused while SCHEMATIC is up too (see getSpawnRateMultiplier).
+  if (_phase === PHASE.SCHEMATIC && _schematicDismissed) {
+    _phase = PHASE.TRICKLE;
+    _phaseT = 0;
+    try {
+      UI.toast && UI.toast('FIND THE GLYPHSTONE', '#cccccc', 3000);
+    } catch (e) {}
+  }
+
   // Phase: OVERLAY — wait for player input. _phaseT advances but
   // _overlayDismissed is set externally by dismissOverlay() when input
   // arrives. Trickle paused via getSpawnRateMultiplier() returning 0.
@@ -295,9 +317,10 @@ export function updateBlueprints(dt, playerPos) {
 }
 
 function _onBlueprintCaptured(bp) {
-  _phase = PHASE.TRICKLE;
+  _phase = PHASE.SCHEMATIC;
   _phaseT = 0;
   _blueprintCaptureProgress = 1;
+  _schematicDismissed = false;
 
   // Hide the pillar — capture animation could go here later, but
   // for now just flick it invisible.
@@ -306,9 +329,15 @@ function _onBlueprintCaptured(bp) {
   if (_blueprintFillRing) _blueprintFillRing.visible = false;
 
   try {
-    UI.toast && UI.toast('BLUEPRINT ACQUIRED · FIND THE GLYPHSTONE', '#ffffff', 3500);
+    UI.toast && UI.toast('BLUEPRINT ACQUIRED', '#4aa8ff', 2200);
   } catch (e) {}
-  try { Audio.pickup && Audio.pickup(); } catch (e) {}
+  try { Audio.blueprintSnap && Audio.blueprintSnap(); } catch (e) {}
+
+  // Show the schematic preview overlay. Player dismisses with any
+  // input (handled by dismissOverlay → which routes to whichever
+  // overlay is currently up). Once dismissed, the state machine
+  // advances to TRICKLE in updateBlueprints.
+  _showSchematicOverlay(bp);
 }
 
 function _onGlyphstoneActivated(bp) {
@@ -367,6 +396,7 @@ export function getSpawnRateMultiplier() {
   if (!_activeBlueprint) return 1.0;
   switch (_phase) {
     case PHASE.AWAIT_BLUEPRINT: return 0;       // empty arena until pickup
+    case PHASE.SCHEMATIC:       return 0;       // schematic preview up — paused
     case PHASE.TRICKLE:         return 0.10;    // slow drip
     case PHASE.OVERLAY:         return 0;       // PAUSED while text up
     case PHASE.PREP:            return 0.10;    // slow drip during prep
@@ -386,21 +416,34 @@ export function shouldEndWaveNow() {
 }
 
 /**
- * True when "THEY'RE COMING" overlay is up. main.js consults this to
- * route any input as a dismissal rather than a normal gameplay action.
+ * True when ANY overlay (schematic preview OR "THEY'RE COMING") is up.
+ * main.js consults this to route any input as a dismissal rather than
+ * a normal gameplay action.
  */
 export function isOverlayUp() {
-  return _phase === PHASE.OVERLAY && !_overlayDismissed;
+  if (_phase === PHASE.SCHEMATIC && !_schematicDismissed) return true;
+  if (_phase === PHASE.OVERLAY && !_overlayDismissed) return true;
+  return false;
 }
 
 /**
- * Dismisses the overlay and starts the 30s prep timer. Idempotent —
- * subsequent calls during PREP/FLOOD are no-ops.
+ * Dismisses whichever overlay is up. Idempotent — subsequent calls
+ * during TRICKLE/PREP/FLOOD are no-ops.
  */
 export function dismissOverlay() {
-  if (_phase !== PHASE.OVERLAY) return;
-  _overlayDismissed = true;
-  _hideOverlay();
+  // Dismiss the schematic preview if that's what's up, else dismiss
+  // the THEY'RE-COMING overlay. Idempotent; safe to call from any
+  // phase (no-op outside the two overlay phases).
+  if (_phase === PHASE.SCHEMATIC && !_schematicDismissed) {
+    _schematicDismissed = true;
+    _hideSchematicOverlay();
+    return;
+  }
+  if (_phase === PHASE.OVERLAY && !_overlayDismissed) {
+    _overlayDismissed = true;
+    _hideOverlay();
+    return;
+  }
 }
 
 export function getCapturedCount() {
@@ -422,12 +465,14 @@ export function getPhaseTime() {
 export function clearBlueprints() {
   _disposeMeshes();
   _hideOverlay();
+  _hideSchematicOverlay();
   _activeBlueprint = null;
   _phase = PHASE.DORMANT;
   _phaseT = 0;
   _blueprintCaptureProgress = 0;
   _glyphstoneCaptureProgress = 0;
   _overlayDismissed = false;
+  _schematicDismissed = false;
   _capturedSet.clear();
   if (_hudBadgeEl) {
     _hudBadgeEl.style.display = 'none';
@@ -457,11 +502,15 @@ function _buildBlueprintPillar(x, z) {
   group.add(ped);
 
   // The blueprint itself — a flat rectangle floating above the
-  // pedestal, glowing white so it's visible in the dim ch7 lighting.
+  // pedestal, glowing blueprint-blue (cyan/azure) so it reads as a
+  // technical schematic, not a generic pickup. Per playtester:
+  // "Can we make the blueprint glow blue?" — color matched to the
+  // classic blueprint reference image (white-on-blue grid).
+  const BLUEPRINT_BLUE = 0x4aa8ff;
   const sheetMat = new THREE.MeshStandardMaterial({
-    color: 0xffffff,
-    emissive: 0xffffff,
-    emissiveIntensity: 1.2,
+    color: BLUEPRINT_BLUE,
+    emissive: BLUEPRINT_BLUE,
+    emissiveIntensity: 1.4,
     roughness: 0.4,
   });
   const sheet = new THREE.Mesh(
@@ -482,11 +531,12 @@ function _buildBlueprintPillar(x, z) {
   group.add(post);
 
   // Light beam shooting up from pedestal to telegraph the pickup
-  // from across the arena. Tall, semi-transparent, additive blending.
+  // from across the arena. Tinted blueprint-blue to match the sheet,
+  // tall and semi-transparent with additive blending.
   const beamMat = new THREE.MeshBasicMaterial({
-    color: 0xffffff,
+    color: BLUEPRINT_BLUE,
     transparent: true,
-    opacity: 0.18,
+    opacity: 0.22,
     blending: THREE.AdditiveBlending,
     depthWrite: false,
   });
@@ -770,6 +820,239 @@ function _showOverlay(bp) {
 
 function _hideOverlay() {
   if (_overlayEl) _overlayEl.style.display = 'none';
+}
+
+// =========================================================================
+// SCHEMATIC OVERLAY (blueprint pickup preview)
+// =========================================================================
+// Shown immediately when the player captures a blueprint pickup. Renders
+// a styled SVG schematic of the unlocked stratagem (turret, mines, etc.)
+// on a blueprint-blue background, with white technical-drawing lines.
+// Player dismisses with any input (key/click/tap/gamepad button).
+
+function _showSchematicOverlay(bp) {
+  if (!_schematicEl) {
+    const el = document.createElement('div');
+    el.id = 'ch7-schematic-overlay';
+    el.style.cssText = [
+      'position: fixed',
+      'inset: 0',
+      'z-index: 8400',                   // just below "THEY'RE COMING" overlay
+      'display: flex',
+      'flex-direction: column',
+      'align-items: center',
+      'justify-content: center',
+      'background: rgba(8, 30, 70, 0.92)', // deep blueprint blue wash
+      'pointer-events: auto',
+      'cursor: pointer',
+      'user-select: none',
+      '-webkit-user-select: none',
+    ].join(';');
+    document.body.appendChild(el);
+    _schematicEl = el;
+
+    // Click/tap on the overlay also dismisses (covers mobile).
+    el.addEventListener('click', () => dismissOverlay());
+    el.addEventListener('touchstart', (e) => {
+      e.preventDefault(); dismissOverlay();
+    }, { passive: false });
+  }
+
+  // Populate with a fresh schematic each time — the SVG depends on the
+  // schematicType in the blueprint config (turret / mines / ...).
+  const svg = _buildSchematicSvg(bp.schematicType || 'turret');
+  _schematicEl.innerHTML = `
+    <div style="
+      font-family: 'Courier New', monospace;
+      font-size: 11px;
+      letter-spacing: 4px;
+      color: #b8d4ff;
+      margin-bottom: 8px;
+    ">▸ SCHEMATIC RECOVERED ◂</div>
+    <div style="
+      font-family: 'Impact', 'Arial Black', sans-serif;
+      font-size: clamp(28px, 5vw, 56px);
+      letter-spacing: 6px;
+      color: #ffffff;
+      text-shadow: 0 0 16px rgba(74, 168, 255, 0.6);
+      margin-bottom: 18px;
+    ">${bp.label || 'BLUEPRINT'}</div>
+    <div style="
+      width: clamp(280px, 45vw, 520px);
+      aspect-ratio: 4 / 3;
+      background:
+        linear-gradient(rgba(255,255,255,0.04) 1px, transparent 1px) 0 0 / 24px 24px,
+        linear-gradient(90deg, rgba(255,255,255,0.04) 1px, transparent 1px) 0 0 / 24px 24px,
+        linear-gradient(135deg, #0a2050, #103070);
+      border: 2px solid #4aa8ff;
+      box-shadow: 0 0 32px rgba(74, 168, 255, 0.3),
+                  inset 0 0 24px rgba(255,255,255,0.05);
+      padding: 20px;
+      box-sizing: border-box;
+      position: relative;
+    ">
+      ${svg}
+    </div>
+    <div style="
+      font-family: 'Courier New', monospace;
+      font-size: 12px;
+      letter-spacing: 3px;
+      color: #b8d4ff;
+      margin-top: 18px;
+      animation: ch7BlueprintBlink 1.4s ease-in-out infinite;
+    ">▸ PRESS ANY KEY ◂</div>
+  `;
+  _schematicEl.style.display = 'flex';
+}
+
+function _hideSchematicOverlay() {
+  if (_schematicEl) _schematicEl.style.display = 'none';
+}
+
+/**
+ * Returns inline SVG markup for a blueprint diagram. Switch on the
+ * stratagem schematic type. Lines are white on the blueprint-blue
+ * grid background (handled by the parent div). All shapes are stroked
+ * (no fills) so it reads as technical drawing, not painted art.
+ */
+function _buildSchematicSvg(type) {
+  const STROKE = '#ffffff';
+  const ACCENT = '#cfe6ff';
+  const W = 'stroke="' + STROKE + '" fill="none" stroke-width="1.5"';
+  const Wt = 'stroke="' + STROKE + '" fill="none" stroke-width="1"';
+  const Wd = 'stroke="' + ACCENT + '" fill="none" stroke-width="0.8" stroke-dasharray="4 3"';
+  const TXT = 'fill="' + ACCENT + '" font-family="Courier New, monospace" font-size="9"';
+
+  if (type === 'turret') {
+    // A simple sentry-turret blueprint: round base, vertical column,
+    // horizontal barrel + counterweight, three mounting bolts, and
+    // a couple of measurement annotations.
+    return `<svg viewBox="0 0 400 300" width="100%" height="100%" preserveAspectRatio="xMidYMid meet" xmlns="http://www.w3.org/2000/svg">
+      <!-- Top-down view (left side) -->
+      <g transform="translate(110, 150)">
+        <!-- Base outer circle -->
+        <circle cx="0" cy="0" r="60" ${W}/>
+        <circle cx="0" cy="0" r="48" ${Wt}/>
+        <circle cx="0" cy="0" r="32" ${Wt}/>
+        <!-- Mounting bolts (3 on outer ring) -->
+        <circle cx="0" cy="-54" r="3" ${W}/>
+        <circle cx="-47" cy="27" r="3" ${W}/>
+        <circle cx="47" cy="27" r="3" ${W}/>
+        <!-- Cross-section guides -->
+        <line x1="-65" y1="0" x2="65" y2="0" ${Wd}/>
+        <line x1="0" y1="-65" x2="0" y2="65" ${Wd}/>
+        <!-- Center hub -->
+        <circle cx="0" cy="0" r="8" ${W}/>
+        <!-- Diameter dimension -->
+        <line x1="-60" y1="80" x2="60" y2="80" ${Wt}/>
+        <line x1="-60" y1="76" x2="-60" y2="84" ${Wt}/>
+        <line x1="60" y1="76" x2="60" y2="84" ${Wt}/>
+        <text x="0" y="94" ${TXT} text-anchor="middle">Ø 1.20m</text>
+        <!-- Label below -->
+        <text x="0" y="-78" ${TXT} text-anchor="middle">PLAN VIEW</text>
+      </g>
+
+      <!-- Side view (right side) -->
+      <g transform="translate(280, 150)">
+        <!-- Base plate -->
+        <rect x="-50" y="40" width="100" height="14" ${W}/>
+        <!-- Riser column -->
+        <rect x="-12" y="-10" width="24" height="50" ${W}/>
+        <!-- Turret head (rotating mount) -->
+        <rect x="-22" y="-30" width="44" height="22" ${W}/>
+        <!-- Barrel -->
+        <line x1="22" y1="-19" x2="60" y2="-19" ${W}/>
+        <rect x="22" y="-23" width="38" height="8" ${W}/>
+        <circle cx="60" cy="-19" r="3" ${W}/>
+        <!-- Counterweight -->
+        <rect x="-36" y="-23" width="14" height="8" ${W}/>
+        <!-- Antenna -->
+        <line x1="0" y1="-30" x2="0" y2="-46" ${W}/>
+        <circle cx="0" cy="-48" r="2" ${W}/>
+        <!-- Ground line -->
+        <line x1="-65" y1="54" x2="65" y2="54" ${Wt}/>
+        <line x1="-65" y1="58" x2="-58" y2="50" ${Wt}/>
+        <line x1="-55" y1="58" x2="-48" y2="50" ${Wt}/>
+        <line x1="-45" y1="58" x2="-38" y2="50" ${Wt}/>
+        <line x1="-35" y1="58" x2="-28" y2="50" ${Wt}/>
+        <line x1="-25" y1="58" x2="-18" y2="50" ${Wt}/>
+        <line x1="-15" y1="58" x2="-8" y2="50" ${Wt}/>
+        <line x1="-5" y1="58" x2="2" y2="50" ${Wt}/>
+        <line x1="5" y1="58" x2="12" y2="50" ${Wt}/>
+        <line x1="15" y1="58" x2="22" y2="50" ${Wt}/>
+        <line x1="25" y1="58" x2="32" y2="50" ${Wt}/>
+        <line x1="35" y1="58" x2="42" y2="50" ${Wt}/>
+        <line x1="45" y1="58" x2="52" y2="50" ${Wt}/>
+        <line x1="55" y1="58" x2="62" y2="50" ${Wt}/>
+        <!-- Height dimension -->
+        <line x1="-70" y1="-48" x2="-70" y2="54" ${Wt}/>
+        <line x1="-74" y1="-48" x2="-66" y2="-48" ${Wt}/>
+        <line x1="-74" y1="54" x2="-66" y2="54" ${Wt}/>
+        <text x="-78" y="3" ${TXT} text-anchor="end">1.6m</text>
+        <!-- Label -->
+        <text x="0" y="-58" ${TXT} text-anchor="middle">SIDE VIEW</text>
+      </g>
+
+      <!-- Title block (bottom-right) -->
+      <g transform="translate(390, 290)">
+        <rect x="-110" y="-22" width="110" height="22" ${Wt}/>
+        <text x="-105" y="-9" ${TXT}>SENTRY MK-VII</text>
+        <text x="-105" y="-1" ${TXT}>SHEET 01 / 01</text>
+      </g>
+    </svg>`;
+  }
+
+  if (type === 'mines') {
+    // Minefield blueprint: rows of mines in a grid pattern, with one
+    // exploded view detail showing the mine's internals.
+    return `<svg viewBox="0 0 400 300" width="100%" height="100%" preserveAspectRatio="xMidYMid meet" xmlns="http://www.w3.org/2000/svg">
+      <!-- Grid of mines (top-down) -->
+      <g transform="translate(120, 150)">
+        ${[0,1,2,3].map(r => [0,1,2,3].map(c => {
+          const x = -75 + c * 50; const y = -75 + r * 50;
+          return `<g transform="translate(${x},${y})">
+            <circle r="12" ${W}/>
+            <circle r="6" ${Wt}/>
+            <line x1="-12" y1="0" x2="-18" y2="0" ${Wt}/>
+            <line x1="12" y1="0" x2="18" y2="0" ${Wt}/>
+            <line x1="0" y1="-12" x2="0" y2="-18" ${Wt}/>
+            <line x1="0" y1="12" x2="0" y2="18" ${Wt}/>
+          </g>`;
+        }).join('')).join('')}
+        <text x="0" y="-110" ${TXT} text-anchor="middle">PATTERN: 4×4</text>
+      </g>
+
+      <!-- Detail (right side) -->
+      <g transform="translate(290, 150)">
+        <circle cx="0" cy="0" r="50" ${W}/>
+        <circle cx="0" cy="0" r="36" ${Wt}/>
+        <circle cx="0" cy="0" r="20" ${W}/>
+        <circle cx="0" cy="0" r="6" ${W}/>
+        <line x1="-50" y1="0" x2="-60" y2="0" ${Wt}/>
+        <line x1="50" y1="0" x2="60" y2="0" ${Wt}/>
+        <line x1="0" y1="-50" x2="0" y2="-60" ${Wt}/>
+        <line x1="0" y1="50" x2="0" y2="60" ${Wt}/>
+        <text x="65" y="3" ${TXT}>DETAIL A</text>
+      </g>
+
+      <!-- Title block -->
+      <g transform="translate(390, 290)">
+        <rect x="-110" y="-22" width="110" height="22" ${Wt}/>
+        <text x="-105" y="-9" ${TXT}>MINEFIELD-A</text>
+        <text x="-105" y="-1" ${TXT}>SHEET 01 / 01</text>
+      </g>
+    </svg>`;
+  }
+
+  // Generic fallback — single boxy diagram.
+  return `<svg viewBox="0 0 400 300" width="100%" height="100%" preserveAspectRatio="xMidYMid meet" xmlns="http://www.w3.org/2000/svg">
+    <g transform="translate(200, 150)">
+      <rect x="-60" y="-40" width="120" height="80" ${W}/>
+      <line x1="-60" y1="0" x2="60" y2="0" ${Wt}/>
+      <line x1="0" y1="-40" x2="0" y2="40" ${Wt}/>
+      <text x="0" y="65" ${TXT} text-anchor="middle">UNKNOWN ASSET</text>
+    </g>
+  </svg>`;
 }
 
 // =========================================================================

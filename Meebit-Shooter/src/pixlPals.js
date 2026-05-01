@@ -443,21 +443,11 @@ export function updatePixlPals(dt, playerPos) {
     _bossPalDeployed = false;
   }
 
-  // --- CH7 CO-DEPLOY ---
-  // Chapter 7 (PARADISE FALLEN) has no boss, so the boss-fight timer
-  // above never fires. Instead, we force-deploy one pal the first time
-  // updatePixlPals runs in ch7 so the player gets their ally alongside
-  // the flinger that was also force-deployed by onWaveStartedForFlingers.
-  // Both stay until the run ends (ch7 persistence gate, below).
-  if (S.chapter === PARADISE_FALLEN_CHAPTER_IDX &&
-      !_ch7PalDeployed &&
-      S.running && !S.paused) {
-    _ch7PalDeployed = true;
-    S.pixlPalCharges = Math.max(1, S.pixlPalCharges || 1);
-    trySummonPixlPal(playerPos);
-    UI.toast && UI.toast('PIXL PAL DEPLOYED', '#00ff66', 2000);
-  }
-  // Reset the ch7 dedupe flag whenever we leave ch7 (back to title, new run).
+  // (Legacy ch7 force-deploy + persistence was removed when pixl pals
+  // were disabled entirely in chapter 7. Per playtester: "Can we get
+  // rid of the flinger and pixl pal in chapter 7?")
+  // Reset the ch7 dedupe flag whenever we leave ch7 just so it stays
+  // tidy across runs.
   if (S.chapter !== PARADISE_FALLEN_CHAPTER_IDX) {
     _ch7PalDeployed = false;
   }
@@ -469,11 +459,11 @@ export function updatePixlPals(dt, playerPos) {
 
     p.life += dt;
 
-    // Despawn conditions: lifetime expired, mission complete, or game over.
-    // EXCEPT in chapter 7 (PARADISE FALLEN), where pals + flingers are
-    // summoned together as final-chapter allies and stay until the run ends.
-    const isCh7 = S.chapter === PARADISE_FALLEN_CHAPTER_IDX;
-    if (!p.despawning && !isCh7 && (
+    // Standard despawn conditions — lifetime expired or kill cap reached.
+    // (Legacy ch7 persistence flag was removed when pals were disabled
+    // entirely in chapter 7; any pal still alive in ch7 is a leftover
+    // from an earlier chapter and should despawn.)
+    if (!p.despawning && (
         p.life >= p.maxLife ||
         p.killsThisSummon >= p.killsGoal
     )) {
