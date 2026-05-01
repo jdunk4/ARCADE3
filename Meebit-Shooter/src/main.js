@@ -2768,6 +2768,9 @@ function startGame() {
   resetWaves();
   clearBullets();
   clearRockets();
+  // Clear any in-flight death animations from a previous run so the
+  // new run doesn't start with shriveling corpses lingering.
+  _clearDyingEnemies();
   // Clear any stray grenades from a previous run and give the player a
   // fresh 3-pack on game start. refillGrenades() also syncs the HUD slot.
   for (const g of _grenades) scene.remove(g);
@@ -2962,6 +2965,7 @@ function startTutorial() {
   resetWaves();
   clearBullets();
   clearRockets();
+  _clearDyingEnemies();
   for (const g of _grenades) scene.remove(g);
   _grenades.length = 0;
   refillGrenades();
@@ -3503,6 +3507,9 @@ function _setupEndlessCleanArena() {
   // -- Active wave systems --
   try { resetWaves(); } catch (e) {}
   try { clearAllEnemies(); } catch (e) {}
+  // Wipe any in-flight death animations from a previous run so
+  // the lobby doesn't have shriveling corpses lingering.
+  try { _clearDyingEnemies(); } catch (e) {}
   // Defensive: zero the per-wave activity flags. resetGame() clears
   // most of them, but resetWaves() may set a few back as a side
   // effect of clearing intermission state.
@@ -4443,6 +4450,11 @@ function animate() {
   if (S.running && !S.paused) {
     updatePlayer(dt);
     updateEnemies(worldDt);
+    // Death animations — ants shrivel + fade after they die. Ticked
+    // here regardless of paused state? No — only when running, since
+    // a paused game shouldn't progress death animations. The corpses
+    // stay frozen until the player resumes.
+    _tickDyingEnemies(worldDt);
     updateBullets(worldDt);
     updateTurrets(worldDt);
     updatePixlPals(worldDt, player.pos);
@@ -4580,12 +4592,13 @@ function animate() {
     updateSafetyPod(dt);
     updateHiveLasers(worldDt);
     updateCockroach(worldDt);
-    // Skip the fog-ring update in tutorial mode. updateFogRing()
-    // re-writes scene.fog.near/far/color every frame to override
-    // theme transitions; without this guard it would clobber the
-    // disableFog() snapshot and the perimeter darkness would
-    // come back. Tutorial gets bare-bones lighting on purpose.
-    if (!S.tutorialMode) updateFogRing(player.pos);
+    // Skip the fog-ring update in tutorial mode AND endless glyphs
+    // mode. updateFogRing() re-writes scene.fog.near/far/color every
+    // frame to override theme transitions; without this guard it
+    // would clobber the disableFog() snapshot and the perimeter
+    // darkness would come back. Per playtester: "Can we remove the
+    // fog in endless glyphs."
+    if (!S.tutorialMode && !S.endlessGlyphs) updateFogRing(player.pos);
     updateBossCubes(worldDt);
     updateCivilians(worldDt, enemies, player, onCivilianKilled, onCivilianRescued);
     // In tutorial mode the lesson controller drives spawns and props
@@ -6174,6 +6187,146 @@ function explodeRocket(r) {
 // thing that differs is the physics and visuals: a grenade is a tumbling
 // sphere on a gravity arc, a rocket is a guided missile on a flat path.
 
+// =====================================================================
+// DYING ENEMY MESHES — death animations
+// =====================================================================
+// Some enemies get a death animation (shrivel + fade) instead of
+// vanishing instantly. The enemy is spliced from the active enemies
+// array as usual (so AI / damage / collision treat it as gone), but
+// its mesh is handed to this list and animated to a graceful exit.
+// Per playtester: "Can we add a death animation for the ants when
+// they die. Maybe they just shrivel up? After a few seconds they
+// disappear?"
+//
+// Each entry: { obj, life, maxLife, type, materials }
+//   obj       — THREE.Group of the dead enemy (still in scene)
+//   life      — elapsed seconds since death
+//   maxLife   — total lifetime in seconds
+//   type      — animation style ('shrivel')
+//   materials — flat array of every material in the mesh tree, so
+//               opacity can be faded uniformly. Walks the tree once
+//               at hand-off time and caches refs.
+//
+// On expiry: scene.remove + dispose. Idempotent if called twice.
+const _dyingEnemies = [];
+
+/**
+ * Hand off a dying enemy mesh to the death-animation system.
+ * Called by killEnemy when the enemy is one we want to animate
+ * (currently: ants).
+ *
+ * @param {THREE.Group} obj   enemy mesh root (already detached from
+ *                             the active enemies array)
+ * @param {string} animType   'shrivel' currently the only kind
+ */
+function _addDyingEnemy(obj, animType) {
+  if (!obj) return;
+  // Cache material refs so opacity fade in the tick is one loop, not
+  // a fresh tree-walk every frame.
+  const materials = [];
+  obj.traverse((node) => {
+    if (!node.material) return;
+    if (Array.isArray(node.material)) {
+      for (const m of node.material) {
+        // Force transparent flag on so opacity changes actually render.
+        m.transparent = true;
+        materials.push(m);
+      }
+    } else {
+      node.material.transparent = true;
+      materials.push(node.material);
+    }
+  });
+  _dyingEnemies.push({
+    obj,
+    life: 0,
+    maxLife: 2.4,            // seconds — "after a few seconds they disappear"
+    type: animType || 'shrivel',
+    materials,
+    initialY: obj.position.y,
+  });
+}
+
+/**
+ * Per-frame tick. Called from the animate loop. Animates each dying
+ * enemy through its shrivel + fade and disposes when done.
+ */
+function _tickDyingEnemies(dt) {
+  for (let i = _dyingEnemies.length - 1; i >= 0; i--) {
+    const d = _dyingEnemies[i];
+    d.life += dt;
+    const t = Math.min(1, d.life / d.maxLife);
+
+    if (d.type === 'shrivel') {
+      // Shrivel curve: collapse fast in the first 60% of life
+      // (legs buckle, body flattens), then a slower fade-and-sink
+      // dissolve in the last 40% as the corpse evaporates.
+      //
+      // Scale: 1.0 → 0.20 over the curve. X/Z shrink ~uniformly so
+      // the corpse compresses laterally; Y shrinks faster so it
+      // also flattens toward the ground (reads as "collapsing").
+      const collapse = Math.min(1, t / 0.6);
+      const sxz = 1 - collapse * 0.55;     // 1.0 → 0.45 lateral
+      const sy  = 1 - collapse * 0.85;     // 1.0 → 0.15 vertical
+      d.obj.scale.set(sxz, sy, sxz);
+      // Sink slightly into the ground so the bottom edge doesn't
+      // float when Y collapses (the body shrinks toward its origin
+      // point, which is at the feet). Without sink it can float
+      // awkwardly above the floor for the last frames.
+      d.obj.position.y = d.initialY - collapse * 0.15;
+      // Slight wobble tilt for character — corpse leans before
+      // collapsing, like the legs gave out.
+      d.obj.rotation.z = collapse * 0.4;
+      // Opacity: hold at 1 until 60% through, then fade to 0.
+      const fadeT = Math.max(0, (t - 0.6) / 0.4);
+      const alpha = 1 - fadeT;
+      for (const m of d.materials) {
+        // Some materials (basic, additive) ignore the fade — we set
+        // opacity unconditionally, letting the GPU handle it.
+        m.opacity = alpha;
+      }
+    }
+
+    if (t >= 1) {
+      // Done — remove from scene + dispose.
+      if (d.obj.parent) d.obj.parent.remove(d.obj);
+      d.obj.traverse((node) => {
+        if (node.geometry) node.geometry.dispose();
+        if (node.material) {
+          if (Array.isArray(node.material)) {
+            for (const m of node.material) m.dispose();
+          } else {
+            node.material.dispose();
+          }
+        }
+      });
+      _dyingEnemies.splice(i, 1);
+    }
+  }
+}
+
+/**
+ * Wipe all dying enemies immediately. Called on chapter teardown
+ * + tutorial enter + endless-mode enter so corpses from a prior
+ * run don't appear in the new arena.
+ */
+function _clearDyingEnemies() {
+  for (const d of _dyingEnemies) {
+    if (d.obj.parent) d.obj.parent.remove(d.obj);
+    d.obj.traverse((node) => {
+      if (node.geometry) node.geometry.dispose();
+      if (node.material) {
+        if (Array.isArray(node.material)) {
+          for (const m of node.material) m.dispose();
+        } else {
+          node.material.dispose();
+        }
+      }
+    });
+  }
+  _dyingEnemies.length = 0;
+}
+
 const GRENADE_GRAVITY = 22;    // m/s^2 — snappy feel
 const _grenades = [];
 
@@ -7246,6 +7399,16 @@ function killEnemy(idx) {
 
   scene.remove(e.obj);
   enemies.splice(idx, 1);
+  // Death animation routing — most enemies vanish on kill; ants get
+  // the shrivel-and-fade animation. Per playtester: "Maybe they just
+  // shrivel up? After a few seconds they disappear?" The mesh is
+  // already removed from `scene` above; we re-add it via
+  // _addDyingEnemy which puts it back in `scene` as a dying entity
+  // (animated by _tickDyingEnemies, NOT by enemy AI/damage paths).
+  if (e.type === 'ant') {
+    scene.add(e.obj);                 // re-attach for the animation
+    _addDyingEnemy(e.obj, 'shrivel');
+  }
   S.kills++;
   S.score += e.scoreVal;
   bumpKillstreak();
@@ -7735,6 +7898,7 @@ animate();
     }
     // Wipe live entities so the new chapter spawns into a clean arena.
     try { clearAllEnemies(); } catch (e) {}
+    try { _clearDyingEnemies(); } catch (e) {}
     try { clearAllPickups(); } catch (e) {}
     try { clearAllMines(); } catch (e) {}
     try { clearStratagemTurrets(); } catch (e) {}
