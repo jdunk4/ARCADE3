@@ -1811,10 +1811,9 @@ window.addEventListener('keydown', e => {
         return;
       }
     }
-    // Chapter 7 locks the player into the lifedrainer — no other weapons
-    // are available, no swapping. The rainbow charge port replaces the
-    // revolver wheel UI and weapon-swap keys are inert.
-    if (S.chapter === PARADISE_FALLEN_CHAPTER_IDX) return;
+    // (legacy: chapter 7 used to lock the player into the lifedrainer.
+    // After the ch7 fresh-slate redesign, the player keeps their
+    // current weapon throughout — no special-casing here.)
     const map = { '1': 'pistol', '2': 'shotgun', '3': 'smg', '4': 'rocket', '5': 'raygun', '6': 'flamethrower' };
     const w = map[e.key];
     if (S.ownedWeapons.has(w)) {
@@ -1838,8 +1837,10 @@ window.addEventListener('keydown', e => {
     }
   }
   if (e.key.toLowerCase() === 'q') {
-    // Pickaxe toggle disabled in chapter 7 — only lifedrainer.
-    if (S.chapter === PARADISE_FALLEN_CHAPTER_IDX) return;
+    // (legacy: pickaxe toggle was disabled in chapter 7 because of
+    // the lifedrainer lock. After the fresh-slate redesign, pickaxe
+    // is fine in ch7 — there's just nothing to mine since the chapter
+    // has no mining waves.)
     cancelReload();
     if (S.currentWeapon === 'pickaxe') {
       S.currentWeapon = S.previousCombatWeapon || 'pistol';
@@ -1977,11 +1978,10 @@ document.addEventListener('visibilitychange', () => {
 // custom event when the user taps (or clicks) a weapon slot. Mirrors
 // the keyboard 1-6 path so wheel taps and number-key presses run the
 // exact same weapon-switch sequence (state update, gun recolor,
-// cursor sync, toast). Chapter-7 lifedrainer-only mode and pickaxe
-// state are respected by the same guards as the key handler.
+// cursor sync, toast). Pickaxe state is respected by the
+// `S.ownedWeapons.has(w)` check.
 window.addEventListener('mw:select-weapon', (e) => {
   const w = e.detail;
-  if (S.chapter === PARADISE_FALLEN_CHAPTER_IDX) return;
   if (!w || !S.ownedWeapons.has(w)) return;
   S.currentWeapon = w;
   S.previousCombatWeapon = w;
@@ -3790,61 +3790,32 @@ initFlingerHUD();
 // cleansing all infectors. See triggerSuperNuke in infector.js.
 // --------------------------------------------------------------------------
 function _syncSuperNukeHUD() {
-  let el = document.getElementById('super-nuke-indicator');
-  const charges = S.superNukeCharges || 0;
-  const inCh7 = S.chapter === PARADISE_FALLEN_CHAPTER_IDX;
-  if (!el) {
-    el = document.createElement('div');
-    el.id = 'super-nuke-indicator';
-    el.style.cssText = [
-      'position:fixed',
-      'top:160px',
-      'right:16px',
-      'z-index:15',
-      'padding:8px 12px',
-      'border:2px solid #ffffff',
-      'border-radius:6px',
-      'background:rgba(0,0,0,0.8)',
-      'color:#ffffff',
-      "font-family:'Impact',monospace",
-      'font-size:14px',
-      'letter-spacing:2px',
-      'box-shadow:0 0 14px rgba(255,255,255,0.5)',
-      'pointer-events:none',
-      'user-select:none',
-      'transition:opacity 0.2s',
-    ].join(';');
-    document.body.appendChild(el);
-  }
-  if (!inCh7) {
-    el.style.display = 'none';
-    return;
-  }
-  el.style.display = '';
-  if (charges <= 0) {
-    el.style.opacity = '0.35';
-    el.innerHTML = 'SUPER NUKE [N] · <b>0</b>';
-  } else {
-    el.style.opacity = '1';
-    el.innerHTML = 'SUPER NUKE [N] · <b>' + charges + '</b>';
-  }
+  // Super nuke mechanic was removed in the chapter 7 fresh-slate
+  // redesign. Stratagems replaced it (granted on chapter-7 entry).
+  // Function preserved as a stub so existing call sites (window
+  // hooks, _maybeGrantSuperNuke) don't break — it just keeps the
+  // indicator hidden. The element itself is never built unless this
+  // function runs first, so the simplest implementation is just to
+  // hide-if-present and return.
+  const el = document.getElementById('super-nuke-indicator');
+  if (el) el.style.display = 'none';
 }
 
 // Grant a super nuke on every chapter-7 wave transition. Hooked into the
 // same _lastSeenWave delta tracking in animate().
 let _ch7LastGrantedWave = 0;
 function _maybeGrantSuperNuke(waveNum) {
-  if (S.chapter !== PARADISE_FALLEN_CHAPTER_IDX) return;
-  if (waveNum <= _ch7LastGrantedWave) return;
-  _ch7LastGrantedWave = waveNum;
-  S.superNukeCharges = (S.superNukeCharges || 0) + 1;
-  const ch7Wave = ((waveNum - 1) % 3) + 1;
-  if (ch7Wave === 3) {
-    // Finale — grant an extra one so the player can double-cleanse.
-    S.superNukeCharges += 1;
-  }
-  _syncSuperNukeHUD();
-  UI.toast('SUPER NUKE READY [N]', '#ffffff', 2500);
+  // DISABLED — chapter 7 redesign replaced the super-nuke mechanic
+  // with stratagems. The chapter-7 entry block in main.js now grants
+  // a starter loadout of stratagem artifacts (mech, mineField,
+  // stratagemTurret, thermonuclear) on chapter entry. Per playtester
+  // direction: "We're going to replace super nuke by activating
+  // strategems."
+  //
+  // Function kept as a stub so call sites elsewhere (the wave-change
+  // detector at line 4293, window.__maybeGrantSuperNuke) don't error
+  // — they just no-op.
+  return;
 }
 
 // Expose to window so waves.js (or anything else that detects chapter
@@ -4329,15 +4300,10 @@ function animate() {
           }
         }
       }
-      // Release the chapter 7 entry spawn hold when the player advances
-      // to wave 2. The hold is set true on chapter 7 entry and gates
-      // ALL trickle/hive enemy spawns during wave 1 — only mega_brutes
-      // from mining blocks appear. From wave 2 onward, normal spawn
-      // pacing resumes.
-      if (S.chapter === PARADISE_FALLEN_CHAPTER_IDX && localWave === 2 && S.cinematicSpawnHold) {
-        S.cinematicSpawnHold = false;
-        console.log('[chapter-7] spawn hold released — wave 2 begins');
-      }
+      // (legacy: chapter 7 cinematicSpawnHold flag was removed when
+      // ch7 was redesigned to a fresh slate — no cinematic, no hold
+      // gate. Spawn pacing in chapter 7 is controlled entirely by
+      // the wave def's spawnRate.)
     }
     // Detect chapter change and re-apply the chapter-specific hazard
     // style + ally setup. S.chapter is derived from S.wave (5 waves per
@@ -4399,90 +4365,71 @@ function animate() {
         if (S.chapter === 1) console.log(`[chapter-change] galaga ship active=${isGalagaShipActive()}`);
         if (S.chapter === 3) console.log(`[chapter-change] pacman active=${isPacmanActive()}`);
 
-        // -------- CHAPTER 7 ENTRY (PARADISE FALLEN) --------
-        // Triggered when the player crosses from chapter 6 (PARADISE)
-        // into chapter 7 (PARADISE FALLEN). Three things happen:
-        //   1. Atmosphere goes DARK — scene lights crash, flashlight
-        //      activates as primary illumination.
-        //   2. Drained-color corpses scatter across the arena as
-        //      environmental storytelling.
-        //   3. Enemy spawns are HELD for 5 seconds (cinematicSpawnHold)
-        //      so the player has a moment to take in the new setting
-        //      before the mining/mega_brute combat begins.
+        // -------- CHAPTER 7 ENTRY (PARADISE FALLEN) — FRESH SLATE --------
+        // Per playtester redesign: chapter 7 is now an EMPTY ARENA.
+        // The cinematic, civilian dismissal, lifedrainer auto-equip,
+        // and super-nuke grant are all gone. The entry only does:
+        //   1. Monochrome atmosphere (dim lighting + flashlight) —
+        //      preserves the visual identity of "post-collapse"
+        //   2. Drained-color corpses scattered as environmental
+        //      storytelling — also part of the monochrome aesthetic
+        //   3. Music section switch to the chapter-7 playlist
+        //   4. Grant stratagem artifacts (replaces the old super-nuke
+        //      mechanic; gives the player tools to handle the
+        //      infestation without a single overpowered button)
+        //
+        // No cinematicSpawnHold. No lifedrainer. No civilian dismissal
+        // (civilians are already gone by chapter 7 in normal play, and
+        // suppressing spawns isn't needed without the cinematic).
         if (S.chapter === PARADISE_FALLEN_CHAPTER_IDX
             && prevChapter !== PARADISE_FALLEN_CHAPTER_IDX) {
-          console.log('[chapter-7-entry] BEGIN — running setup steps with isolated catches');
-          // STEP 1: Atmosphere darken (lights crash to ~12%, flashlight on)
+          console.log('[chapter-7-entry] BEGIN (fresh-slate redesign)');
+          // STEP 1: Monochrome atmosphere — dim lights + flashlight on.
           try {
             enterChapter7Atmosphere();
+            S.chapter7Atmosphere = true;
             console.log('[chapter-7-entry] OK 1: atmosphere darkened');
           } catch (e) {
             console.error('[chapter-7-entry] FAIL 1: enterChapter7Atmosphere —', e);
           }
-          // STEP 2: Civilian dismissal + spawn suppression
-          try {
-            if (typeof setCivilianSpawnSuppressed === 'function') {
-              setCivilianSpawnSuppressed(true);
-            }
-            if (typeof clearAllCivilians === 'function') clearAllCivilians();
-            console.log('[chapter-7-entry] OK 2: civilians cleared + suppression on');
-          } catch (e) {
-            console.error('[chapter-7-entry] FAIL 2: civilian clear —', e);
-          }
-          // STEP 3: Scatter corpses (environmental storytelling)
+          // STEP 2: Scatter drained-color corpses across the arena.
+          // These contribute to the monochrome aesthetic — visual
+          // storytelling that the world has fallen.
           try {
             scatterCorpses(35);
-            console.log('[chapter-7-entry] OK 3: corpses scattered');
+            console.log('[chapter-7-entry] OK 2: corpses scattered');
           } catch (e) {
-            console.error('[chapter-7-entry] FAIL 3: scatterCorpses —', e);
+            console.error('[chapter-7-entry] FAIL 2: scatterCorpses —', e);
           }
-          // STEP 4: Set state flags (atmosphere active, spawn hold for entire wave 1)
-          try {
-            S.chapter7Atmosphere = true;
-            S.cinematicSpawnHold = true;
-            console.log('[chapter-7-entry] OK 4: flags set');
-          } catch (e) {
-            console.error('[chapter-7-entry] FAIL 4: state flags —', e);
-          }
-          // STEP 5: Equip lifedrainer signature weapon
-          try {
-            S._preCh7Weapon = S.currentWeapon;
-            S.currentWeapon = 'lifedrainer';
-            S.lifedrainCharge = 0;
-            recolorGun(WEAPONS.lifedrainer.color);
-            _syncWeaponCursor();
-            UI.toast('LIFEDRAINER', '#00ff66');
-            console.log('[chapter-7-entry] OK 5: lifedrainer equipped');
-          } catch (e) {
-            console.error('[chapter-7-entry] FAIL 5: lifedrainer equip —', e);
-          }
-          // STEP 6: Refresh the weapon UI so the rainbow charge port
-          // appears immediately. The port is created lazily on the
-          // first updateWeaponSlots() call inside chapter 7. Without
-          // an explicit call here it might not render until the next
-          // HUD tick, which can be deferred during the chapter
-          // transition.
-          try {
-            UI.updateWeaponSlots();
-            UI.updateHUD();
-            console.log('[chapter-7-entry] OK 6: weapon UI refreshed');
-          } catch (e) {
-            console.error('[chapter-7-entry] FAIL 6: UI refresh —', e);
-          }
-          // STEP 7: Switch the music playlist to the chapter-7 section.
-          // TheOtherSide + Underworld have been gated out of the
-          // chapter-1-6 rotation specifically so this moment plays
-          // the player a fresh sound palette they haven't heard yet
-          // — the audio engine crossfades into TheOtherSide here.
-          // The reverse switch (back to 'main') is wired into the
-          // chapter-7-exit branch a little further below.
+          // STEP 3: Music section switch — TheOtherSide + Underworld
+          // are reserved for chapter 7. The audio engine crossfades.
           try {
             Audio.setMusicSection && Audio.setMusicSection('paradise_fallen');
-            console.log('[chapter-7-entry] OK 7: music section → paradise_fallen');
+            console.log('[chapter-7-entry] OK 3: music section → paradise_fallen');
           } catch (e) {
-            console.error('[chapter-7-entry] FAIL 7: music section switch —', e);
+            console.error('[chapter-7-entry] FAIL 3: music section switch —', e);
           }
-          console.log('[chapter-7-entry] END — all steps attempted');
+          // STEP 4: Grant stratagem artifacts as a starter loadout —
+          // replaces the old super-nuke grant. A small allocation of
+          // each type so the player has options without being
+          // overwhelmed. The 30s cooldown paces usage.
+          try {
+            if (!S.stratagemArtifacts) S.stratagemArtifacts = {};
+            const grants = {
+              mech: 2,
+              mineField: 3,
+              stratagemTurret: 3,
+              thermonuclear: 1,
+            };
+            for (const id in grants) {
+              S.stratagemArtifacts[id] = (S.stratagemArtifacts[id] || 0) + grants[id];
+            }
+            UI.toast('STRATAGEMS UNLOCKED', '#00ff66', 2400);
+            console.log('[chapter-7-entry] OK 4: stratagems granted', grants);
+          } catch (e) {
+            console.error('[chapter-7-entry] FAIL 4: stratagem grant —', e);
+          }
+          console.log('[chapter-7-entry] END');
         }
         // -------- CHAPTER 7 EXIT (e.g. game reset to ch 0) --------
         // Restore lighting + clear corpses if the player leaves chapter

@@ -359,82 +359,37 @@ export function getWaveDef(wave) {
   if (chapterIdx === PARADISE_FALLEN_CHAPTER_IDX) {
     const ch7Wave = ((wave - 1) % CH7_WAVE_COUNT) + 1;
 
-    // ALL-ENEMY MIX for the finale. Drawn from every prior chapter's
-    // roster — zomeebs, sprinters, brutes, spitters, phantoms, spiders,
-    // pumpkins, ghosts, vampires, red devils, wizards, goo spitters —
-    // all fighting each other and the infector flood. Infector share
-    // ESCALATES each local wave (30% → 45% → 60%) so the flood dynamic
-    // tightens as the finale progresses. Other types share what's left.
+    // -------- CHAPTER 7 FRESH SLATE --------
+    // Per playtester redesign: chapter 7 is now an EMPTY ARENA. No
+    // hives, no turrets, no objectives, no mining, no ores, no zones,
+    // no central compound, no boss bar. Just enemies (infectors +
+    // roaches) flooding the player. The monochrome aesthetic stays;
+    // stratagems are granted on entry to replace the old super-nuke
+    // mechanic.
     //
-    // Wave 1: breadth — mostly old enemies, some infectors. Player
-    //         learns the possession dynamic while fighting a full zoo.
-    // Wave 2: missile run. Infectors mid-mix while the player clears
-    //         the 5 zones. Post-EMP the shields fall for wave 3.
-    // Wave 3: full flood. Infectors dominate; every other enemy is
-    //         fodder for possession. Hardest.
-    // CHAPTER-7-ONLY mix per user direction: only chapter 7 native
-    // enemies spawn here, no carryovers from earlier chapters. The
-    // narrative reason is the chapter 7 setting (PARADISE FALLEN) is
-    // post-collapse — the old enemies are dead bodies on the ground
-    // (see corpses.js) while only the new infector lineage and
-    // mega_brutes mining-revealed remain active.
+    // Wave def shape: type='survival' which waves.js routes to a
+    // minimal "spawn enemies until kill target met" path with no
+    // hazards, no objectives, no boss spawn. The kill target steps
+    // up across the three waves to give pacing.
     //
-    // Wave 1: mega_brutes from blocks (75% reveal rate, see blocks.js)
-    //         + small infector/roach trickle to keep pressure constant.
-    // Wave 2: full infector flood mid-mix.
-    // Wave 3: peak infector dominance.
-    const infectorShare = ch7Wave === 1 ? 0.45 : (ch7Wave === 2 ? 0.55 : 0.65);
-    const roachShare    = ch7Wave === 1 ? 0.25 : (ch7Wave === 2 ? 0.30 : 0.30);
-    const megaBruteShare = 1 - infectorShare - roachShare;     // remainder
+    // Enemy mix is infector + roach only — those are the chapter's
+    // signature enemies. mega_brute is dropped because it was tied
+    // to the old block-mining flow (75% reveal rate from mined
+    // blocks, see blocks.js); without mining there's no source.
     const mix = {
-      infector: infectorShare,
-      roach: roachShare,
-      mega_brute: megaBruteShare,
+      infector: ch7Wave === 1 ? 0.65 : (ch7Wave === 2 ? 0.55 : 0.50),
+      roach:    ch7Wave === 1 ? 0.35 : (ch7Wave === 2 ? 0.45 : 0.50),
     };
+    // Kill targets per wave — modest at first, larger by wave 3.
+    const killTargets = { 1: 30, 2: 45, 3: 60 };
 
-    if (ch7Wave === 1) {
-      return {
-        type: 'mining',
-        oresRequired: 5,
-        enemies: mix,
-        spawnRate: 2.6,
-        blockFallRate: 4.0,
-        blockCount: 8,
-        ch7: true,
-        localWave: ch7Wave, chapterIdx,
-      };
-    }
-    if (ch7Wave === 2) {
-      // WAVE 32 — POWER UP. Per user request, chapter 7's powerup wave
-      // is stripped down to just POWER and RADIO. Turrets are removed
-      // because chapter 7's infrastructure is mostly destroyed (the
-      // arena is dark, corpses everywhere, no turret network to power).
-      // EMP is also dropped — without hives in chapter 7 there's
-      // nothing for it to disable, and the wave reads cleaner with
-      // just two zones to clear.
-      return {
-        type: 'powerup',
-        enemies: mix,
-        spawnRate: 3.0,
-        zoneHoldTime: 3.5,
-        zones: ['POWER', 'RADIO'],
-        // turretCount intentionally omitted — no turrets in chapter 7
-        ch7: true,
-        localWave: ch7Wave, chapterIdx,
-      };
-    }
-    // Wave 33 — FINALE HIVES. Post-EMP, shields are down. 60% infector
-    // share means most new spawns are parasites; they eat the other
-    // enemies and sprint at the player.
     return {
-      type: 'hive',
-      hiveCount: 6,
-      hiveHp: 18,
-      hivesEmitInfectors: true,
+      type: 'survival',
       enemies: mix,
-      spawnRate: 3.6,
+      spawnRate: ch7Wave === 1 ? 2.5 : (ch7Wave === 2 ? 3.0 : 3.6),
+      killTarget: killTargets[ch7Wave] || 30,
       ch7: true,
-      ch7Finale: true,
+      ch7Finale: ch7Wave === 3,    // last wave still triggers run-end on completion
       localWave: ch7Wave, chapterIdx,
     };
   }

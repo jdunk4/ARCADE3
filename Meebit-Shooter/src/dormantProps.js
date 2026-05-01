@@ -34,7 +34,7 @@
 
 import * as THREE from 'three';
 import { scene } from './scene.js';
-import { CHAPTERS, HIVE_CONFIG, ARENA } from './config.js';
+import { CHAPTERS, HIVE_CONFIG, ARENA, PARADISE_FALLEN_CHAPTER_IDX } from './config.js';
 import { spawnDepot, clearDepot } from './ores.js';
 import * as OresModule from './ores.js';
 import { spawnCrusher, clearCrusher } from './crusher.js';
@@ -284,6 +284,24 @@ export function prepareChapter(chapterIdx) {
   if (_preparedChapter === chapterIdx) return;
   // Clean any leftover state from a previous chapter before building anew.
   teardownChapter();
+
+  // ===== CHAPTER 7 (PARADISE FALLEN) FRESH SLATE =====
+  // Per playtester redesign: chapter 7 is now an EMPTY ARENA. No
+  // depot, no hives, no central compound (silo/powerplant/radio),
+  // no turrets, no wires, no shields. Just enemies + the monochrome
+  // theme + stratagems.
+  //
+  // We still mark the chapter as prepared so the idempotent guards
+  // elsewhere (isChapterPrepared, the `if (_preparedChapter === chapterIdx) return`
+  // at the top of this function) work correctly. Triangle assignment
+  // is also still shuffled because some non-prop systems (e.g. enemy
+  // spawn ring computation) read it; the wedges just stay empty.
+  if (chapterIdx === PARADISE_FALLEN_CHAPTER_IDX) {
+    shuffleTriangleAssignment();
+    _preparedChapter = chapterIdx;
+    console.info('[dormantProps] prepared chapter', chapterIdx, '(ch7 fresh slate — no props spawned)');
+    return;
+  }
 
   // --- TRIANGLE SHUFFLE (must run FIRST).
   // Randomly assigns mining / power-up / hive waves to the three arena

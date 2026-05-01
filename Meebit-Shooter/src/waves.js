@@ -688,6 +688,16 @@ export function startWave(waveNum) {
     UI.toast(_twLbl.exposeToast, '#ff8826', 2500);
   }
 
+  // SURVIVAL — chapter 7 fresh-slate. Per user direction: NO
+  // objective HUD bar. The wave still has a kill target internally
+  // (waveDef.killTarget) so it can advance to the next wave, but
+  // the player doesn't see a counter — they just survive the
+  // infestation until the wave ends. Defensive hide in case a prior
+  // wave's objective was still showing.
+  if (waveDef.type === 'survival') {
+    try { UI.hideObjective(); } catch (e) {}
+  }
+
   UI.showWaveStart(waveNum);
   Audio.waveStart();
   shake(0.3, 0.3);
@@ -1917,6 +1927,17 @@ export function updateWaves(dt) {
         UI.showObjective('PROTECT THE CAGE · ' + cagePct + '%', 'Stand near the cage to start rescue');
       }
     }
+  }
+
+  // SURVIVAL — chapter 7 fresh-slate wave type. Wave ends when the
+  // player has killed waveDef.killTarget enemies. No objectives, no
+  // hives, no ores — just keep killing until the target is met.
+  // For the chapter 7 finale (ch7Finale flag, last of the 3 waves),
+  // endWave() handles the run-end transition the same way the legacy
+  // hive finale did.
+  if (waveDef.type === 'survival' && S.waveKillsProgress >= S.waveKillTarget) {
+    endWave();
+    return;
   }
 
   if (waveDef.type === 'rescue' && S.waveKillsProgress >= S.waveKillTarget) {

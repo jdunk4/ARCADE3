@@ -1092,9 +1092,11 @@ export function registerPowerupKillHandler(fn) {
  * If the chapter already offered a reward, no-op + immediately resumes.
  */
 export function maybeShowChapterReward(chapterIdx, resumeCallback) {
-  // CH7 (PARADISE FALLEN) has no powerup rewards. Finale chapter keeps
-  // the combat pure — player faces the flood with only the pal, flinger,
-  // and super-nuke already in play. Skip the modal entirely and continue.
+  // CH7 (PARADISE FALLEN) has no powerup rewards. The chapter is
+  // designed as a fresh-slate empty arena — the player gets a starter
+  // stratagem loadout on entry (granted by main.js's chapter-7 entry
+  // block) and that's the entirety of the toolkit. Skip the modal
+  // and continue the run.
   if (chapterIdx === PARADISE_FALLEN_CHAPTER_IDX) {
     if (resumeCallback) resumeCallback();
     return false;
