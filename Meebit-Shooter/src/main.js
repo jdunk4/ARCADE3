@@ -3668,6 +3668,117 @@ document.getElementById('tutorial-btn').addEventListener('click', () => {
   Audio.init();
   startTutorial();
 });
+
+// =====================================================================
+// ENDLESS GLYPHS GATE
+// =====================================================================
+// Mirrors the tutorial-gate pattern. The ENDLESS GLYPHS card on the
+// title screen is gated behind completion of ATTACK THE AI (= chapter
+// 6 wave 5). Per playtester: "This game mode unlocks when the player
+// completes the main game."
+//
+// Like the tutorial gate, this is purely device-local — one
+// localStorage key. No per-username tracking. Permissive fallback:
+// if the player has any progress past chapter 6, treat as completed.
+const _ATTACK_GATE_KEY = 'mbs_attack_completed_v1';
+function _hasCompletedAttack() {
+  try {
+    if (localStorage.getItem(_ATTACK_GATE_KEY) === '1') return true;
+    // Permissive fallback — if save data shows they cleared chapter 6,
+    // count them as having completed even if the gate flag wasn't
+    // set (e.g. they completed it before this gate existed).
+    const p = (Save && Save.load) ? Save.load() : null;
+    if (p && (p.highestChapter || 0) >= 6 && (p.highestWave || 0) >= 5) return true;
+  } catch (e) { /* localStorage disabled — fail open, don't lock */ return true; }
+  return false;
+}
+function _markAttackCompleted() {
+  try { localStorage.setItem(_ATTACK_GATE_KEY, '1'); } catch (e) {}
+  // Live-unlock the glyphs card if it's currently in the DOM, so a
+  // player who finishes ch6 and returns to the title sees the card
+  // unlocked without a page refresh.
+  const card = document.getElementById('mode-card-glyphs');
+  if (card) card.classList.remove('locked');
+}
+function _applyGlyphsGate() {
+  const card = document.getElementById('mode-card-glyphs');
+  if (!card) return;
+  if (_hasCompletedAttack()) {
+    card.classList.remove('locked');
+  } else {
+    card.classList.add('locked');
+  }
+}
+_applyGlyphsGate();
+window.__applyGlyphsGate = _applyGlyphsGate;
+// Expose markAttackCompleted globally so the chapter-end pipeline
+// (waves.js → onWaveEnd) can fire it when the player beats ch6 wave 5.
+window.__markAttackCompleted = _markAttackCompleted;
+
+// =====================================================================
+// ENDLESS GLYPHS CTA — opens the player-count picker modal.
+// =====================================================================
+// The CTA itself is hidden in DOM (display:none); the title-card click
+// forwarder simulates a click on it when the player picks the ENDLESS
+// GLYPHS card. We use the same soft-gate pattern as the start-btn.
+document.getElementById('glyphs-btn').addEventListener('click', (e) => {
+  if (!_hasCompletedAttack()) {
+    e.stopImmediatePropagation();
+    const card = document.getElementById('mode-card-glyphs');
+    if (card) {
+      card.classList.add('hint-flash');
+      setTimeout(() => card.classList.remove('hint-flash'), 700);
+    }
+    try { Audio.damage && Audio.damage(); } catch (_) {}
+    return;
+  }
+  Audio.init();
+  // Show the player-count picker. Per playtester: "Hot-seat /
+  // matchmaking room UI but actually solo for now — the UI shows the
+  // 1-3 players choice, but only solo actually works." Modal markup
+  // is in index.html with 2P/3P pre-disabled.
+  const modal = document.getElementById('glyphs-player-modal');
+  if (modal) modal.style.display = 'flex';
+});
+
+// Modal button wiring — SOLO starts a glyphs run; 2P/3P are disabled
+// (the disabled attribute prevents the click event firing on most
+// browsers, but we add a defensive guard anyway). CANCEL closes.
+(function _wireGlyphsModal() {
+  const modal = document.getElementById('glyphs-player-modal');
+  if (!modal) return;
+  const cancel = document.getElementById('glyphs-modal-cancel');
+  if (cancel) {
+    cancel.addEventListener('click', () => { modal.style.display = 'none'; });
+  }
+  const buttons = modal.querySelectorAll('.glyphs-pcount-btn');
+  buttons.forEach(btn => {
+    btn.addEventListener('click', () => {
+      if (btn.disabled) return;          // belt-and-suspenders against 2P/3P
+      const count = parseInt(btn.dataset.count || '1', 10);
+      modal.style.display = 'none';
+      // TODO (Phase 3): wire to startEndlessGlyphs(count). For now,
+      // the run-start function doesn't exist yet — log and return so
+      // this turn's UX still works for testing the entry flow.
+      if (typeof window.__startEndlessGlyphs === 'function') {
+        window.__startEndlessGlyphs(count);
+      } else {
+        console.log('[glyphs] start placeholder — squad size:', count);
+      }
+    });
+    // Hover affordance for the enabled SOLO button only.
+    if (!btn.disabled) {
+      btn.addEventListener('mouseenter', () => {
+        btn.style.background = 'rgba(40, 80, 140, 0.9)';
+        btn.style.borderColor = '#88c0ff';
+      });
+      btn.addEventListener('mouseleave', () => {
+        btn.style.background = 'rgba(20, 30, 60, 0.8)';
+        btn.style.borderColor = '#4aa8ff';
+      });
+    }
+  });
+})();
 document.getElementById('restart-btn').addEventListener('click', () => {
   // Restart always returns to the real game flow — drop the tutorial
   // floor + state if it's currently up.

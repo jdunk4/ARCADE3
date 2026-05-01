@@ -458,6 +458,67 @@ canvas { display: block; cursor: var(--matrix-cursor); }
   margin: 0;
 }
 
+/* Right-side stack — holds ATTACK THE AI + ENDLESS GLYPHS. Per
+   playtester: "Maybe make these two landscape images?" The two cards
+   stack vertically with the same gap as the title-row's horizontal
+   gap, and each card uses the .mode-card-landscape modifier (wider
+   than tall) instead of the default portrait. Total stack height
+   matches the portrait TUTORIAL card on the left so the row reads
+   as visually balanced. */
+#title-right-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  flex: 0 0 auto;
+}
+/* Landscape variant — 480px wide × 300px tall (~1.6:1 ratio). Two
+   stacked landscape cards = 600px + 18px gap = 618px, close to the
+   620px height of the portrait sibling. */
+.mode-card.mode-card-landscape {
+  width: 480px;
+  height: 300px;
+}
+@media (max-width: 1200px) {
+  .mode-card.mode-card-landscape { width: 420px; height: 260px; }
+  #title-right-stack { gap: 14px; }
+}
+@media (max-width: 980px) {
+  .mode-card.mode-card-landscape { width: 360px; height: 224px; }
+}
+@media (max-width: 760px) {
+  .mode-card.mode-card-landscape { width: 300px; height: 188px; }
+}
+/* Procedural placeholder image for the ENDLESS GLYPHS card. Per
+   playtester: "Placeholder for now." Builds a blueprint-blue
+   composition from CSS gradients evoking the ch7 glyphstone +
+   blueprint pillar — concentric rings + grid pattern. When the
+   real PNG is provided, this rule can be replaced with a
+   background-image: url() override. */
+.mode-card-img-glyphs {
+  background:
+    /* concentric ring glow at center suggesting a glyphstone */
+    radial-gradient(ellipse at 50% 55%, rgba(74, 168, 255, 0.55) 0%, rgba(74, 168, 255, 0.18) 12%, rgba(74, 168, 255, 0.04) 28%, transparent 50%),
+    /* faint vertical pillar suggestion */
+    linear-gradient(180deg, transparent 30%, rgba(74, 168, 255, 0.10) 45%, rgba(74, 168, 255, 0.18) 55%, transparent 70%),
+    /* grid pattern — blueprint cyan lines */
+    repeating-linear-gradient(0deg, rgba(74, 168, 255, 0.10) 0px, rgba(74, 168, 255, 0.10) 1px, transparent 1px, transparent 32px),
+    repeating-linear-gradient(90deg, rgba(74, 168, 255, 0.10) 0px, rgba(74, 168, 255, 0.10) 1px, transparent 1px, transparent 32px),
+    /* deep blueprint-blue background */
+    linear-gradient(135deg, #0a1628 0%, #142850 60%, #0a1830 100%);
+  background-size: cover, cover, auto, auto, cover;
+  background-position: center;
+}
+/* Override the lock-badge text for the glyphs card specifically.
+   The default .mode-card.locked::before reads "COMPLETE TUTORIAL";
+   the glyphs card needs "COMPLETE ATTACK THE AI" since it's gated
+   on the main game, not the tutorial. Tutorial card never gets the
+   .locked class so there's no conflict — but the ATTACK THE AI card
+   IS locked behind the tutorial, so we need the original message
+   for that card and a new message for the glyphs card. */
+.mode-card#mode-card-glyphs.locked::before {
+  content: '🔒  COMPLETE ATTACK THE AI';
+}
+
 .mode-card {
   position: relative;
   width: 480px;

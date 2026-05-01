@@ -3551,6 +3551,14 @@ function endWave() {
     teardownChapter();
     _chapterJustCompleted = true;
     _completedChapterIdx = S.chapter;
+    // ENDLESS GLYPHS unlock — fires when the player completes the
+    // last chapter of ATTACK THE AI (chapter 6 = idx 5). The bridge
+    // sets the localStorage gate flag and live-unlocks the title
+    // card. Per playtester: "This game mode unlocks when the player
+    // completes the main game."
+    if (S.chapter === 5 && typeof window !== 'undefined' && window.__markAttackCompleted) {
+      try { window.__markAttackCompleted(); } catch (_) {}
+    }
   }
 
   // PRE-BOSS CINEMATIC
