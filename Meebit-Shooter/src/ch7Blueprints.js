@@ -134,6 +134,16 @@ let _glyphstoneRing = null;    // proximity ring under the glyphstone
 let _blueprintFillRing = null;
 let _glyphstoneFillRing = null;
 
+// Hot-air balloon mesh — only spawned when the FLOOD phase begins
+// (= "balloon ascend defense"). Built once on phase entry, animated
+// to rise + carry the glyphstone with it, removed on phase end.
+// Per playtester: "A literal hot-air balloon mesh appears above the
+// glyphstone, the basket attaches to the stone, and they rise
+// together?"
+let _balloonMesh = null;
+let _ascendStartY = 0;          // initial glyphstone y for the rise animation
+const ASCEND_PEAK_Y = 22;       // target altitude (out of normal camera reach)
+
 // Overlay DOM elements + dismiss state.
 //   _overlayEl       — "THEY'RE COMING... PREPARE" (glyphstone activation)
 //   _schematicEl     — schematic preview (blueprint pickup) showing the
@@ -296,19 +306,28 @@ export function updateBlueprints(dt, playerPos) {
     _phaseT = 0;
   }
 
-  // Phase: PREP — 30s timer.
-  if (_phase === PHASE.PREP && _phaseT >= 30) {
+  // Phase: PREP — 60s timer (was 30s; player wanted more setup time).
+  // Slow trickle continues while the player lays defenses.
+  if (_phase === PHASE.PREP && _phaseT >= 60) {
     _phase = PHASE.FLOOD;
     _phaseT = 0;
-    try { UI.toast && UI.toast('THE FLOOD HAS ARRIVED', '#ff2030', 3000); } catch (e) {}
+    _onAscendBegin();
+    try { UI.toast && UI.toast('PROTECT THE BEACON', '#33ff44', 3000); } catch (e) {}
     try { Audio.bigBoom && Audio.bigBoom(); } catch (e) {}
   }
 
-  // Phase: FLOOD — 90s timer.
-  if (_phase === PHASE.FLOOD && _phaseT >= 90) {
-    _phase = PHASE.COMPLETE;
-    _phaseT = 0;
-    // Wave end is signalled to waves.js via shouldEndWave1Now().
+  // Phase: FLOOD — 60s balloon-ascend defense. The glyphstone is
+  // lifting on a hot-air balloon, illuminating the arena and revealing
+  // enemies (via the reveal dome). Player must defend the launch
+  // point until the balloon clears the arena. Was 90s pure flood.
+  if (_phase === PHASE.FLOOD) {
+    _tickAscend(dt);
+    if (_phaseT >= 60) {
+      _phase = PHASE.COMPLETE;
+      _phaseT = 0;
+      _onAscendEnd();
+      try { UI.toast && UI.toast('BEACON ASCENDED', '#ffffff', 3000); } catch (e) {}
+    }
   }
 
   // Animations + visual updates.
@@ -614,6 +633,223 @@ function _buildGlyphStone(x, z) {
   group.userData._beam = beam;
 
   return group;
+}
+
+// =========================================================================
+// HOT-AIR BALLOON (balloon ascend phase)
+// =========================================================================
+
+/**
+ * Build a hot-air-balloon mesh. Pieces:
+ *   - Bulb (sphere) — large, glowing green from inside (the
+ *     "burner" lights up the envelope)
+ *   - Crown ring at the top
+ *   - Ropes (4 tilted lines) connecting the bulb to a basket
+ *   - Basket (small wooden box) — sits at y=0 at build time;
+ *     parents to the glyphstone at ascend time
+ *
+ * Returns a Group positioned above the glyphstone. The group's local
+ * y is bumped during the ascend animation (the basket "lifts" the
+ * glyphstone with it — see _tickAscend).
+ */
+function _buildBalloon(cx, cz) {
+  const group = new THREE.Group();
+  group.position.set(cx, 0, cz);
+
+  // -- BULB --
+  // Large sphere, green-tinted material with bright emissive interior
+  // so it reads as a glowing beacon in the dim ch7 atmosphere.
+  const bulbMat = new THREE.MeshStandardMaterial({
+    color: 0xddffdd,
+    emissive: 0x33ff44,
+    emissiveIntensity: 1.6,
+    roughness: 0.5,
+    metalness: 0.0,
+  });
+  const bulb = new THREE.Mesh(
+    new THREE.SphereGeometry(2.6, 20, 14),
+    bulbMat,
+  );
+  bulb.position.y = 9.4;
+  bulb.scale.set(1, 1.15, 1);    // slight egg-shape stretch
+  group.add(bulb);
+  group.userData._bulb = bulb;
+  group.userData._bulbMat = bulbMat;
+
+  // Vertical ribs (8 around the bulb) for that iconic balloon panel
+  // look. Thin dark cylinders draped over the bulb.
+  const ribMat = new THREE.MeshStandardMaterial({
+    color: 0x2a4a2a, roughness: 0.8,
+  });
+  for (let i = 0; i < 8; i++) {
+    const a = (i / 8) * Math.PI * 2;
+    const rib = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.04, 0.04, 5.5, 6),
+      ribMat,
+    );
+    rib.position.set(Math.cos(a) * 2.5, 9.4, Math.sin(a) * 2.5);
+    rib.lookAt(0, 9.4 + 3, 0);
+    rib.rotateX(Math.PI / 2);    // align cylinder length with rib direction
+    group.add(rib);
+  }
+
+  // Crown ring at top of bulb.
+  const crownMat = new THREE.MeshStandardMaterial({
+    color: 0x88ff99, emissive: 0x33ff44, emissiveIntensity: 0.8,
+  });
+  const crown = new THREE.Mesh(
+    new THREE.TorusGeometry(0.45, 0.10, 8, 16),
+    crownMat,
+  );
+  crown.position.y = 12.6;
+  crown.rotation.x = Math.PI / 2;
+  group.add(crown);
+
+  // -- ROPES --
+  // 4 tilted lines from underside of bulb down to the basket corners.
+  const ropeMat = new THREE.MeshStandardMaterial({
+    color: 0x553322, roughness: 0.95,
+  });
+  const ropePositions = [
+    { dx: 0.9, dz: 0.9 },
+    { dx: -0.9, dz: 0.9 },
+    { dx: 0.9, dz: -0.9 },
+    { dx: -0.9, dz: -0.9 },
+  ];
+  for (const p of ropePositions) {
+    const rope = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.04, 0.04, 4.5, 6),
+      ropeMat,
+    );
+    // Position at midpoint between bulb-bottom (y≈7.0) and basket-top
+    // (y≈4.0). Tilt toward basket corner.
+    rope.position.set(p.dx * 0.55, 5.6, p.dz * 0.55);
+    rope.lookAt(p.dx, 4.2, p.dz);
+    rope.rotateX(Math.PI / 2);
+    group.add(rope);
+  }
+
+  // -- BASKET --
+  // Simple boxy basket. The glyphstone slides inside this and rises
+  // with the balloon. Wood-like dark material.
+  const basketMat = new THREE.MeshStandardMaterial({
+    color: 0x6a4220, roughness: 0.85, metalness: 0.0,
+  });
+  const basket = new THREE.Mesh(
+    new THREE.BoxGeometry(2.0, 1.4, 2.0),
+    basketMat,
+  );
+  basket.position.y = 4.0;
+  group.add(basket);
+
+  // Hollow look — top rim cap (the basket has a hollow opening top).
+  const rimMat = new THREE.MeshStandardMaterial({
+    color: 0x442817, roughness: 0.9,
+  });
+  for (let s = 0; s < 4; s++) {
+    const isSide = s % 2 === 0;
+    const rim = new THREE.Mesh(
+      new THREE.BoxGeometry(isSide ? 2.05 : 0.10, 0.10, isSide ? 0.10 : 2.05),
+      rimMat,
+    );
+    const dx = (s === 0) ? 0 : (s === 2) ? 0 : (s === 1 ? 1.0 : -1.0);
+    const dz = (s === 0) ? 1.0 : (s === 2) ? -1.0 : 0;
+    rim.position.set(dx, 4.7, dz);
+    group.add(rim);
+  }
+
+  // Burner — small bright glow under the bulb opening.
+  const burner = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.4, 0.6, 0.4, 12),
+    new THREE.MeshStandardMaterial({
+      color: 0xffaa44, emissive: 0xff7722, emissiveIntensity: 2.4,
+      roughness: 0.4,
+    }),
+  );
+  burner.position.y = 5.0;
+  group.add(burner);
+
+  return group;
+}
+
+// Phase entry: spawn the balloon, glow the glyphstone green, set
+// reveal-dome global so the per-enemy update can light up nearby
+// enemies in green. Called by updateBlueprints when PREP→FLOOD flips.
+function _onAscendBegin() {
+  if (!_activeBlueprint) return;
+  const bp = _activeBlueprint;
+
+  // Build the balloon at the glyphstone position.
+  _balloonMesh = _buildBalloon(bp.glyphstonePos.x, bp.glyphstonePos.z);
+  scene.add(_balloonMesh);
+  _ascendStartY = (_glyphstoneMesh && _glyphstoneMesh.position.y) || 0;
+
+  // Glyphstone glows GREEN now (was white when dormant). The carved
+  // glyphs were already pulsing; just retint them green and crank the
+  // intensity. _tickAnimations keeps the pulse animation going.
+  if (_glyphstoneMesh && _glyphstoneMesh.userData._glyphs) {
+    for (const g of _glyphstoneMesh.userData._glyphs) {
+      if (g.material && g.material.emissive) {
+        g.material.emissive.setHex(0x33ff44);
+      }
+    }
+  }
+  if (_glyphstoneMesh && _glyphstoneMesh.userData._beam) {
+    const beamMat = _glyphstoneMesh.userData._beam.material;
+    if (beamMat && beamMat.color) beamMat.color.setHex(0x33ff44);
+    if (beamMat) beamMat.opacity = 0.35;     // brighter than the dormant beam
+  }
+
+  // Set reveal-dome global so main.js's per-enemy green-glow check
+  // catches any enemy near the beacon. Radius 18u — large enough to
+  // reveal anything attacking the launch point.
+  window.__ch7GlyphReveal = {
+    x: bp.glyphstonePos.x,
+    z: bp.glyphstonePos.z,
+    radius: 18,
+  };
+}
+
+// Per-frame ascend animation. Lifts the balloon + glyphstone together
+// from their start position to ASCEND_PEAK_Y over the 60s phase.
+// _phaseT is the phase elapsed time (set externally in updateBlueprints).
+function _tickAscend(dt) {
+  if (!_balloonMesh) return;
+  // Eased lift: ease-in for the first 25% (the balloon "fills"), then
+  // linear rise. Player has time to defend at ground level before the
+  // beacon clears their head.
+  const t01 = Math.min(1, _phaseT / 60);
+  const eased = t01 < 0.25
+    ? (t01 / 0.25) * 0.05               // 0% to 5% over first 25% of time
+    : 0.05 + ((t01 - 0.25) / 0.75) * 0.95;
+  const y = _ascendStartY + eased * (ASCEND_PEAK_Y - _ascendStartY);
+  _balloonMesh.position.y = y;
+  // Lift the glyphstone WITH the balloon — they're attached.
+  if (_glyphstoneMesh) {
+    _glyphstoneMesh.position.y = y;
+  }
+  // Reveal-dome height tracks the glyphstone, but we keep the radius
+  // fixed at ground level (XZ only is checked in main.js). No update
+  // needed — the global was set at phase start.
+
+  // Subtle bob + sway on the balloon as it rises (looks more alive).
+  if (_balloonMesh.userData._bulb) {
+    const bulb = _balloonMesh.userData._bulb;
+    bulb.position.x = Math.sin(_animPhase * 0.6) * 0.15;
+    bulb.position.z = Math.cos(_animPhase * 0.5) * 0.15;
+  }
+  // Burner flicker — pulse the bulb's emissive so it reads as flames.
+  if (_balloonMesh.userData._bulbMat) {
+    const flicker = 1.4 + Math.sin(_animPhase * 12) * 0.25 + Math.random() * 0.15;
+    _balloonMesh.userData._bulbMat.emissiveIntensity = flicker;
+  }
+}
+
+// Phase exit: clear the reveal dome. The balloon mesh stays in scene
+// (it's at peak altitude, may even leave the camera frustum naturally)
+// and gets disposed in clearBlueprints when the wave actually ends.
+function _onAscendEnd() {
+  window.__ch7GlyphReveal = null;
 }
 
 function _buildCemetery(cx, cz) {
@@ -1104,6 +1340,7 @@ function _disposeMeshes() {
     _glyphstoneRing,
     _blueprintFillRing,
     _glyphstoneFillRing,
+    _balloonMesh,
   ]) {
     if (m && m.parent) m.parent.remove(m);
     if (m) {
@@ -1126,4 +1363,8 @@ function _disposeMeshes() {
   _glyphstoneRing = null;
   _blueprintFillRing = null;
   _glyphstoneFillRing = null;
+  _balloonMesh = null;
+  // Clear the reveal-dome global if it's still set (e.g. wave ended
+  // mid-ascend via dev-cheat).
+  window.__ch7GlyphReveal = null;
 }

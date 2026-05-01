@@ -388,6 +388,11 @@ export function getWaveDef(wave) {
       enemies: mix,
       spawnRate: ch7Wave === 1 ? 2.5 : (ch7Wave === 2 ? 3.0 : 3.6),
       killTarget: killTargets[ch7Wave] || 30,
+      // Per playtester: chapter 7 enemies have 4× HP. Combined with
+      // the slower ch7 roach speed and the universal 0.3u knockback,
+      // enemies feel like they have shields — reaching the player
+      // takes effort even with full-auto fire.
+      hpMul: 4,
       ch7: true,
       ch7Finale: ch7Wave === 3,    // last wave still triggers run-end on completion
       localWave: ch7Wave, chapterIdx,

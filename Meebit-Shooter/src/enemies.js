@@ -9,6 +9,50 @@ export const enemies = [];
 export const enemyProjectiles = [];
 
 // ============================================================================
+// KNOCKBACK — universal rule: every player-or-turret hit pushes the
+// enemy ~0.3 units away from the source. Bosses are excluded (their
+// scripted movement would conflict with shoves). Per playtester:
+// "Knockback (~0.3 units per shot) applies to every enemy in every
+// chapter, from every player weapon and every turret."
+// ============================================================================
+
+/**
+ * Apply a small backward push to an enemy. Direction is FROM `fromPos`
+ * TO the enemy (so the enemy slides AWAY from the shooter). Magnitude
+ * defaults to 0.3 units. Bosses are immune. Safe to call with null/
+ * undefined enemy (no-op).
+ *
+ * Usage at any damage site:
+ *   if (hit) {
+ *     e.hp -= dmg;
+ *     applyKnockback(e, b.position);
+ *     ...
+ *   }
+ */
+export function applyKnockback(enemy, fromPos, units = 0.3) {
+  if (!enemy || !enemy.pos || !fromPos) return;
+  if (enemy.isBoss) return;          // bosses immune — scripted movement
+  if (enemy.dead) return;
+  // Direction vector, normalized.
+  const dx = enemy.pos.x - fromPos.x;
+  const dz = enemy.pos.z - fromPos.z;
+  const len = Math.hypot(dx, dz);
+  if (len < 0.0001) return;          // point-blank / on top of source
+  const ux = dx / len;
+  const uz = dz / len;
+  // Apply the push. Clamp to the arena bounds (half-extent 50) so a
+  // chain of shots can't slingshot an enemy off the map.
+  enemy.pos.x = Math.max(-49, Math.min(49, enemy.pos.x + ux * units));
+  enemy.pos.z = Math.max(-49, Math.min(49, enemy.pos.z + uz * units));
+  // Mirror the position update onto the mesh so it visually moves
+  // immediately (next frame the enemy's own AI will pick up from here).
+  if (enemy.obj) {
+    enemy.obj.position.x = enemy.pos.x;
+    enemy.obj.position.z = enemy.pos.z;
+  }
+}
+
+// ============================================================================
 // HUMANOID BODY (zomeeb, sprinter, brute, spitter, phantom)
 // ============================================================================
 //

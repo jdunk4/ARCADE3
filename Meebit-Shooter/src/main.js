@@ -62,7 +62,7 @@ import { PLAYER, WEAPONS, CHAPTERS, ARENA, GOO_CONFIG, MINING_CONFIG, BLOCK_CONF
 import { Audio } from './audio.js';
 import { UI } from './ui.js';
 import { loadPlayer, animatePlayer, player, recolorGun, resetPlayer, swapAvatarGLB } from './player.js';
-import { enemies, enemyProjectiles, spawnEnemyProjectile, makeEnemy, updateVesselZeroAnim, clearAllEnemies } from './enemies.js';
+import { enemies, enemyProjectiles, spawnEnemyProjectile, makeEnemy, updateVesselZeroAnim, clearAllEnemies, applyKnockback } from './enemies.js';
 import { loadAntMesh } from './antMesh.js';
 
 // Kick off the chapter-1 ant GLB load as soon as the module graph
@@ -302,6 +302,11 @@ window.__stratagemFireNuke = function(pos, tint) {
       const falloff = 1 - Math.sqrt(d2) / RADIUS;
       e.hp -= DAMAGE * falloff;
       e.hitFlash = 0.40;
+      // Universal knockback — radial from blast epicenter, scaled by
+      // falloff so close enemies get shoved harder than fringe ones.
+      // Even with the global 0.3u baseline, the explosion's 1-falloff
+      // scale (up to 4× for point-blank) gives a visible blast wave.
+      applyKnockback(e, pos, 0.3 * (0.5 + 4 * falloff));
       // Without this, enemies ended up with hp < 0 but never died —
       // they kept running around as ghosts because the nuke path
       // skipped the kill pipeline entirely.
@@ -4529,7 +4534,13 @@ function animate() {
       const dx = (mouse.worldX != null) ? mouse.worldX - player.pos.x : 0;
       const dz = (mouse.worldZ != null) ? mouse.worldZ - player.pos.z : -1;
       const len = Math.sqrt(dx * dx + dz * dz) || 1;
-      updateFlashlight(player.pos, dx / len, dz / len);
+      const ux = dx / len, uz = dz / len;
+      updateFlashlight(player.pos, ux, uz);
+      // Cache aim direction on S so the per-frame enemy update can
+      // determine whether each enemy is "in the flashlight cone" for
+      // the ch7 green-glow reveal mechanic. See enemy update loop.
+      S._ch7FlashAimX = ux;
+      S._ch7FlashAimZ = uz;
     }
     // Tick the saved-pig trophy wall every frame regardless of wave type —
     // the pigs stand on the arena perimeter across all subsequent chapters
@@ -5717,6 +5728,8 @@ function updateRockets(dt) {
         } else {
           e.hp -= ud.damage;
           e.hitFlash = 0.18;
+          // Universal knockback — push the enemy away from the rocket.
+          applyKnockback(e, r.position);
         }
         explodeRocket(r);
         scene.remove(r);
@@ -5753,6 +5766,10 @@ function explodeRocket(r) {
       } else {
         e.hp -= ud.explosionDamage * (1 - Math.sqrt(d2) / radius);
         e.hitFlash = 0.15;
+        // Universal knockback — radial from explosion center, scaled
+        // by falloff so close enemies get shoved harder.
+        const falloff = 1 - Math.sqrt(d2) / radius;
+        applyKnockback(e, pos, 0.3 * (0.5 + 2 * falloff));
       }
       if (e.hp <= 0) killEnemy(j);
     }
@@ -6131,7 +6148,49 @@ function updateEnemies(dt) {
         e.bodyMat.emissiveIntensity = e.hitFlash * peakMult;
       }
     } else if (e.bodyMat) {
-      e.bodyMat.emissiveIntensity = e.isBoss ? 0.15 : (e.bodyMat.userData?.baseEmissive || 0);
+      // Chapter 7 — green-glow reveal. When inside the player's
+      // flashlight cone OR within the glyphstone's reveal dome, the
+      // enemy's body emissive flips bright bioluminescent green.
+      // Per playtester: "make all the enemies turn bright green and
+      // glow in the dark when the player shines the light on them.
+      // Almost like he's discovering a forbidden species."
+      let revealed = false;
+      if (S.chapter === PARADISE_FALLEN_CHAPTER_IDX && S.chapter7Atmosphere) {
+        // Flashlight cone test — dot product of (enemy_relative_to_player)
+        // against the flashlight aim vector. Cone half-angle 45° (90°
+        // total) → dot >= cos(45°) ≈ 0.707, with max range 30u.
+        const ax = S._ch7FlashAimX || 0;
+        const az = S._ch7FlashAimZ || -1;
+        const dx = e.pos.x - player.pos.x;
+        const dz = e.pos.z - player.pos.z;
+        const dist = Math.hypot(dx, dz);
+        if (dist > 0 && dist <= 30) {
+          const ndx = dx / dist, ndz = dz / dist;
+          const dotP = ndx * ax + ndz * az;
+          if (dotP >= 0.707) revealed = true;     // inside ~90° cone
+        }
+        // Glyphstone reveal dome — only active during the balloon
+        // ascend phase. ch7Blueprints exposes the position+radius
+        // via window.__ch7GlyphReveal which is set/cleared as the
+        // phase enters/exits. Cheap fallback: skip when undefined.
+        if (!revealed && window.__ch7GlyphReveal) {
+          const g = window.__ch7GlyphReveal;
+          const gdx = e.pos.x - g.x;
+          const gdz = e.pos.z - g.z;
+          if (gdx * gdx + gdz * gdz < g.radius * g.radius) revealed = true;
+        }
+      }
+      if (revealed) {
+        // Bright bioluminescent green — "forbidden species" reveal.
+        e.bodyMat.emissive && e.bodyMat.emissive.setHex(0x33ff44);
+        e.bodyMat.emissiveIntensity = 1.4;
+      } else {
+        // Default — restore the body's resting emissive.
+        e.bodyMat.emissive && e.bodyMat.emissive.setHex(
+          e.bodyMat.userData?.baseEmissiveHex ?? 0xffffff
+        );
+        e.bodyMat.emissiveIntensity = e.isBoss ? 0.15 : (e.bodyMat.userData?.baseEmissive || 0);
+      }
     }
 
     // Ranged attacks — per-chapter throttle multiplier slows down
@@ -6339,6 +6398,10 @@ function updateBullets(dt) {
         }
         e.hp -= b.userData.damage;
         e.hitFlash = 0.15;
+        // Universal knockback — pistol/shotgun/SMG/rocket-shrapnel/etc.
+        // all push the enemy away from the bullet's last position.
+        // Bosses are immune (handled inside applyKnockback).
+        applyKnockback(e, b.position);
         hitBurst(b.position, 0xffffff, 4);
         Audio.hit();
         scene.remove(b);

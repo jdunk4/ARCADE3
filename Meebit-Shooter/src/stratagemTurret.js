@@ -40,9 +40,10 @@
 import * as THREE from 'three';
 import { scene } from './scene.js';
 import { hitBurst } from './effects.js';
-import { enemies } from './enemies.js';
+import { enemies, applyKnockback } from './enemies.js';
 import { Audio } from './audio.js';
 import { S } from './state.js';
+import { PARADISE_FALLEN_CHAPTER_IDX } from './config.js';
 import { player } from './player.js';
 import { isPiloting } from './mech.js';
 
@@ -403,8 +404,16 @@ export function spawnTurret(pos, tint, variantId) {
     // lifetime field above is now an upper-bound safety only — kept
     // so any external code still referencing it doesn't break, but
     // the active despawn condition is ammo === 0.
-    ammo: cfg.ammoMax,
-    ammoMax: cfg.ammoMax,
+    //
+    // Chapter 7 override: 20× ammo capacity + 2.5× longer fire
+    // interval (= 0.4× fire rate). Per playtester: "Turret 20× ammo
+    // throughout chapter 7 ... It maybe needs to shoot a lot slower."
+    // The slower rate balances the much-longer uptime so the turret
+    // doesn't trivialize the wave; effective shot count is 8× a
+    // baseline turret over the full ammo span.
+    ammo: (S.chapter === PARADISE_FALLEN_CHAPTER_IDX) ? cfg.ammoMax * 20 : cfg.ammoMax,
+    ammoMax: (S.chapter === PARADISE_FALLEN_CHAPTER_IDX) ? cfg.ammoMax * 20 : cfg.ammoMax,
+    fireIntervalMul: (S.chapter === PARADISE_FALLEN_CHAPTER_IDX) ? 2.5 : 1.0,
     dropping: true,
     dropT: 0,
     destroyed: false,
@@ -512,7 +521,9 @@ export function updateTurrets(dt) {
     // counts as one shot regardless of how many enemies it hits.
     t.fireT -= dt;
     if (t.target && t.fireT <= 0 && t.ammo > 0) {
-      t.fireT = t.cfg.fireInterval;
+      // fireIntervalMul is set per-turret at deploy time. 1.0 in
+      // chapters 1-6, 2.5 in chapter 7 (slower fire rate).
+      t.fireT = t.cfg.fireInterval * (t.fireIntervalMul || 1.0);
       t.ammo -= 1;
       try { t.cfg.fire(t, t.target); }
       catch (e) { console.warn('[turret fire]', e); }
@@ -564,6 +575,8 @@ function _fireMg(t, target) {
   target.hitFlash = 0.10;
   const muzzleWorld = new THREE.Vector3();
   t.muzzle.getWorldPosition(muzzleWorld);
+  // Universal knockback — push the target away from the turret muzzle.
+  applyKnockback(target, muzzleWorld);
   _spawnTracer(muzzleWorld, target.pos.clone(), t.accentColor, 0.06);
   // Small muzzle puff.
   hitBurst(muzzleWorld, t.accentHex, 4);
@@ -599,6 +612,11 @@ function _fireTesla(t, target) {
     if (!cur || !cur.pos) break;
     cur.hp -= dmg;
     cur.hitFlash = 0.16;
+    // Universal knockback — chain bolts push targets away from the
+    // PREVIOUS link (`from` is the muzzle for hop 0, then the prior
+    // enemy's pos for subsequent hops). Reads as the bolt arcing
+    // through the line and shoving each one back.
+    applyKnockback(cur, from);
     if (cur.hp <= 0) kills.push(cur);
     const to = cur.pos.clone();
     to.y = 1.0;

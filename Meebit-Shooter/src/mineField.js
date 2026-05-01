@@ -24,7 +24,7 @@
 import * as THREE from 'three';
 import { scene } from './scene.js';
 import { hitBurst } from './effects.js';
-import { enemies } from './enemies.js';
+import { enemies, applyKnockback } from './enemies.js';
 import { Audio } from './audio.js';
 import { S } from './state.js';
 import { player } from './player.js';
@@ -781,6 +781,9 @@ function _detonateMine(m) {
       const falloff = 1 - Math.sqrt(d2) / cfg.aoeRadius;
       e.hp -= cfg.aoeDamage * falloff;
       e.hitFlash = 0.18;
+      // Universal knockback — radial blast from mine center, scaled
+      // by falloff so the boom feels visible.
+      applyKnockback(e, m.pos, 0.3 * (0.5 + 2 * falloff));
       // Finish the kill via the global bridge (set up in main.js as
       // window.__killEnemyAtIdx). Without this, mines damaged enemies
       // but never actually killed them — they'd walk around at -150 hp

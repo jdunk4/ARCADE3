@@ -93,14 +93,29 @@ export function buildInfectorMesh(tintHex, scale = 0.55) {
   const group = new THREE.Group();
 
   const tint = new THREE.Color(tintHex);
-  const dark = tint.clone().multiplyScalar(0.45);
+  // Monochrome detection — if the tint is light grey/white (chapter 7's
+  // PARADISE FALLEN palette uses 0xdddddd / 0xeeeeee), DON'T multiply
+  // the body color down to dark grey. Instead use the tint directly
+  // so the infector reads as white. Threshold 0.78 comfortably catches
+  // the chapter-7 values while leaving normal chapter tints (orange,
+  // red, green, purple etc.) on the original dark-body path.
+  // Per playtester: "Can we make the enemies in chapter 7 white?"
+  const isMonochrome = (tint.r + tint.g + tint.b) / 3 > 0.78;
+  const bodyHex = isMonochrome ? tint.getHex() : tint.clone().multiplyScalar(0.45).getHex();
+  const dark = new THREE.Color(bodyHex);
 
   const bodyMat = new THREE.MeshStandardMaterial({
-    color: dark.getHex(),
+    color: bodyHex,
     emissive: tint.getHex(),
-    emissiveIntensity: 0.85,
+    emissiveIntensity: isMonochrome ? 0.35 : 0.85,   // less glow on white so it doesn't bloom out
     roughness: 0.75,
   });
+  // Stash resting emissive on userData so the per-frame enemy update
+  // can restore it after a hitFlash or ch7 reveal pulse without
+  // remembering it itself.
+  bodyMat.userData = bodyMat.userData || {};
+  bodyMat.userData.baseEmissive = bodyMat.emissiveIntensity;
+  bodyMat.userData.baseEmissiveHex = tint.getHex();
 
   // Bulbous body — stretched ellipsoid approximation with boxes
   const body = new THREE.Mesh(new THREE.BoxGeometry(1.05, 0.7, 1.05), bodyMat);
@@ -151,14 +166,23 @@ export function buildRoachMesh(tintHex, scale = 0.35) {
   const group = new THREE.Group();
 
   const tint = new THREE.Color(tintHex);
-  const dark = tint.clone().multiplyScalar(0.35);
+  // Monochrome detection — same logic as buildInfectorMesh above.
+  // Light tints (chapter 7's 0xdddddd / 0xeeeeee) skip the dark
+  // multiply so the roach body reads as white. Per playtester:
+  // "can we make the roaches in chapter 7 white."
+  const isMonochrome = (tint.r + tint.g + tint.b) / 3 > 0.78;
+  const bodyHex = isMonochrome ? tint.getHex() : tint.clone().multiplyScalar(0.35).getHex();
+  const dark = new THREE.Color(bodyHex);
 
   const bodyMat = new THREE.MeshStandardMaterial({
-    color: dark.getHex(),
+    color: bodyHex,
     emissive: tint.getHex(),
-    emissiveIntensity: 0.9,
+    emissiveIntensity: isMonochrome ? 0.35 : 0.9,   // less glow on white so it doesn't bloom out
     roughness: 0.7,
   });
+  bodyMat.userData = bodyMat.userData || {};
+  bodyMat.userData.baseEmissive = bodyMat.emissiveIntensity;
+  bodyMat.userData.baseEmissiveHex = tint.getHex();
 
   const body = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.28, 0.95), bodyMat);
   body.position.y = 0.3;

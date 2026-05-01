@@ -36,7 +36,7 @@
 import * as THREE from 'three';
 import { scene } from './scene.js';
 import { hitBurst } from './effects.js';
-import { enemies } from './enemies.js';
+import { enemies, applyKnockback } from './enemies.js';
 import { Audio } from './audio.js';
 import { S } from './state.js';
 import { player } from './player.js';
@@ -1256,6 +1256,8 @@ function _detonateNapalm(m, pos) {
       const falloff = 1 - Math.sqrt(d2) / _NAPALM_RADIUS;
       e.hp -= _NAPALM_DAMAGE * falloff;
       e.hitFlash = 0.18;
+      // Universal knockback — radial blast, scaled by falloff.
+      applyKnockback(e, pos, 0.3 * (0.5 + 2 * falloff));
       if (e.hp <= 0 && typeof window !== 'undefined' && window.__killEnemyAtIdx) {
         try { window.__killEnemyAtIdx(e); } catch (_) {}
       }
@@ -1351,6 +1353,8 @@ function _detonateMechRocket(m, pos) {
       const falloff = 1 - Math.sqrt(d2) / MECH_ROCKET_RADIUS;
       e.hp -= MECH_ROCKET_DAMAGE * falloff;
       e.hitFlash = 0.18;
+      // Universal knockback — radial blast.
+      applyKnockback(e, pos, 0.3 * (0.5 + 2 * falloff));
       // Finish the kill — without this the enemy walks around at
       // negative HP because mech damage paths previously skipped the
       // game's killEnemy pipeline (which handles score, drops, splice).
@@ -1414,6 +1418,8 @@ function _fireMechMG(m) {
   if (hit) {
     hit.hp -= MECH_MG_DAMAGE;
     hit.hitFlash = 0.10;
+    // Universal knockback — push hit from the muzzle.
+    applyKnockback(hit, muzzleWorld);
     hitBurst(tracerEnd, 0xffffff, 5);
     hitBurst(tracerEnd, m.tint, 4);
     // Finish the kill — same fix as the rocket detonation.

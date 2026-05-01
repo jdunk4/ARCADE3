@@ -289,16 +289,20 @@ let _flashlightTarget = null;
 
 function _ensureFlashlight() {
   if (_flashlight) return;
-  // Warm-white cone, narrow-ish so it reads as a tactical light beam
-  // rather than a wash. Distance falloff so the beam dims toward its
-  // edge instead of cutting off hard.
+  // Per playtester: "Can we make the flashlight much brighter. It
+  // allows the player to see the ground further? It should brighten
+  // up a quadrant of the map?"
+  // Wide 90° cone (0.78 rad half-angle ≈ 45° from center, full cone
+  // 90°) reaches ~30 units — about half the arena radius — so the
+  // player can scout most of one quadrant at a time. Intensity
+  // doubled to 16.0 for a much brighter primary illumination.
   _flashlight = new THREE.SpotLight(
     0xfff2c4,         // warm white
-    8.0,              // intensity — strong since ambient is near-black
-    18,               // distance
-    0.55,             // angle (~31° cone half-angle)
-    0.4,              // penumbra (soft edges)
-    1.4               // decay
+    16.0,             // intensity (was 8.0)
+    30,               // distance (was 18) — reaches further down-arena
+    0.78,             // angle (~45° half-angle / 90° full cone, was 0.55)
+    0.55,             // penumbra (soft edges, slightly more diffuse)
+    1.0               // decay (was 1.4) — softer falloff so distant ground stays lit
   );
   // Position is updated each frame by main.js. Default: above player's
   // head so the cone shines forward and slightly down at hip-level

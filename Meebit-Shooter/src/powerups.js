@@ -627,10 +627,16 @@ function _updatePoisonTrail(dt, playerPos) {
 // Exposed helper — enemies.js can multiply speed by this value to apply slow.
 export function getEnemySpeedMult(enemy) {
   if (!enemy) return 1;
+  let mult = 1;
   if (typeof enemy._poisonedUntil === 'number' && enemy._poisonedUntil > 0) {
-    return POISON_SLOW;
+    mult *= POISON_SLOW;
   }
-  return 1;
+  // Chapter 7 only — roaches move at 0.65× speed. Per playtester:
+  // "Can we make the roaches move a bit slower?" Stacks with poison.
+  if (S.chapter === PARADISE_FALLEN_CHAPTER_IDX && enemy.type === 'roach') {
+    mult *= 0.65;
+  }
+  return mult;
 }
 
 // ============================================================================
