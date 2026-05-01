@@ -454,10 +454,14 @@ export function createVisualizer({ canvas, getTint, getActive }) {
           // the outer rings, treble from the inner rings, all at the
           // exact ellipse the player sees flash. Same radius math as
           // the draw block below (kept in sync intentionally).
+          // Spawn Y is OFFSET by the ring's just-set lift (pulseT
+          // is now 1.0 so liftY = -RING_LIFT_PX) so sparks fly off
+          // the lifted ring, not the resting position.
           const tNorm = i / (RING_COUNT - 1);
           const ringW = maxRingW * (0.42 + (1 - tNorm) * 0.62);
           const ringH = ringW * ASPECT;
-          _spawnSparks(i, ringW, ringH, cx, cy, sparkCount);
+          const spawnCy = cy - 14;     // matches RING_LIFT_PX in draw block
+          _spawnSparks(i, ringW, ringH, cx, spawnCy, sparkCount);
         }
       }
       if (ring.pulseT > 0) {
@@ -543,6 +547,14 @@ export function createVisualizer({ canvas, getTint, getActive }) {
     // bands span a visibly wider spread — innermost ring is now
     // distinct from the cone, outermost reaches just past the
     // canvas edge.
+    //
+    // Ring LIFT — per playtester: "can we let the speaker rings move
+    // up when activated?" Each ring shifts upward (negative Y in
+    // canvas space) by `pulseT * LIFT_AMOUNT` while it's pulsing.
+    // Combined with the existing brightness pulse, activated rings
+    // visually pop UP off the speaker before settling back. Reads
+    // like a sound wave rising out of the cone.
+    const RING_LIFT_PX = 14;
     ctx2d.save();
     ctx2d.lineCap = 'round';
     for (let i = 0; i < RING_COUNT; i++) {
@@ -550,36 +562,46 @@ export function createVisualizer({ canvas, getTint, getActive }) {
       const tNorm = i / (RING_COUNT - 1);
       const ringW = maxRingW * (0.42 + (1 - tNorm) * 0.62);
       const ringH = ringW * ASPECT;
+      // Lift offset — applied to ALL geometry for this ring (stroke,
+      // bloom, sparks emitted from this ring) so the ring looks like
+      // a single object rising, not a stroke separated from its glow.
+      const liftY = -ring.pulseT * RING_LIFT_PX;
+      const ringCy = cy + liftY;
       const base = 0.32 + ring.emaEnergy * 0.22;
       const pulse = ring.pulseT * 0.55;
       const alpha = Math.min(1, base + pulse);
       const strokeW = 1.5 + ring.pulseT * 3.0;
       const hShift = (tNorm - 0.5) * 12;
-      ctx2d.strokeStyle = `hsla(${_tintHsl.h + hShift}, ${_tintHsl.s}%, ${_tintHsl.l + ring.pulseT * 18}%, ${alpha})`;
+      // Toned-down stroke color. Per playtester: "reduce the glow a
+      // tad so it more accurately matches chapter tint." Previously
+      // the lightness shot up by 18 on full pulse and the bloom
+      // saturation jumped to 100% — that washed out the chapter hue
+      // into near-white at peak. Now the lightness boost is +10 and
+      // saturation stays at the chapter tint's actual saturation.
+      ctx2d.strokeStyle = `hsla(${_tintHsl.h + hShift}, ${_tintHsl.s}%, ${_tintHsl.l + ring.pulseT * 10}%, ${alpha})`;
       ctx2d.lineWidth = strokeW;
       ctx2d.beginPath();
-      ctx2d.ellipse(cx, cy, ringW, ringH, 0, 0, Math.PI * 2);
+      ctx2d.ellipse(cx, ringCy, ringW, ringH, 0, 0, Math.PI * 2);
       ctx2d.stroke();
-      // Activated rings get TWO bloom passes for the glow effect:
-      //   pass A: wide additive halo (lighter blend) so the ring
-      //           reads as emitting light into the haze around it
-      //   pass B: thinner inner-glow stroke (existing) — sharpens
-      //           the silhouette inside the bloom
+      // Activated rings get TWO bloom passes for the glow effect.
+      // BOTH passes now use chapter saturation (was 100%) so the
+      // bloom reads as an extension of the ring color, not a
+      // pure-white flash. Alpha + lightness also dialed back.
       if (ring.pulseT > 0.10) {
         ctx2d.save();
         ctx2d.globalCompositeOperation = 'lighter';
-        ctx2d.strokeStyle = `hsla(${_tintHsl.h + hShift}, 100%, ${Math.min(75, _tintHsl.l + 25)}%, ${ring.pulseT * 0.45})`;
-        ctx2d.lineWidth = strokeW * 6;
+        ctx2d.strokeStyle = `hsla(${_tintHsl.h + hShift}, ${_tintHsl.s}%, ${Math.min(65, _tintHsl.l + 15)}%, ${ring.pulseT * 0.30})`;
+        ctx2d.lineWidth = strokeW * 5;
         ctx2d.beginPath();
-        ctx2d.ellipse(cx, cy, ringW, ringH, 0, 0, Math.PI * 2);
+        ctx2d.ellipse(cx, ringCy, ringW, ringH, 0, 0, Math.PI * 2);
         ctx2d.stroke();
         ctx2d.restore();
       }
       if (ring.pulseT > 0.15) {
-        ctx2d.strokeStyle = `hsla(${_tintHsl.h + hShift}, 100%, ${Math.min(85, _tintHsl.l + 30)}%, ${ring.pulseT * 0.35})`;
-        ctx2d.lineWidth = strokeW * 3;
+        ctx2d.strokeStyle = `hsla(${_tintHsl.h + hShift}, ${Math.min(100, _tintHsl.s + 10)}%, ${Math.min(72, _tintHsl.l + 20)}%, ${ring.pulseT * 0.25})`;
+        ctx2d.lineWidth = strokeW * 2.5;
         ctx2d.beginPath();
-        ctx2d.ellipse(cx, cy, ringW, ringH, 0, 0, Math.PI * 2);
+        ctx2d.ellipse(cx, ringCy, ringW, ringH, 0, 0, Math.PI * 2);
         ctx2d.stroke();
       }
     }
@@ -692,12 +714,16 @@ export function createVisualizer({ canvas, getTint, getActive }) {
       // Pass 1 — additive halo. Radial gradient from bright center
       // to transparent edge. Composite mode 'lighter' makes
       // overlapping halos sum brightness — clusters of activated-band
-      // sparks blow out into a warm glow zone.
+      // sparks blow out into a warm glow zone. Per playtester:
+      // "reduce the glow a tad so it more accurately matches chapter
+      // tint" — dropped peak alpha 0.55→0.40, smaller halo radius
+      // (4.5+fade*1.5 → 3.6+fade*1.2), narrower lightness peak so
+      // the chapter hue stays visible at the brightest moment.
       ctx2d.globalCompositeOperation = 'lighter';
-      const haloR = s.size * (4.5 + fade * 1.5);
+      const haloR = s.size * (3.6 + fade * 1.2);
       const haloGrad = ctx2d.createRadialGradient(s.x, s.y, 0, s.x, s.y, haloR);
-      haloGrad.addColorStop(0, `hsla(${sparkH}, ${_tintHsl.s}%, ${Math.min(80, sparkL + 15)}%, ${fade * 0.55})`);
-      haloGrad.addColorStop(0.4, `hsla(${sparkH}, ${_tintHsl.s}%, ${sparkL}%, ${fade * 0.20})`);
+      haloGrad.addColorStop(0, `hsla(${sparkH}, ${_tintHsl.s}%, ${Math.min(70, sparkL + 8)}%, ${fade * 0.40})`);
+      haloGrad.addColorStop(0.4, `hsla(${sparkH}, ${_tintHsl.s}%, ${sparkL}%, ${fade * 0.15})`);
       haloGrad.addColorStop(1, 'hsla(0, 0%, 0%, 0)');
       ctx2d.fillStyle = haloGrad;
       ctx2d.beginPath();
@@ -705,12 +731,13 @@ export function createVisualizer({ canvas, getTint, getActive }) {
       ctx2d.fill();
 
       // Pass 2 — bright tight core. Source-over so it's a crisp
-      // pinpoint. White-hot center fading to chapter-tinted edge.
+      // pinpoint. Slightly tinted center (was white-hot) so it
+      // doesn't desaturate the chapter color at peak.
       ctx2d.globalCompositeOperation = 'source-over';
       const coreR = s.size * (1 + fade * 0.4);
       const coreGrad = ctx2d.createRadialGradient(s.x, s.y, 0, s.x, s.y, coreR);
-      coreGrad.addColorStop(0, `hsla(${sparkH}, 60%, ${Math.min(95, sparkL + 35)}%, ${fade})`);
-      coreGrad.addColorStop(0.5, `hsla(${sparkH}, ${_tintHsl.s}%, ${sparkL + 10}%, ${fade * 0.85})`);
+      coreGrad.addColorStop(0, `hsla(${sparkH}, ${_tintHsl.s}%, ${Math.min(85, sparkL + 25)}%, ${fade})`);
+      coreGrad.addColorStop(0.5, `hsla(${sparkH}, ${_tintHsl.s}%, ${sparkL + 8}%, ${fade * 0.85})`);
       coreGrad.addColorStop(1, `hsla(${sparkH}, ${_tintHsl.s}%, ${sparkL}%, 0)`);
       ctx2d.fillStyle = coreGrad;
       ctx2d.beginPath();
