@@ -131,7 +131,31 @@ let _matchedStratagem = null; // non-null when current input matches a code
 // updateStratagems(dt) decrements _cooldownT every frame. HUD reads
 // stratagemCooldownRemaining() so the player sees a countdown.
 const COOLDOWN_SEC = 30;
+// Short cooldown for blueprint-unlocked stratagems (chapter 7). When
+// any stratagem id is in _endlessIds, calling it uses this shorter
+// timer instead of the 30s default. Per playtester: "Endless quantity
+// and 5 second cooldown on strategems for now."
+const BLUEPRINT_COOLDOWN_SEC = 5;
 let _cooldownT = 0;            // seconds remaining; 0 = ready
+
+// Set of stratagem IDs that are currently "endless" — used by the
+// chapter 7 blueprint system. When a stratagem id is in this set:
+//   - Calling it does NOT decrement S.stratagemArtifacts[id]
+//   - The post-call cooldown is BLUEPRINT_COOLDOWN_SEC (5s) instead
+//     of COOLDOWN_SEC (30s)
+// The blueprint module adds ids on glyphstone activation and clears
+// the whole set on game reset.
+const _endlessIds = new Set();
+export function setStratagemEndless(stratagemId, endless) {
+  if (endless) _endlessIds.add(stratagemId);
+  else _endlessIds.delete(stratagemId);
+}
+export function isStratagemEndless(stratagemId) {
+  return _endlessIds.has(stratagemId);
+}
+export function clearAllEndless() {
+  _endlessIds.clear();
+}
 
 export function isStratagemMenuOpen() { return _menuOpen; }
 
@@ -238,8 +262,12 @@ export function pushStratagemArrow(dir) {
 // cursor's ground intersection.
 function _attemptCallIn(stratagem) {
   const arts = S.stratagemArtifacts || {};
+  const isEndless = _endlessIds.has(stratagem.id);
   const count = arts[stratagem.id] || 0;
-  if (count <= 0) {
+  // Endless stratagems (blueprint-unlocked, ch7) skip the
+  // count check — the player has unlimited uses, gated only by
+  // cooldown. For non-endless stratagems we still require an artifact.
+  if (!isEndless && count <= 0) {
     // No artifacts — show a brief feedback. We'd hook UI.toast here
     // but to avoid a circular import we surface the failure via a
     // global hook that main.js wires to UI on first use.
@@ -248,15 +276,18 @@ function _attemptCallIn(stratagem) {
     }
     return;
   }
-  // Spend one artifact and throw the beacon.
-  arts[stratagem.id] = count - 1;
+  // Resolve the target before spending — a missed cursor (no ground
+  // hit) shouldn't burn either the artifact count or the cooldown.
   const target = _resolveCursorGround();
   if (!target) return;
-  // Start the global cooldown — this stratagem (and ALL others) are
-  // locked out for COOLDOWN_SEC. updateStratagems ticks _cooldownT
-  // back down. We set it AFTER the artifact spend + ground resolve so
-  // a missed cursor (no ground hit) doesn't burn the cooldown.
-  _cooldownT = COOLDOWN_SEC;
+  // Spend the artifact (no-op for endless mode).
+  if (!isEndless) {
+    arts[stratagem.id] = count - 1;
+  }
+  // Start cooldown. Endless stratagems get the shorter blueprint
+  // cooldown (5s) so the player can rapidly chain mines etc.; normal
+  // stratagems get the global 30s cooldown.
+  _cooldownT = isEndless ? BLUEPRINT_COOLDOWN_SEC : COOLDOWN_SEC;
   // Tint comes from the chapter's lamp color so beacons match the
   // chapter palette. Fallback to red if no chapter context yet.
   const tint = (typeof window !== 'undefined' && window.__stratagemTint) || 0xff5520;
@@ -357,8 +388,13 @@ export function stratagemHudHtml() {
     const arts = S.stratagemArtifacts || {};
     const parts = [];
     for (const s of _STRATAGEMS) {
+      const isEndless = _endlessIds.has(s.id);
       const n = arts[s.id] || 0;
-      if (n > 0) {
+      // Endless stratagems show ∞ regardless of artifact count.
+      // Non-endless stratagems with 0 artifacts get hidden.
+      if (isEndless) {
+        parts.push(`<span style="color:#ffffff;">${s.icon}×∞</span>`);
+      } else if (n > 0) {
         parts.push(`<span style="color:#ffd93d;">${s.icon}×${n}</span>`);
       }
     }
@@ -380,13 +416,15 @@ export function stratagemHudHtml() {
   if (_matchedStratagem) {
     line2 = `<div style="color:#7af797;font-size:14px;letter-spacing:2px;">↳ ${_matchedStratagem.icon} ${_matchedStratagem.label} · RELEASE TO CALL</div>`;
   } else {
-    // List available stratagem codes as hints (only those the player
-    // has artifacts for).
+    // List available stratagem codes as hints. A stratagem is
+    // "available" if the player has an artifact OR it's been
+    // unlocked as endless (chapter 7 blueprint system).
     const arts = S.stratagemArtifacts || {};
     const hints = [];
     for (const s of _STRATAGEMS) {
       const n = arts[s.id] || 0;
-      if (n <= 0) continue;
+      const endless = _endlessIds.has(s.id);
+      if (n <= 0 && !endless) continue;
       const codeStr = s.code.map((d) => ARROW[d]).join(' ');
       hints.push(`<span style="color:#aaa;">${s.icon} ${s.label}: <span style="color:#ffd93d;">${codeStr}</span></span>`);
     }
@@ -447,6 +485,7 @@ export function resetStratagems() {
   _enteredCode = [];
   _matchedStratagem = null;
   _cooldownT = 0;            // clear cooldown so a fresh run starts ready
+  _endlessIds.clear();       // blueprint-unlocked stratagems reset on new run
   clearStratagemBeacons();
   clearMechs();
 }

@@ -134,6 +134,10 @@ import { resetSlowDripState } from './herdVrmLoader.js';
 import { maybeShowChapterReward } from './powerups.js';
 import { getCentroidFor } from './triangles.js';
 import { showMissileArrow, hideMissileArrow } from './missileArrow.js';
+import {
+  prepareBlueprintForWave, getSpawnRateMultiplier as ch7BlueprintSpawnMult,
+  shouldEndWaveNow as ch7BlueprintShouldEnd,
+} from './ch7Blueprints.js';
 
 // How long after RADIO completes before the missile auto-fires. Was the
 // LAUNCH zone's 14-second hold — now it's a 10-second countdown toast
@@ -696,6 +700,14 @@ export function startWave(waveNum) {
   // wave's objective was still showing.
   if (waveDef.type === 'survival') {
     try { UI.hideObjective(); } catch (e) {}
+    // Chapter 7 blueprint hunt — wave-1 (and eventually 2-3) starts
+    // with a paced narrative phase. The blueprint module spawns the
+    // pillar + glyphstone for the current wave (no-op for waves
+    // without a configured blueprint), drives the slow-trickle and
+    // 30s-prep timing, and signals wave-end via shouldEndWaveNow().
+    try { prepareBlueprintForWave(waveNum); } catch (e) {
+      console.warn('[waves] prepareBlueprintForWave failed:', e);
+    }
   }
 
   UI.showWaveStart(waveNum);
@@ -1019,20 +1031,33 @@ export function updateWaves(dt) {
       // never floods the player.
       let baseRate = waveDef.spawnRate;
       if (S.tutorialMode) baseRate = tutorialSpawnRateOverride(baseRate);
-      const effRate = baseRate * density;
-      spawnCooldown = Math.max(0.15, 0.9 / effRate);
-      let baseCount = Math.min(3, 1 + Math.floor(S.wave / 3));
-      // Cannon-load — softened from 3 to 2 per-batch for new-player
-      // accessibility. Combined with the lower spawnRate (14→8) and
-      // lower maxOnScreen (40→25) the wave is now meaningfully gentler.
-      if (waveDef.type === 'cannon-load') {
-        baseCount = 2;
+      // Chapter 7 blueprint multiplier — 0 during AWAIT_BLUEPRINT and
+      // OVERLAY phases, 0.10 during slow-trickle, 1.0 during flood.
+      // Returns 1.0 for any non-blueprint wave so this is a no-op
+      // outside chapter 7.
+      let bpMult = 1.0;
+      try { bpMult = ch7BlueprintSpawnMult(); } catch (e) {}
+      const effRate = baseRate * density * bpMult;
+      // bpMult of 0 → effRate is 0 → guard the cooldown calc to avoid
+      // dividing by zero. Just skip this spawn cycle and try again
+      // next frame; the rate gets re-evaluated.
+      if (effRate <= 0.0001) {
+        spawnCooldown = 0.1;
+      } else {
+        spawnCooldown = Math.max(0.15, 0.9 / effRate);
+        let baseCount = Math.min(3, 1 + Math.floor(S.wave / 3));
+        // Cannon-load — softened from 3 to 2 per-batch for new-player
+        // accessibility. Combined with the lower spawnRate (14→8) and
+        // lower maxOnScreen (40→25) the wave is now meaningfully gentler.
+        if (waveDef.type === 'cannon-load') {
+          baseCount = 2;
+        }
+        // Tutorial mode also limits the per-batch count so the spawn-rate
+        // clamp isn't undermined by 3-at-a-time bursts.
+        if (S.tutorialMode) baseCount = 1;
+        const count = Math.max(1, Math.round(baseCount * density));
+        for (let i = 0; i < count; i++) spawnFromMix(waveDef.enemies);
       }
-      // Tutorial mode also limits the per-batch count so the spawn-rate
-      // clamp isn't undermined by 3-at-a-time bursts.
-      if (S.tutorialMode) baseCount = 1;
-      const count = Math.max(1, Math.round(baseCount * density));
-      for (let i = 0; i < count; i++) spawnFromMix(waveDef.enemies);
     }
   }
 
@@ -1929,15 +1954,25 @@ export function updateWaves(dt) {
     }
   }
 
-  // SURVIVAL — chapter 7 fresh-slate wave type. Wave ends when the
-  // player has killed waveDef.killTarget enemies. No objectives, no
-  // hives, no ores — just keep killing until the target is met.
+  // SURVIVAL — chapter 7 fresh-slate wave type. Wave ends when:
+  //   (a) the blueprint hunt completes its 90s flood phase
+  //       (waves with a configured blueprint — currently wave 1), OR
+  //   (b) the player has killed waveDef.killTarget enemies
+  //       (waves WITHOUT a blueprint configured — currently waves 2+3,
+  //       which are still plain survival).
   // For the chapter 7 finale (ch7Finale flag, last of the 3 waves),
-  // endWave() handles the run-end transition the same way the legacy
-  // hive finale did.
-  if (waveDef.type === 'survival' && S.waveKillsProgress >= S.waveKillTarget) {
-    endWave();
-    return;
+  // endWave() handles the run-end transition.
+  if (waveDef.type === 'survival') {
+    let blueprintEnd = false;
+    try { blueprintEnd = ch7BlueprintShouldEnd(); } catch (e) {}
+    if (blueprintEnd) {
+      endWave();
+      return;
+    }
+    if (S.waveKillsProgress >= S.waveKillTarget) {
+      endWave();
+      return;
+    }
   }
 
   if (waveDef.type === 'rescue' && S.waveKillsProgress >= S.waveKillTarget) {

@@ -177,6 +177,9 @@ import { buildCrowd, updateCrowd, recolorCrowd } from './crowd.js';
 import { spawnGravestones, recolorGravestones, clearGravestones } from './gravestones.js';
 import { playMatrixRain } from './matrixRain.js';
 import { play3DMatrixRain, update3DMatrixRain, clearMatrixRain3D } from './matrixRain3D.js';
+import {
+  updateBlueprints, clearBlueprints, isOverlayUp, dismissOverlay,
+} from './ch7Blueprints.js';
 import { prefetchMeebits, pickRandomMeebitId } from './meebitsPublicApi.js';
 import {
   spawnPickup, updatePickups as updateNewPickups, clearAllPickups,
@@ -1790,6 +1793,17 @@ function _syncWeaponCursor() {
 _syncWeaponCursor();
 
 window.addEventListener('keydown', e => {
+  // Chapter 7 blueprint overlay — when "THEY'RE COMING... PREPARE"
+  // is up, ANY key dismisses it (and starts the 30s prep timer).
+  // Bail out before touching keys[] state so the dismissal doesn't
+  // also fire weapon-swap / movement / pause toggle.
+  try {
+    if (isOverlayUp()) {
+      dismissOverlay();
+      e.preventDefault();
+      return;
+    }
+  } catch (err) {}
   keys[e.key.toLowerCase()] = true;
   if (e.code === 'Space') { e.preventDefault(); tryDash(); }
   if (e.key === 'Escape' && S.running) {
@@ -2019,6 +2033,16 @@ window.addEventListener('mousemove', e => {
   if (hit) { mouse.worldX = hit.x; mouse.worldZ = hit.z; }
 });
 window.addEventListener('mousedown', e => {
+  // Chapter 7 blueprint overlay — clicking anywhere also dismisses
+  // (covers the case where the player tries to fire instead of
+  // pressing a key).
+  try {
+    if (isOverlayUp()) {
+      dismissOverlay();
+      e.preventDefault();
+      return;
+    }
+  } catch (err) {}
   if (e.button === 0) { mouse.down = true; Audio.resume(); }
   if (e.button === 2) {
     // Right mouse button — open stratagem menu (Helldivers-style).
@@ -3344,6 +3368,10 @@ function _exitTutorialIfActive() {
   // restart-mid-transition doesn't leave sprites floating in the
   // new level.
   try { clearMatrixRain3D(); } catch (e) {}
+  // Chapter 7 blueprint hunt — tear down any active blueprint /
+  // glyphstone meshes + clear the "THEY'RE COMING" overlay if it's
+  // up. Idempotent — no-op when no blueprint is active.
+  try { clearBlueprints(); } catch (e) {}
   // Re-show the player avatar in case the player was piloting a
   // mech when they bailed.
   if (player && player.obj) player.obj.visible = true;
@@ -4054,6 +4082,26 @@ function animate() {
   // controller is plugged in.
   updateGamepad(dt);
 
+  // Chapter 7 blueprint overlay — controller dismissal. After the
+  // poll, scan all buttons; if any is pressed while the overlay is
+  // up, dismiss. Works with any controller layout (A, B, X, Y,
+  // shoulder, trigger, d-pad — anything counts as "any key").
+  try {
+    if (isOverlayUp()) {
+      const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+      for (const pad of pads) {
+        if (!pad) continue;
+        for (let i = 0; i < (pad.buttons || []).length; i++) {
+          const b = pad.buttons[i];
+          if (b && (b.pressed || (b.value && b.value > 0.5))) {
+            dismissOverlay();
+            break;
+          }
+        }
+      }
+    }
+  } catch (err) {}
+
   if (S.running && !S.paused) {
     updatePlayer(dt);
     updateEnemies(worldDt);
@@ -4090,6 +4138,13 @@ function animate() {
     }
     updateStratagems(dt);
     updateMines(dt);
+    // Chapter 7 blueprint hunt — ticks the wave-1 (and eventually
+    // wave-2/3) state machine: proximity capture progress, slow
+    // trickle / 30s prep / 90s flood timing, overlay state. No-op
+    // on chapters/waves without a configured blueprint.
+    try { updateBlueprints(dt, player.pos); } catch (e) {
+      console.warn('[main] updateBlueprints failed:', e);
+    }
     // Nuke linger zones — high-DPS bubbles left over after each
     // thermonuclear call. Tick after updateStratagems so any beacon
     // detonation that happens THIS frame has already pushed its zone
@@ -4409,26 +4464,10 @@ function animate() {
           } catch (e) {
             console.error('[chapter-7-entry] FAIL 3: music section switch —', e);
           }
-          // STEP 4: Grant stratagem artifacts as a starter loadout —
-          // replaces the old super-nuke grant. A small allocation of
-          // each type so the player has options without being
-          // overwhelmed. The 30s cooldown paces usage.
-          try {
-            if (!S.stratagemArtifacts) S.stratagemArtifacts = {};
-            const grants = {
-              mech: 2,
-              mineField: 3,
-              stratagemTurret: 3,
-              thermonuclear: 1,
-            };
-            for (const id in grants) {
-              S.stratagemArtifacts[id] = (S.stratagemArtifacts[id] || 0) + grants[id];
-            }
-            UI.toast('STRATAGEMS UNLOCKED', '#00ff66', 2400);
-            console.log('[chapter-7-entry] OK 4: stratagems granted', grants);
-          } catch (e) {
-            console.error('[chapter-7-entry] FAIL 4: stratagem grant —', e);
-          }
+          // (Stratagem grant removed — chapter 7 now uses the blueprint
+          // system. Per playtester: "Player only gets stratagems by
+          // unlocking blueprints with glyphstones." See ch7Blueprints.js
+          // for the per-wave blueprint configs and the unlock flow.)
           console.log('[chapter-7-entry] END');
         }
         // -------- CHAPTER 7 EXIT (e.g. game reset to ch 0) --------
