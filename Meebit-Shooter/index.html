@@ -41,15 +41,25 @@
        in the middle (title text + intro + save panel), ATTACK THE AI
        on the right. This matches the Fortnite-style mode-select
        layout the user requested where the chosen mode card flanks
-       the central artwork on either side. -->
-  <div id="title-row">
-    <div class="mode-card" id="mode-card-tutorial" data-target="tutorial-btn">
-      <div class="mode-card-img" style="background-image:url('assets/title_card_tutorial.png');"></div>
-      <div class="mode-card-rain"></div>
-      <div class="mode-card-label">TUTORIAL</div>
-    </div>
+       the central artwork on either side.
 
-    <div id="title-center">
+       Updated layout (v3 — three-card right stack):
+       Per playtester: "Can we make the cards on the main screen sit
+       on top of one another. The tutorial should be top card on
+       right. The main game ATTACK THE AI should be underneath it.
+       The Endless GLYPHS should be underneath that... We move the
+       title and information to the left. Armory connect wallet
+       underneath left side."
+
+       Left column (#title-left-col): title H1 + subtitle + control
+       hints + save panel — all the informational text. The ARMORY
+       and CONNECT WALLET buttons sit at the bottom of this column.
+
+       Right column (#title-right-stack): three landscape cards
+       stacked vertically — TUTORIAL on top, ATTACK THE AI middle,
+       ENDLESS GLYPHS bottom. -->
+  <div id="title-row">
+    <div id="title-left-col">
       <h1>EXTINGUISH<br>THE VIRUS</h1>
       <h2>:: OTHERSIDE DEPLOYMENT ::</h2>
       <p>
@@ -64,21 +74,43 @@
         <div class="save-row"><span>HIGH SCORE</span><b id="title-highscore">0</b></div>
         <div class="save-row"><span>FURTHEST</span><b id="title-highchap">1 · Wave 1</b></div>
       </div>
+
+      <div id="mode-picker-hint">SELECT A GAME MODE</div>
+      <div id="mode-picker-desc"></div>
+
+      <!-- ARMORY + CONNECT WALLET buttons — moved into the left column
+           per playtester redesign. ARMORY opens the persistent upgrade
+           screen (overlay markup is below at #armory-overlay; wired by
+           armoryUI.js). CONNECT WALLET handles the Meebit linking flow
+           (canonical id is #link-meebits-btn; main.js also accepts the
+           legacy #connect-wallet-btn id as a fallback). -->
+      <div id="title-left-buttons">
+        <button class="wallet-btn" id="armory-btn" style="background:linear-gradient(135deg, #ff8800 0%, #ff3cac 100%); border-color:#ff8800;">⚙ ARMORY</button>
+        <button class="wallet-btn" id="link-meebits-btn" style="margin-top:8px;">🦊 CONNECT WALLET</button>
+        <div style="font-size:10px; letter-spacing:2px; color:#888; margin-top:10px;">
+          OWN A MEEBIT? CONNECT TO PLAY AS YOUR OWN AVATAR
+        </div>
+      </div>
     </div>
 
     <div id="title-right-stack">
+      <!-- TUTORIAL — top of the stack. Always unlocked. Shape /
+           layout matches its siblings (landscape, ~1.6:1) so the
+           three cards read as one consistent column. -->
+      <div class="mode-card mode-card-landscape" id="mode-card-tutorial" data-target="tutorial-btn">
+        <div class="mode-card-img" style="background-image:url('assets/title_card_tutorial.png');"></div>
+        <div class="mode-card-rain"></div>
+        <div class="mode-card-label">TUTORIAL</div>
+      </div>
+      <!-- ATTACK THE AI — middle. Locked behind tutorial completion. -->
       <div class="mode-card mode-card-landscape" id="mode-card-game" data-target="start-btn">
         <div class="mode-card-img" style="background-image:url('assets/title_card_game.png');"></div>
         <div class="mode-card-rain"></div>
         <div class="mode-card-label">ATTACK THE AI</div>
       </div>
-      <!-- ENDLESS GLYPHS — co-op survival mode unlocked after the
-           main game (Attack the AI) is completed. The card starts
-           gated; the gate clears (.locked removed) when localStorage
-           flag mbs_attack_completed_v1 = '1'. Set by main.js when the
-           player beats chapter 6 wave 5. Card layout matches its
-           sibling (landscape image, label overlay) so the right
-           column reads as a tidy stack of two equal-shape cards. -->
+      <!-- ENDLESS GLYPHS — bottom. Locked behind ATTACK THE AI
+           completion. localStorage flag mbs_attack_completed_v1 = '1'
+           is set by main.js when the player beats chapter 6 wave 5. -->
       <div class="mode-card mode-card-landscape locked" id="mode-card-glyphs" data-target="glyphs-btn">
         <div class="mode-card-img mode-card-img-glyphs"></div>
         <div class="mode-card-rain"></div>
@@ -87,9 +119,6 @@
     </div>
   </div>
 
-  <div id="mode-picker-hint">SELECT A GAME MODE</div>
-  <div id="mode-picker-desc"></div>
-
   <!-- Real CTAs (hidden — clicked programmatically by the cards above). -->
   <button class="cta" id="start-btn" style="display:none;">ATTACK THE AI</button>
   <button class="cta cta-tutorial" id="tutorial-btn" style="display:none;">START TUTORIAL</button>
@@ -97,23 +126,6 @@
        Opens the player-count picker modal (#glyphs-player-modal). -->
   <button class="cta" id="glyphs-btn" style="display:none;">ENDLESS GLYPHS</button>
 
-  <!-- ARMORY — opens the persistent upgrade screen. Placed above the
-       wallet button because spending earned XP is the primary
-       between-runs action; wallet linking is a one-time task. The
-       overlay markup is below (#armory-overlay); armoryUI.js wires
-       this button to open it and sets up render. -->
-  <button class="wallet-btn" id="armory-btn" style="background:linear-gradient(135deg, #ff8800 0%, #ff3cac 100%); border-color:#ff8800;">⚙ ARMORY</button>
-
-  <!-- Wallet / Meebit-link button. Canonical id is #link-meebits-btn
-       (matches the JS handler in main.js); main.js also accepts the
-       legacy #connect-wallet-btn id as a fallback for older cached
-       markup. Click flow: redirect to meebits.larvalabs.com → user
-       signs a message → callback returns here with their Meebit list.
-  -->
-  <button class="wallet-btn" id="link-meebits-btn" style="margin-top:8px;">🦊 CONNECT WALLET</button>
-  <div style="font-size:10px; letter-spacing:2px; color:#888; margin-top:10px;">
-    OWN A MEEBIT? CONNECT TO PLAY AS YOUR OWN AVATAR
-  </div>
   <script>
   // Wire the mode-picker cards to the hidden CTA buttons. Hover sets
   // the selected card; click forwards to the matching real button.
