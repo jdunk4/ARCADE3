@@ -754,6 +754,10 @@ export function updateWaves(dt) {
   // objective state when S.tutorialMode is true, so updateWaves
   // would only fight it for control of S.* flags.
   if (S.tutorialMode) return;
+  // Endless Glyphs mode disables the standard wave system the same
+  // way — endlessGlyphs.js drives its own wave loop with chapter
+  // mapping, ×1.05 HP scaling, and 5-wave intermission cycles.
+  if (S.endlessGlyphs) return;
 
   // Per-frame dormant-prop updates (shield pulse + drop animation).
   // MUST run before the `!S.waveActive` gate below — otherwise the shield

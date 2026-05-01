@@ -238,6 +238,7 @@ import { updateLaunch } from './empLaunch.js';
 import { updateShockwaves } from './shockwave.js';
 import { updateMissileArrow, hideMissileArrow } from './missileArrow.js';
 import { initGamepad, updateGamepad, setTitleMode, rumble } from './gamepad.js';
+import { startEndlessGlyphs, updateEndlessGlyphs, exitEndlessGlyphs } from './endlessGlyphs.js';
 
 // =====================================================================
 // STRATAGEM SYSTEM HOOKS
@@ -3718,6 +3719,17 @@ document.getElementById('start-btn').addEventListener('click', (e) => {
   Audio.init();
   startGame();
 });
+// Bridge for the title-screen player-count picker modal in
+// index.html. Wraps startEndlessGlyphs so the modal can fire it
+// without holding a direct module reference.
+window.__startEndlessGlyphs = function(playerCount) {
+  startEndlessGlyphs(playerCount || 1);
+};
+// Bridge to exit the mode (used by run-end / quit flows).
+window.__exitEndlessGlyphs = function() {
+  exitEndlessGlyphs();
+};
+
 document.getElementById('tutorial-btn').addEventListener('click', () => {
   Audio.init();
   startTutorial();
@@ -4480,6 +4492,15 @@ function animate() {
         setHazardSpawningEnabled(false);
         try { clearHazards(); } catch (e) {}
       }
+    }
+    // Endless Glyphs mode tick. Drives the run's phase state machine
+    // (lobby → tile transition → wave → intermission → repeat → victory).
+    // Runs alongside the regular wave system; the wave runner inside
+    // endlessGlyphs.js will gate its own enemy spawns so the two
+    // systems don't fight for state. updateWaves() below early-returns
+    // on S.endlessGlyphs (see waves.js).
+    if (S.endlessGlyphs) {
+      try { updateEndlessGlyphs(worldDt); } catch (e) { console.warn('[glyphs] tick', e); }
     }
     updateWaves(worldDt);
     // Notify the pixl-pal system of new waves so it can award charges
