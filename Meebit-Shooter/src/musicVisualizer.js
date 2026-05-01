@@ -360,9 +360,9 @@ export function createVisualizer({ canvas, getTint, getActive }) {
     }
   }
 
-  // Spark emission — now from the cone perimeter rather than ring
-  // circumference, since the cone is the focal element. The user
-  // perceives sparks as flying off the speaker driver itself.
+  // Spawn `count` sparks at points along an ellipse (the activated
+  // ring's path). Per playtester: particles should be small, with
+  // glow effects, and emerge from the rings (not the center).
   function _spawnSparks(ringIdx, ringRadiusX, ringRadiusY, cx, cy, count) {
     for (let i = 0; i < count; i++) {
       const a = Math.random() * Math.PI * 2;
@@ -379,7 +379,12 @@ export function createVisualizer({ canvas, getTint, getActive }) {
         life: 0,
         maxLife: 1.2 + Math.random() * 0.4,
         hueOffset: (Math.random() - 0.5) * 2,
-        size: 1.5 + Math.random() * 2,
+        // Smaller particle core: 0.6-1.4 (was 1.5-3.5). The glow
+        // halo around it (drawn at 4-5× radius in additive mode)
+        // makes them feel much more present visually despite being
+        // smaller — bright pinpoints with bloom rather than fat
+        // dots.
+        size: 0.6 + Math.random() * 0.8,
       });
     }
   }
@@ -443,10 +448,16 @@ export function createVisualizer({ canvas, getTint, getActive }) {
           const baseCount = 14 - i * 1.5;
           const bonusFromEnergy = Math.floor(energy * 8);
           const sparkCount = Math.max(4, Math.floor(baseCount + bonusFromEnergy));
-          // Spawn sparks from the OUTER cone perimeter so they read
-          // as flying off the speaker, not from arbitrary rings.
-          const coneR = maxRingW * 0.30;
-          _spawnSparks(i, coneR, coneR * ASPECT, cx, cy, sparkCount);
+          // Per playtester: "particles should ... exude from different
+          // rings. not come from center." Each band's activation
+          // emits its sparks at the band's ring radius — bass from
+          // the outer rings, treble from the inner rings, all at the
+          // exact ellipse the player sees flash. Same radius math as
+          // the draw block below (kept in sync intentionally).
+          const tNorm = i / (RING_COUNT - 1);
+          const ringW = maxRingW * (0.42 + (1 - tNorm) * 0.62);
+          const ringH = ringW * ASPECT;
+          _spawnSparks(i, ringW, ringH, cx, cy, sparkCount);
         }
       }
       if (ring.pulseT > 0) {
@@ -523,14 +534,21 @@ export function createVisualizer({ canvas, getTint, getActive }) {
     ctx2d.restore();
 
     // --- LAYER 3: RINGS (the cone's surround / suspension) ---
-    // Same per-ring activation logic as before, but the rings now
-    // visually frame the cone — they're the speaker's surround.
+    // Per-band beat-reactive concentric circles. Frequency mapping:
+    //   ring 0 (outermost) — sub-bass / kick
+    //   ring 5 (innermost) — treble
+    // Per playtester: "bass notes / low notes one specific map to
+    // the outer rings where the higher notes are more for rings in
+    // the center." Range bumped from 0.45-1.0 to 0.42-1.04 so the
+    // bands span a visibly wider spread — innermost ring is now
+    // distinct from the cone, outermost reaches just past the
+    // canvas edge.
     ctx2d.save();
     ctx2d.lineCap = 'round';
     for (let i = 0; i < RING_COUNT; i++) {
       const ring = _rings[i];
       const tNorm = i / (RING_COUNT - 1);
-      const ringW = maxRingW * (0.45 + (1 - tNorm) * 0.55);
+      const ringW = maxRingW * (0.42 + (1 - tNorm) * 0.62);
       const ringH = ringW * ASPECT;
       const base = 0.32 + ring.emaEnergy * 0.22;
       const pulse = ring.pulseT * 0.55;
@@ -542,6 +560,21 @@ export function createVisualizer({ canvas, getTint, getActive }) {
       ctx2d.beginPath();
       ctx2d.ellipse(cx, cy, ringW, ringH, 0, 0, Math.PI * 2);
       ctx2d.stroke();
+      // Activated rings get TWO bloom passes for the glow effect:
+      //   pass A: wide additive halo (lighter blend) so the ring
+      //           reads as emitting light into the haze around it
+      //   pass B: thinner inner-glow stroke (existing) — sharpens
+      //           the silhouette inside the bloom
+      if (ring.pulseT > 0.10) {
+        ctx2d.save();
+        ctx2d.globalCompositeOperation = 'lighter';
+        ctx2d.strokeStyle = `hsla(${_tintHsl.h + hShift}, 100%, ${Math.min(75, _tintHsl.l + 25)}%, ${ring.pulseT * 0.45})`;
+        ctx2d.lineWidth = strokeW * 6;
+        ctx2d.beginPath();
+        ctx2d.ellipse(cx, cy, ringW, ringH, 0, 0, Math.PI * 2);
+        ctx2d.stroke();
+        ctx2d.restore();
+      }
       if (ring.pulseT > 0.15) {
         ctx2d.strokeStyle = `hsla(${_tintHsl.h + hShift}, 100%, ${Math.min(85, _tintHsl.l + 30)}%, ${ring.pulseT * 0.35})`;
         ctx2d.lineWidth = strokeW * 3;
@@ -566,8 +599,12 @@ export function createVisualizer({ canvas, getTint, getActive }) {
       const idleOsc = 1 + Math.sin(_coneIdle * 0.6 * Math.PI * 2) * 0.01;
       const pumpScale = 1 - _conePump * 0.18;     // pumps INWARD on hit
       const coneScale = idleOsc * pumpScale;
-      const coneR = maxRingW * 0.30 * coneScale;
-      const coneInnerR = maxRingW * 0.05 * coneScale;
+      // Cone radius: 0.24 (was 0.30). Smaller cone leaves visible
+      // separation between the cone edge and the innermost (treble)
+      // ring at 0.42, so the treble band can pulse without being
+      // visually swallowed by the speaker driver.
+      const coneR = maxRingW * 0.24 * coneScale;
+      const coneInnerR = maxRingW * 0.04 * coneScale;
       // Outer rim — dark thick ring around the cone, suggests the
       // bolted gasket.
       ctx2d.strokeStyle = `hsla(${_tintHsl.h}, ${_tintHsl.s * 0.4}%, 8%, 0.95)`;
@@ -627,6 +664,13 @@ export function createVisualizer({ canvas, getTint, getActive }) {
     ctx2d.restore();
 
     // --- LAYER 6: SPARKS (drawn after cone so they read in front) ---
+    // Two-pass draw per spark for a proper glow effect:
+    //   pass 1: large additive halo (radial bloom) — gives the
+    //           "light point" feel without needing canvas filters
+    //   pass 2: bright tight core
+    // The halo+core combo reads as a glowing pinpoint: small but
+    // luminous. Per playtester: "particles should be smaller... we
+    // need some glow effects."
     ctx2d.save();
     for (let i = _sparks.length - 1; i >= 0; i--) {
       const s = _sparks[i];
@@ -644,14 +688,41 @@ export function createVisualizer({ canvas, getTint, getActive }) {
       const fade = 1 - t01;
       const sparkH = _tintHsl.h + s.hueOffset * 15;
       const sparkL = _tintHsl.l + 25 - t01 * 30;
-      ctx2d.fillStyle = `hsla(${sparkH}, ${_tintHsl.s}%, ${sparkL}%, ${fade})`;
+
+      // Pass 1 — additive halo. Radial gradient from bright center
+      // to transparent edge. Composite mode 'lighter' makes
+      // overlapping halos sum brightness — clusters of activated-band
+      // sparks blow out into a warm glow zone.
+      ctx2d.globalCompositeOperation = 'lighter';
+      const haloR = s.size * (4.5 + fade * 1.5);
+      const haloGrad = ctx2d.createRadialGradient(s.x, s.y, 0, s.x, s.y, haloR);
+      haloGrad.addColorStop(0, `hsla(${sparkH}, ${_tintHsl.s}%, ${Math.min(80, sparkL + 15)}%, ${fade * 0.55})`);
+      haloGrad.addColorStop(0.4, `hsla(${sparkH}, ${_tintHsl.s}%, ${sparkL}%, ${fade * 0.20})`);
+      haloGrad.addColorStop(1, 'hsla(0, 0%, 0%, 0)');
+      ctx2d.fillStyle = haloGrad;
       ctx2d.beginPath();
-      ctx2d.arc(s.x, s.y, s.size * (1 + fade * 0.5), 0, Math.PI * 2);
+      ctx2d.arc(s.x, s.y, haloR, 0, Math.PI * 2);
+      ctx2d.fill();
+
+      // Pass 2 — bright tight core. Source-over so it's a crisp
+      // pinpoint. White-hot center fading to chapter-tinted edge.
+      ctx2d.globalCompositeOperation = 'source-over';
+      const coreR = s.size * (1 + fade * 0.4);
+      const coreGrad = ctx2d.createRadialGradient(s.x, s.y, 0, s.x, s.y, coreR);
+      coreGrad.addColorStop(0, `hsla(${sparkH}, 60%, ${Math.min(95, sparkL + 35)}%, ${fade})`);
+      coreGrad.addColorStop(0.5, `hsla(${sparkH}, ${_tintHsl.s}%, ${sparkL + 10}%, ${fade * 0.85})`);
+      coreGrad.addColorStop(1, `hsla(${sparkH}, ${_tintHsl.s}%, ${sparkL}%, 0)`);
+      ctx2d.fillStyle = coreGrad;
+      ctx2d.beginPath();
+      ctx2d.arc(s.x, s.y, coreR, 0, Math.PI * 2);
       ctx2d.fill();
     }
     ctx2d.restore();
 
-    const SPARK_CAP = 200;
+    // Cap spark count. Bumped from 200 → 320 since the redesigned
+    // sparks are smaller (size 0.6-1.4 vs old 1.5-3.5) so denser
+    // bursts read as a starfield rather than visual noise.
+    const SPARK_CAP = 320;
     if (_sparks.length > SPARK_CAP) {
       _sparks.splice(0, _sparks.length - SPARK_CAP);
     }
