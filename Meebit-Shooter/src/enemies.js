@@ -1422,6 +1422,15 @@ export function makeEnemy(typeKey, tintHex, pos) {
     // chapter-1 ant has 6 legs in spiderLegs[] just like a spider,
     // so we flip the same flag — same visual loop applies.
     isSpider: typeKey === 'spider' || _useAntForChapter1,
+    // isAnt — true when the enemy was rendered with the ant mesh
+    // (procedural box ant or GLB). The "type" field is still the
+    // original typeKey ('zomeeb' / 'sprinter') because those drive
+    // AI/damage/spawn pacing; isAnt is just a visual marker so the
+    // shrivel death animation in main.js's killEnemy can route on
+    // mesh appearance. Per playtester feedback: "the ants just
+    // disappear after they are shot a few times" — root cause was
+    // the routing check was on type='ant' which never matches.
+    isAnt: _useAntForChapter1,
     spiderLegs: built.spiderLegs || null,
     // Ant wings — only present on the GLB ant. Two THREE.Group hinges
     // animated by the per-frame flutter loop in main.js. Null on every

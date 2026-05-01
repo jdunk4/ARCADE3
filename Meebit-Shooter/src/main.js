@@ -7420,11 +7420,13 @@ function killEnemy(idx) {
   enemies.splice(idx, 1);
   // Death animation routing — most enemies vanish on kill; ants get
   // the shrivel-and-fade animation. Per playtester: "Maybe they just
-  // shrivel up? After a few seconds they disappear?" The mesh is
-  // already removed from `scene` above; we re-add it via
-  // _addDyingEnemy which puts it back in `scene` as a dying entity
-  // (animated by _tickDyingEnemies, NOT by enemy AI/damage paths).
-  if (e.type === 'ant') {
+  // shrivel up? After a few seconds they disappear?"
+  // The visual mesh check is `e.isAnt`, NOT `e.type === 'ant'`. The
+  // chapter-1 "ants" are zomeeb/sprinter under the hood (so AI/spawn
+  // pacing reads from those types) — the ant MESH is a chapter-1
+  // visual override applied in enemies.js makeEnemy. The isAnt flag
+  // is the truth of "was the ant mesh used."
+  if (e.isAnt) {
     scene.add(e.obj);                 // re-attach for the animation
     _addDyingEnemy(e.obj, 'shrivel');
   }
