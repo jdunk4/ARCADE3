@@ -71,6 +71,11 @@ const SPAWN_SAFE_RADIUS = 7;
 // resolver is straightforward.
 let _walls = [];
 
+// Active trim color — chapter-mapped per wave. Defaults to cyan
+// (Endless Glyphs lobby identity color); generateWallsForWave can
+// override per wave to match chapter tint.
+let _activeTrimColor = WALL_TRIM_COLOR;
+
 // =====================================================================
 // PUBLIC API
 // =====================================================================
@@ -79,72 +84,249 @@ let _walls = [];
  * Build the floorplan for `waveNum`. Disposes any previous wave's walls
  * first (idempotent). Adds new wall meshes to the scene.
  *
- * The seed is derived from waveNum so the same wave always generates
- * the same layout — easier to reason about during dev. If you want
- * fresh layouts per attempt, mix Date.now() into the seed.
+ * @param {number} waveNum  wave number (1-30) — used as RNG seed
+ * @param {number} [trimColor] hex color for the wall top trim glow.
+ *                  Defaults to cyan (matches Endless Glyphs lobby
+ *                  identity). Per playtester: "Can we color the top
+ *                  of the walls from cyan to match the chapter tint?"
+ *                  endlessGlyphs.js passes the chapter-mapped enemy
+ *                  tint per wave.
  */
-export function generateWallsForWave(waveNum) {
+export function generateWallsForWave(waveNum, trimColor) {
   clearWalls();
+  _activeTrimColor = (typeof trimColor === 'number') ? trimColor : WALL_TRIM_COLOR;
 
   // Seeded RNG — Mulberry32, simple and good enough for level generation.
-  // We seed off (waveNum * a fixed prime) so the same wave produces the
-  // same layout. Easier debugging + repeatable playtesting.
+  // Same wave = same floorplan, easier to reason about during dev.
   const rng = _makeRng(waveNum * 1664525 + 1013904223);
 
-  // Wall count scales gently with wave. Wave 1 = 5-7 segments, wave 30
-  // = 14-18 segments. Stays sparse — never enough to corner the player.
-  const baseSegments = 4 + Math.floor(waveNum * 0.45);
-  const segmentCount = baseSegments + Math.floor(rng() * 4);
+  // ===================================================================
+  // FLOORPLAN GENERATOR
+  // ===================================================================
+  // Per playtester: "I think we need a lot more walls. It should look
+  // like a floor plan. No enclosed spaces but this is far too open
+  // right now. Lets add 100x more walls. Make it like a house floor
+  // plan, but with no closed rooms - there should always be a way to
+  // get in every room."
+  //
+  // Approach: BSP-style recursive subdivision. Start with a single
+  // central rectangle ~ 70x70u. At each step, pick a random axis and
+  // a random cut position; the cut becomes a wall, but a 3-4u
+  // doorway gap is punched through it at a random spot. Recurse on
+  // both halves until rooms are small enough.
+  //
+  // Connectivity invariant: every cut wall has at least one doorway,
+  // and rooms on either side are accessible through it. Player can
+  // always reach every room.
 
-  // Column count — small solid blocks scattered as cover. ~half the
-  // segment count.
-  const columnCount = Math.max(2, Math.floor(segmentCount / 2));
+  // Outer arena bounds — leave a buffer so walls don't kiss the edge.
+  const AREA_HALF_X = ARENA_HALF - 5;
+  const AREA_HALF_Z = ARENA_HALF - 5;
 
-  // -- Wall segments --
-  // Each segment: pick a random anchor, pick orientation (horizontal or
-  // vertical), pick length, place. Reject if it intersects spawn safe
-  // zone or arena edge buffer. Limit retries so a bad seed doesn't loop.
-  let placed = 0;
-  let attempts = 0;
-  while (placed < segmentCount && attempts < segmentCount * 6) {
-    attempts++;
-    const horizontal = rng() < 0.5;
-    const length = 4 + rng() * 8;       // 4-12 units long
-    // Anchor anywhere in the arena minus an edge buffer.
-    const ax = (rng() * 2 - 1) * (ARENA_HALF - 4 - length / 2);
-    const az = (rng() * 2 - 1) * (ARENA_HALF - 4 - length / 2);
-    const w = horizontal ? length : WALL_THICKNESS;
-    const h = horizontal ? WALL_THICKNESS : length;
-    if (_intersectsSafeSpawn(ax, az, w, h)) continue;
-    // Reject overlap with already-placed walls (with a small buffer
-    // so two walls don't kiss and form a corner the player has to
-    // squeeze around).
-    if (_overlapsAnyWall(ax, az, w + 1.0, h + 1.0)) continue;
-    _addWall(ax, az, w, h);
-    placed++;
+  // Recursive room subdivider. Each call places walls for the cuts
+  // it makes inside the given rectangle.
+  // bounds = { x0, z0, x1, z1 } in world coords
+  // depth = 0 at root, increments each recursion
+  const MIN_ROOM_DIM = 8;          // smallest room edge before stop subdividing
+  const MAX_DEPTH = 6;             // hard cap; 2^6 = 64 leaf rooms max
+
+  function subdivide(bounds, depth) {
+    const w = bounds.x1 - bounds.x0;
+    const h = bounds.z1 - bounds.z0;
+    if (depth >= MAX_DEPTH) return;
+    if (w < MIN_ROOM_DIM * 2 && h < MIN_ROOM_DIM * 2) return;
+
+    // Decide axis: split the longer dim if it's much longer, otherwise
+    // 50/50 chance per axis.
+    let splitVertical;          // true = vertical cut (constant x)
+    if (w > h * 1.4) splitVertical = true;
+    else if (h > w * 1.4) splitVertical = false;
+    else splitVertical = rng() < 0.5;
+
+    if (splitVertical && w < MIN_ROOM_DIM * 2) splitVertical = false;
+    if (!splitVertical && h < MIN_ROOM_DIM * 2) splitVertical = true;
+
+    // Pick cut position with bias toward the middle (40-60% of dim)
+    // so rooms are reasonably sized.
+    if (splitVertical) {
+      const cutX = bounds.x0 + w * (0.35 + rng() * 0.30);
+      // Build the wall along the cut, but with a doorway gap.
+      _placeWallWithDoorway(
+        cutX, bounds.z0,
+        cutX, bounds.z1,
+        rng,
+        true,     // vertical wall
+      );
+      subdivide({ x0: bounds.x0, z0: bounds.z0, x1: cutX, z1: bounds.z1 }, depth + 1);
+      subdivide({ x0: cutX, z0: bounds.z0, x1: bounds.x1, z1: bounds.z1 }, depth + 1);
+    } else {
+      const cutZ = bounds.z0 + h * (0.35 + rng() * 0.30);
+      _placeWallWithDoorway(
+        bounds.x0, cutZ,
+        bounds.x1, cutZ,
+        rng,
+        false,    // horizontal wall
+      );
+      subdivide({ x0: bounds.x0, z0: bounds.z0, x1: bounds.x1, z1: cutZ }, depth + 1);
+      subdivide({ x0: bounds.x0, z0: cutZ, x1: bounds.x1, z1: bounds.z1 }, depth + 1);
+    }
   }
 
-  // -- Columns --
-  // Single solid pillars, slightly larger than wall thickness. These
-  // give the layout architectural punctuation without forming corridors.
-  let placedCols = 0;
-  let colAttempts = 0;
-  while (placedCols < columnCount && colAttempts < columnCount * 6) {
-    colAttempts++;
-    const cx = (rng() * 2 - 1) * (ARENA_HALF - 4);
-    const cz = (rng() * 2 - 1) * (ARENA_HALF - 4);
-    const size = 0.8 + rng() * 0.6;     // 0.8-1.4 unit pillar
-    if (_intersectsSafeSpawn(cx, cz, size, size)) continue;
-    if (_overlapsAnyWall(cx, cz, size + 1.0, size + 1.0)) continue;
-    _addWall(cx, cz, size, size);
-    placedCols++;
-  }
+  // Recurse from the full arena rect.
+  subdivide({
+    x0: -AREA_HALF_X, z0: -AREA_HALF_Z,
+    x1:  AREA_HALF_X, z1:  AREA_HALF_Z,
+  }, 0);
+
+  // Punch out any walls that landed inside the spawn safe zone. We
+  // do this AFTER subdivision because doing it during placement
+  // would break the room structure. Walls fully inside the safe
+  // zone are dropped; walls partially overlapping have a notch
+  // removed.
+  _purgeSpawnZoneWalls();
 
   // Build the navigation grid from the walls we just placed. Enemies
   // pathfind against this grid in main.js's updateEnemies path-following
   // hook (see endlessPathing.js). Rebuilt every wave so paths stay in
   // sync with the current floorplan.
   buildNavGrid(_walls);
+}
+
+/**
+ * Place a wall along the given line segment with a doorway gap
+ * punched through it. A "wall" here is split into 1-3 sub-segments
+ * (always at least 2 unless the segment is very short) with a 3-4u
+ * gap between sub-segments at a random position along the wall.
+ *
+ * @param {number} x0,z0 — start of the segment
+ * @param {number} x1,z1 — end of the segment
+ * @param {Function} rng — seeded random fn
+ * @param {boolean} vertical — true if the wall is vertical (x0===x1)
+ */
+function _placeWallWithDoorway(x0, z0, x1, z1, rng, vertical) {
+  const length = vertical ? Math.abs(z1 - z0) : Math.abs(x1 - x0);
+  if (length < 4) {
+    // Too short for a useful wall + doorway; place as solid.
+    _placeWallSegment(x0, z0, x1, z1, vertical);
+    return;
+  }
+
+  // Doorway specs:
+  //   gap width: 3-4 world units (player + enemy clearance)
+  //   gap position: 30-70% along the wall, biased away from corners
+  const GAP = 3 + rng() * 1;
+  const minStart = 2;
+  const maxStart = length - GAP - 2;
+  const gapStart = minStart + rng() * Math.max(0, maxStart - minStart);
+  const gapEnd = gapStart + GAP;
+
+  // Build two sub-segments around the gap.
+  if (vertical) {
+    const z = Math.min(z0, z1);
+    const xMid = x0;
+    // Segment A from z start to z + gapStart
+    _placeWallSegment(xMid, z, xMid, z + gapStart, true);
+    // Segment B from z + gapEnd to far end
+    _placeWallSegment(xMid, z + gapEnd, xMid, z + length, true);
+
+    // 30% chance of a SECOND doorway in long walls (>20u) for added
+    // connectivity — doesn't violate the single-region invariant
+    // since we only ADD passages, never enclose.
+    if (length > 20 && rng() < 0.3) {
+      // Re-cut sub-segment B if it's long enough.
+      const subLen = length - gapEnd;
+      if (subLen > 8) {
+        const gap2Start = z + gapEnd + 2 + rng() * (subLen - GAP - 4);
+        const gap2End = gap2Start + GAP;
+        // Drop the previously-placed B (last wall in _walls) and
+        // replace with two segments.
+        const lastWall = _walls[_walls.length - 1];
+        if (lastWall) {
+          if (lastWall.mesh.parent) lastWall.mesh.parent.remove(lastWall.mesh);
+          _disposeWallMesh(lastWall);
+          _walls.pop();
+        }
+        _placeWallSegment(xMid, z + gapEnd, xMid, gap2Start, true);
+        _placeWallSegment(xMid, gap2End, xMid, z + length, true);
+      }
+    }
+  } else {
+    const x = Math.min(x0, x1);
+    const zMid = z0;
+    _placeWallSegment(x, zMid, x + gapStart, zMid, false);
+    _placeWallSegment(x + gapEnd, zMid, x + length, zMid, false);
+    if (length > 20 && rng() < 0.3) {
+      const subLen = length - gapEnd;
+      if (subLen > 8) {
+        const gap2Start = x + gapEnd + 2 + rng() * (subLen - GAP - 4);
+        const gap2End = gap2Start + GAP;
+        const lastWall = _walls[_walls.length - 1];
+        if (lastWall) {
+          if (lastWall.mesh.parent) lastWall.mesh.parent.remove(lastWall.mesh);
+          _disposeWallMesh(lastWall);
+          _walls.pop();
+        }
+        _placeWallSegment(x + gapEnd, zMid, gap2Start, zMid, false);
+        _placeWallSegment(gap2End, zMid, x + length, zMid, false);
+      }
+    }
+  }
+}
+
+/**
+ * Place a single AABB wall segment. Vertical walls have width
+ * WALL_THICKNESS, horizontal walls have height WALL_THICKNESS.
+ */
+function _placeWallSegment(x0, z0, x1, z1, vertical) {
+  if (vertical) {
+    const length = Math.abs(z1 - z0);
+    if (length < 0.5) return;
+    const cx = x0;
+    const cz = (z0 + z1) * 0.5;
+    _addWall(cx, cz, WALL_THICKNESS, length);
+  } else {
+    const length = Math.abs(x1 - x0);
+    if (length < 0.5) return;
+    const cx = (x0 + x1) * 0.5;
+    const cz = z0;
+    _addWall(cx, cz, length, WALL_THICKNESS);
+  }
+}
+
+/**
+ * Remove walls that overlap the spawn safe zone (8u radius from
+ * arena origin). Player spawns at (0,0,0) so they can't be inside
+ * geometry on wave start.
+ */
+function _purgeSpawnZoneWalls() {
+  for (let i = _walls.length - 1; i >= 0; i--) {
+    const w = _walls[i];
+    // Closest point on AABB to origin.
+    const hx = w.w * 0.5;
+    const hz = w.h * 0.5;
+    const cx = Math.max(w.x - hx, Math.min(w.x + hx, 0));
+    const cz = Math.max(w.z - hz, Math.min(w.z + hz, 0));
+    const distSq = cx * cx + cz * cz;
+    if (distSq < SPAWN_SAFE_RADIUS * SPAWN_SAFE_RADIUS) {
+      // Remove from scene + disposal.
+      if (w.mesh.parent) w.mesh.parent.remove(w.mesh);
+      _disposeWallMesh(w);
+      _walls.splice(i, 1);
+    }
+  }
+}
+
+function _disposeWallMesh(wall) {
+  wall.mesh.traverse((node) => {
+    if (node.geometry) node.geometry.dispose();
+    if (node.material) {
+      if (Array.isArray(node.material)) {
+        for (const m of node.material) m.dispose();
+      } else {
+        node.material.dispose();
+      }
+    }
+  });
 }
 
 /**
@@ -251,8 +433,10 @@ function _addWall(x, z, w, h) {
   // Cyan trim along the top edge — thin emissive strip 0.04u tall sitting
   // ON TOP of the body. Reads as a glowing capstone, gives the otherwise
   // black walls a recognizable Endless Glyphs identity.
+  // Color is _activeTrimColor — set per wave by generateWallsForWave to
+  // match the wave's chapter tint.
   const trimMat = new THREE.MeshBasicMaterial({
-    color: WALL_TRIM_COLOR,
+    color: _activeTrimColor,
     transparent: true,
     opacity: 0.85,
     toneMapped: false,

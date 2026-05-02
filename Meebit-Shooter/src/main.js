@@ -3362,7 +3362,17 @@ function gameOver() {
   // title and runs the tutorial (startTutorial also stops it).
   // Audio.startDeathMusic also stops the chapter playlist and the
   // tutorial loop on entry so the death track plays alone.
-  try { Audio.startDeathMusic && Audio.startDeathMusic(); } catch (_) {}
+  //
+  // EXCEPTION — per playtester: "If the player dies [in endless
+  // glyphs] can we use CDrone?" Endless death uses the same drone
+  // that plays on the title screen. Subtler than Beyond.mp3, fits
+  // the procedural / cold mode aesthetic.
+  if (S.endlessGlyphs) {
+    try { Audio.stopMusic(); } catch (_) {}
+    try { Audio.startCDrone && Audio.startCDrone(); } catch (_) {}
+  } else {
+    try { Audio.startDeathMusic && Audio.startDeathMusic(); } catch (_) {}
+  }
   clearObjectiveArrows();
   Save.onGameOver({
     score: S.score, wave: S.wave, chapter: S.chapter, rescuedIds: S.rescuedIds,
@@ -3481,6 +3491,30 @@ function _exitTutorialIfActive() {
 function _exitEndlessIfActive() {
   if (!S.endlessGlyphs) return;
   try { exitEndlessGlyphs(); } catch (e) { console.warn('[glyphs] exit', e); }
+}
+
+// =====================================================================
+// TITLE-SCREEN AMBIENT AUDIO
+// =====================================================================
+// Per playtester: "When a player selects quit or return to main menu
+// from tutorial, the main game, or endless glyphs we need to play
+// the CDrone music on loop until they choose a game mode of course."
+//
+// CDrone is a sustained low drone — fits the title screen's
+// "AWAITING USER INPUT" mood. Starting a mode (startGame /
+// startTutorial / startEndlessGlyphs) stops it. The death-music
+// flow on game-over plays Beyond.mp3 first; the CDrone only kicks
+// in once the player clicks MAIN MENU and returns to the title.
+function _startTitleAmbient() {
+  try {
+    Audio.stopMusic();
+    Audio.stopDeathMusic && Audio.stopDeathMusic();
+    Audio.stopPhoneRing && Audio.stopPhoneRing();
+    Audio.startCDrone();
+  } catch (e) {}
+}
+function _stopTitleAmbient() {
+  try { Audio.stopCDrone && Audio.stopCDrone(); } catch (e) {}
 }
 
 // =====================================================================
@@ -4062,6 +4096,7 @@ document.getElementById('restart-btn').addEventListener('click', () => {
       // the tutorial sees the ATTACK THE AI card unlocked.
       _applyTutorialGate();
       _applyGlyphsGate();
+      _startTitleAmbient();
     });
   }
 }
@@ -4094,6 +4129,7 @@ PauseMenu.setHandlers({
     // reflects current completion state on every return-to-title.
     _applyTutorialGate();
     _applyGlyphsGate();
+    _startTitleAmbient();
   },
 });
 

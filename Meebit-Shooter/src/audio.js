@@ -53,6 +53,11 @@ const SOUNDTRACK_FILES = [
 const MUSIC_SECTIONS = {
   main:             [0, 1, 2, 3, 4, 5, 6, 7],
   paradise_fallen:  [8, 9],
+  // Endless Glyphs cycles the boss-faction tracks (XIAN, YOMI, ZION)
+  // — high-energy combat loops that match the mode's escalating
+  // wave structure. Per playtester: "For the endless glyphs
+  // soundtrack can we cycle xian, yomi, and zion music queues?"
+  endless_glyphs:   [5, 6, 7],
 };
 const DEFAULT_MUSIC_SECTION = 'main';
 

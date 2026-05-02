@@ -79,7 +79,12 @@ export function startEndlessGlyphs(playerCount = 1) {
   Audio.stopPhoneRing && Audio.stopPhoneRing();
   Audio.stopCDrone && Audio.stopCDrone();
   Audio.stopDeathMusic && Audio.stopDeathMusic();
-  Audio.setMusicSection && Audio.setMusicSection('main');
+  // Per playtester: "For the endless glyphs soundtrack can we cycle
+  // xian, yomi, and zion music queues?" The 'endless_glyphs' section
+  // is defined in audio.js MUSIC_SECTIONS and rotates indices 5,6,7
+  // (XIAN.mp3, YOMI.mp3, ZION.mp3) — high-energy combat tracks
+  // matching the wave structure.
+  Audio.setMusicSection && Audio.setMusicSection('endless_glyphs');
 
   // Hide the title screen.
   const titleEl = document.getElementById('title');
@@ -330,7 +335,10 @@ function _enterWaveAssemble(waveNum) {
   // assemble animation fades them in. The wall meshes need to exist
   // in the scene before startAssemble runs because the assemble code
   // grabs material refs from them.
-  generateWallsForWave(waveNum);
+  // Trim color reflects the wave's mapped chapter — orange for waves
+  // 1-5, red for 6-10, etc. Reads as the floorplan being themed for
+  // the active chapter even though no chapter props spawn.
+  generateWallsForWave(waveNum, _waveTrimColor(waveNum));
   startAssemble(getWalls());
   _setWaveHUD('WAVE ' + waveNum, 'ASSEMBLING');
 }
@@ -426,44 +434,112 @@ function _tickWaveDissolve(dt) {
 }
 
 /**
- * Spawn a single wave enemy at the arena edge. Spawn position is on
- * a circle around the player at distance ~16-22 units (just outside
- * normal sight) with a random angle. enemy type is rotated through
- * the chapter-1 pool (zomeeb / sprinter) — both render as box ants
- * because S.chapter === 0 triggers the mesh substitution.
+ * Endless Glyphs wave → chapter mapping. Waves 1-5 mirror chapter 1
+ * (INFERNO orange, pumpkinheads + ants), 6-10 chapter 2 (CRIMSON red,
+ * vampires/devils), and so on through to waves 26-30 = chapter 6.
+ * Per playtester: "I think I want to mirror chapter color and enemy
+ * types in the main game for the waves in Endless glyphs... for
+ * waves 1-5 we need pumpkin heads. for waves 6-10 we need vampires
+ * devils zomeebs mummies. so on and so forth until wave 30."
+ *
+ * @param {number} waveNum  endless wave number, 1-30
+ * @returns {number}        chapter index 0-5 for use with CHAPTERS
+ *                           and waveEnemyMix
+ */
+function _waveToChapterIdx(waveNum) {
+  // waves 1-5 → 0, 6-10 → 1, ..., 26-30 → 5
+  return Math.max(0, Math.min(5, Math.floor((waveNum - 1) / 5)));
+}
+
+/**
+ * Get the enemy type roll table for an endless wave. Mirrors the
+ * main game's chapter mix per the wave→chapter mapping. Returns a
+ * { typeKey: weight } object summing to ~1.0.
+ */
+function _endlessEnemyMix(waveNum) {
+  const chapterIdx = _waveToChapterIdx(waveNum);
+  // Inline replicas of waves.js / config.js's waveEnemyMix per
+  // chapter. Could be shared via export, but inlining is safer —
+  // changes to the main-game mix shouldn't accidentally rebalance
+  // endless. Per-chapter intent:
+  //   ch0 INFERNO  — pumpkinheads + ants (zomeeb/sprinter)
+  //   ch1 CRIMSON  — vampires + devils + zomeebs + mummies
+  //   ch2 SOLAR    — wizards
+  //   ch3 TOXIC    — goospitters
+  //   ch4 ARCTIC   — ghosts
+  //   ch5 PARADISE — ghosts (final-chapter signature)
+  switch (chapterIdx) {
+    case 0:
+      return { zomeeb: 0.45, sprinter: 0.25, pumpkin: 0.20, brute: 0.10 };
+    case 1:
+      return { zomeeb: 0.30, sprinter: 0.15, vampire: 0.30, red_devil: 0.20, brute: 0.05 };
+    case 2:
+      return { zomeeb: 0.30, sprinter: 0.20, wizard: 0.30, brute: 0.15, phantom: 0.05 };
+    case 3:
+      return { zomeeb: 0.30, sprinter: 0.20, goospitter: 0.30, brute: 0.15, phantom: 0.05 };
+    case 4:
+      return { zomeeb: 0.25, sprinter: 0.20, ghost: 0.40, brute: 0.10, phantom: 0.05 };
+    case 5:
+      return { zomeeb: 0.25, sprinter: 0.20, ghost: 0.30, vampire: 0.10, wizard: 0.10, brute: 0.05 };
+    default:
+      return { zomeeb: 0.7, sprinter: 0.3 };
+  }
+}
+
+/**
+ * Pick a single enemy type from a mix table (weighted random).
+ */
+function _pickFromMix(mix) {
+  const entries = Object.entries(mix);
+  let total = 0;
+  for (const [, w] of entries) total += w;
+  let r = Math.random() * total;
+  for (const [type, w] of entries) {
+    r -= w;
+    if (r <= 0) return type;
+  }
+  return entries[0][0];
+}
+
+/**
+ * Spawn a single wave enemy at the arena edge. Uses the wave→chapter
+ * mix for type selection and the chapter's enemyTint for color.
  */
 function _spawnWaveEnemy() {
   if (!player || !player.pos) return;
   const angle = Math.random() * Math.PI * 2;
   const dist = 16 + Math.random() * 6;
-  // Clamp inside arena — arena half-extent is 50, leave a 2u buffer.
   const ARENA = 50;
   const px = player.pos.x;
   const pz = player.pos.z;
   const x = Math.max(-(ARENA - 2), Math.min(ARENA - 2, px + Math.cos(angle) * dist));
   const z = Math.max(-(ARENA - 2), Math.min(ARENA - 2, pz + Math.sin(angle) * dist));
-  // Type roll — 70% zomeeb, 30% sprinter so the player sees both
-  // movement profiles (steady walker vs faster rusher).
-  const type = Math.random() < 0.7 ? 'zomeeb' : 'sprinter';
-  // Chapter 1 tint (orange) — uniform across the run for visual
-  // consistency. enemies.js's _useAntForChapter1 check on
-  // (S.chapter === 0 && (zomeeb|sprinter)) substitutes the box-ant
-  // mesh; resetGame at run-start guarantees S.chapter === 0.
-  const tint = CHAPTERS[0].full.enemyTint;
-  // HP scaling: ×1.05^(wave-1). Wave 1 = baseline (×1.0), wave 30 ≈
-  // ×4.1. The hpMul kwarg is passed via the optional 4th arg to
-  // makeEnemy; current factory signature is makeEnemy(typeKey, tint,
-  // pos) — the `hpMul` is applied internally after consulting the
-  // ENEMY_TYPES base. We emulate it by scaling the spawned enemy's
-  // hp/hpMax inline.
+  // Pick type from chapter-mapped mix.
+  const mix = _endlessEnemyMix(S.endlessWave);
+  const type = _pickFromMix(mix);
+  // Use the mapped chapter's tint for visual identity.
+  const chapterIdx = _waveToChapterIdx(S.endlessWave);
+  const tint = CHAPTERS[chapterIdx].full.enemyTint;
+  // HP scaling: ×1.05^(wave-1).
   const e = makeEnemy(type, tint, new THREE.Vector3(x, 0, z));
   if (e) {
     const hpMul = Math.pow(1.05, S.endlessWave - 1);
     e.hp = Math.round(e.hp * hpMul);
     e.hpMax = Math.round(e.hpMax * hpMul);
-    // Spawn-in flourish so the enemy doesn't just pop into existence.
     hitBurst(new THREE.Vector3(x, 1.4, z), tint, 6);
   }
+}
+
+/**
+ * Get the chapter trim color for the current endless wave's walls
+ * + dissolve/assemble particle emissive. Per playtester: "Can we
+ * color the top of the walls from cyan to match the chapter tint?
+ * Waves 1-5 orange." Reads off CHAPTERS[chapterIdx].full.enemyTint
+ * which already encodes the chapter's signature color.
+ */
+function _waveTrimColor(waveNum) {
+  const idx = _waveToChapterIdx(waveNum);
+  return CHAPTERS[idx].full.enemyTint;
 }
 
 /**
@@ -661,6 +737,10 @@ let _lockerPulseT = 0;
 
 function _spawnLocker() {
   if (_lockerMesh) return;       // idempotent — already spawned
+  // Roll a fresh 3-weapon random sample for this locker session.
+  // Per playtester: random options each visit so the player makes a
+  // tactical decision rather than always picking their best.
+  _resetLockerWeaponSample();
   const root = new THREE.Group();
   root.position.set(0, 0, 0);
 
@@ -849,21 +929,50 @@ function _ensureLockerPanel() {
  * theoretically gain unlocks mid-run (future drop / reward feature)
  * so we re-read every time instead of caching.
  */
+// Cached random sample of 3 weapon IDs for the current locker
+// session. Built once per locker spawn (in _spawnLocker via
+// _resetLockerWeaponSample), reused across re-renders so clicking a
+// weapon doesn't reshuffle the offered options. Per playtester:
+// "Can we provide the player 3 weapon options at random when going
+// to the locker?"
+let _lockerWeaponSample = null;
+
+function _resetLockerWeaponSample() {
+  const unlocked = (window.__armory && window.__armory.unlocked) || { pistol: true };
+  // Build the unlocked pool. Pistol is always present.
+  const pool = [];
+  const order = ['pistol', 'shotgun', 'smg', 'rocket', 'raygun', 'flamethrower'];
+  for (const id of order) {
+    if (unlocked[id] && WEAPONS[id]) pool.push(id);
+  }
+  // If the player has 3 or fewer unlocks, show all of them — random
+  // sampling would just reorder the same options.
+  if (pool.length <= 3) {
+    _lockerWeaponSample = pool.slice();
+    return;
+  }
+  // Sample 3 distinct weapons via Fisher-Yates partial shuffle.
+  const shuffled = pool.slice();
+  for (let i = shuffled.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+  }
+  _lockerWeaponSample = shuffled.slice(0, 3);
+}
+
 function _refreshLockerPanelTiles() {
   if (!_lockerPanelEl) return;
   const grid = _lockerPanelEl.querySelector('#glyphs-locker-grid');
   if (!grid) return;
   grid.innerHTML = '';
 
-  const unlocked = (window.__armory && window.__armory.unlocked) || { pistol: true };
+  // Use the cached random sample (built when the locker spawned).
+  // Defensive: if the sample wasn't built (race on first render),
+  // build it now.
+  if (!_lockerWeaponSample) _resetLockerWeaponSample();
+  const ids = _lockerWeaponSample || ['pistol'];
 
-  // Show every weapon the player has unlocked, in catalog order. The
-  // catalog order matches the display order in the armory screen so
-  // the player can find what they expect at a glance.
-  // Pistol is always present (defaultArmory guarantees it).
-  const order = ['pistol', 'shotgun', 'smg', 'rocket', 'raygun', 'flamethrower'];
-  for (const id of order) {
-    if (!unlocked[id]) continue;
+  for (const id of ids) {
     if (!WEAPONS[id]) continue;
     const meta = WEAPONS[id];
     const tile = document.createElement('button');

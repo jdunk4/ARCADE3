@@ -1365,8 +1365,17 @@ export function makeEnemy(typeKey, tintHex, pos) {
   // was removed per playtester: "I like your square meshes 100x
   // better." The procedural box ant is now the only choice — no
   // network fetch, no 404, no preload step needed.
+  // The ant substitution applies to:
+  //   • Main game chapter 1 (S.chapter === 0, NOT in endless) — the
+  //     original chapter-1 visual identity
+  //   • Endless Glyphs waves 1-5 only — per playtester wave→chapter
+  //     mapping where the first 5 waves echo chapter 1
+  // For endless waves 6+ the zomeeb/sprinter render as their default
+  // humanoid mesh so chapter 2-6 mixes look distinct.
+  const _inEndlessFirstFive = S && S.endlessGlyphs && S.endlessWave >= 1 && S.endlessWave <= 5;
+  const _inMainCh1 = S && !S.endlessGlyphs && S.chapter === 0;
   const _useAntForChapter1 =
-    (S && S.chapter === 0) &&
+    (_inMainCh1 || _inEndlessFirstFive) &&
     (typeKey === 'zomeeb' || typeKey === 'sprinter');
 
   let built;
