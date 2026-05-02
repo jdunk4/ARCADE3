@@ -39,7 +39,8 @@ import { hitBurst } from './effects.js';
 import { enemies, makeEnemy, clearAllEnemies } from './enemies.js';
 import { player } from './player.js';
 import { WEAPONS, CHAPTERS } from './config.js';
-import { generateWallsForWave, clearWalls } from './endlessWalls.js';
+import { generateWallsForWave, clearWalls, getWalls } from './endlessWalls.js';
+import { startDissolve, tickDissolve, cancelDissolve } from './endlessDissolve.js';
 
 // =====================================================================
 // PUBLIC API
@@ -152,6 +153,9 @@ export function updateEndlessGlyphs(dt) {
     case 'WAVE':
       _tickWave(dt);
       break;
+    case 'WAVE_DISSOLVE':
+      _tickWaveDissolve(dt);
+      break;
     case 'INTERMISSION':
       _tickIntermission(dt);
       break;
@@ -179,6 +183,7 @@ export function exitEndlessGlyphs() {
   restoreNormalFloor();
   _restoreWaveFloor();             // also restore in case wave was active
   setTutorialActive(false);
+  cancelDissolve();
   clearWalls();
   _disposeLocker();
   _disposeWaveHUD();
@@ -334,21 +339,57 @@ function _tickWave(dt) {
       : aliveCount + ' LEFT',
   );
 
-  // Wave-end check: all spawned + nothing alive → next phase.
+  // Wave-end check: all spawned + nothing alive → enter dissolve
+  // animation phase. The dissolve animation transforms the wave's
+  // walls into an autoglyph pattern on the floor (Ship 3 of 3 from
+  // playtester: "at the end of the wave the floorplan goes into the
+  // floor and disassembles into the autoglyph example formats").
+  // After the animation completes, _tickWaveDissolve advances to
+  // next wave / intermission / victory.
   if (_waveSpawnQueue === 0 && aliveCount === 0) {
-    if (S.endlessWave >= 30) {
-      _enterVictory();
-    } else if (S.endlessWave % 5 === 0) {
-      _enterIntermission();
-    } else {
-      // Roll directly into the next wave WITHOUT a tile transition
-      // (transitions are reserved for the 5-wave intermission boundary).
-      // Brief 2-second breather before the next spawn cycle.
-      S.endlessPhase = 'WAVE';
-      S.endlessPhaseT = 0;
-      S.endlessWave += 1;
-      _prepareWave(S.endlessWave);
-    }
+    _enterWaveDissolve();
+  }
+}
+
+/**
+ * WAVE_DISSOLVE — wave just ended. Particles spawn from the wall
+ * AABBs, fly to autoglyph positions on the floor, hold, then sink.
+ * This phase replaces the previous instant wall-vanish behavior
+ * with a thematic transformation visible to the player.
+ */
+function _enterWaveDissolve() {
+  S.endlessPhase = 'WAVE_DISSOLVE';
+  S.endlessPhaseT = 0;
+  // Capture the wall list BEFORE clearing — startDissolve uses the
+  // AABBs to seed particle origins. The walls then immediately vanish
+  // (their meshes are gone) and the particle cloud takes over the
+  // visual representation.
+  const wallSnapshot = getWalls().map(w => ({ x: w.x, z: w.z, w: w.w, h: w.h }));
+  clearWalls();
+  startDissolve(wallSnapshot, S.endlessWave);
+  _setWaveHUD('WAVE ' + S.endlessWave + ' COMPLETE', 'DISSOLVING');
+}
+
+function _tickWaveDissolve(dt) {
+  const stillAnimating = tickDissolve(dt);
+  if (stillAnimating) return;
+  // Animation finished — advance the run state machine to whatever
+  // would have happened if we'd skipped the dissolve.
+  if (S.endlessWave >= 30) {
+    _enterVictory();
+  } else if (S.endlessWave % 5 === 0) {
+    _enterIntermission();
+  } else {
+    // Roll directly into the next wave WITHOUT a tile transition
+    // (transitions are reserved for the 5-wave intermission boundary).
+    S.endlessPhase = 'WAVE';
+    S.endlessPhaseT = 0;
+    S.endlessWave += 1;
+    _prepareWave(S.endlessWave);
+    // New wave's walls regenerate immediately. The dissolve happened
+    // at the end of the PREVIOUS wave — between waves, the floor is
+    // briefly empty as the new layout builds.
+    generateWallsForWave(S.endlessWave);
   }
 }
 
@@ -403,8 +444,10 @@ function _spawnWaveEnemy() {
 function _enterIntermission() {
   S.endlessPhase = 'INTERMISSION';
   S.endlessPhaseT = 0;
-  // Walls disappear instantly for Ship 1 — the autoglyph dissolve
-  // animation comes in Ship 3.
+  // Walls already cleared by _enterWaveDissolve. Cancel any lingering
+  // dissolve particles in case the dissolve was still mid-flight when
+  // the wave-5 boundary triggered intermission.
+  cancelDissolve();
   clearWalls();
   // Restore rainbow lobby tiles + lobby ambient lighting.
   _restoreWaveFloor();
