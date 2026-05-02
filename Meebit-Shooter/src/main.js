@@ -236,7 +236,7 @@ import { updateShockwaves } from './shockwave.js';
 import { updateMissileArrow, hideMissileArrow } from './missileArrow.js';
 import { initGamepad, updateGamepad, setTitleMode, rumble } from './gamepad.js';
 import { startEndlessGlyphs, updateEndlessGlyphs, exitEndlessGlyphs } from './endlessGlyphs.js';
-import { resolveWallCollision, clearWalls as clearEndlessWalls } from './endlessWalls.js';
+import { resolveWallCollision, clearWalls as clearEndlessWalls, segmentBlockedByWall } from './endlessWalls.js';
 import { getEnemyMoveTarget as _endlessPathTarget, resetReplanBudget as _endlessResetReplans } from './endlessPathing.js';
 
 // =====================================================================
@@ -6039,6 +6039,12 @@ function updateRockets(dt) {
     // Wall/edge/block/prop hit
     if (segmentBlocked(prevX, prevZ, r.position.x, r.position.z) ||
         segmentBlockedByProp(prevX, prevZ, r.position.x, r.position.z) ||
+        // Endless Glyphs floorplan walls — rockets detonate on the
+        // wall surface rather than punching through. The explodeRocket
+        // call below handles AoE so enemies on the far side of a
+        // narrow wall can still take splash damage.
+        (S.endlessGlyphs &&
+         segmentBlockedByWall(prevX, prevZ, r.position.x, r.position.z)) ||
         ud.life <= 0 ||
         Math.abs(r.position.x) > ARENA || Math.abs(r.position.z) > ARENA) {
       explodeRocket(r);
@@ -6984,6 +6990,17 @@ function updateBullets(dt) {
     // Prop block — bullets despawn on silo/turret/depot/powerplant/radio
     // without damaging them (props are indestructible cover).
     if (segmentBlockedByProp(prevX, prevZ, b.position.x, b.position.z)) {
+      hitBurst(b.position, 0xffffff, 3);
+      scene.remove(b); bullets.splice(i, 1); continue;
+    }
+    // ENDLESS GLYPHS — bullets are blocked by procedural floorplan
+    // walls. Per playtester: "Can we make it to where the walls
+    // that appear in endless glyphs do not allow bullets to go
+    // through?" Walls are treated as full-height for clarity even
+    // though the meshes are 1.5u tall. Gated on S.endlessGlyphs
+    // so the regular game path pays nothing extra.
+    if (S.endlessGlyphs &&
+        segmentBlockedByWall(prevX, prevZ, b.position.x, b.position.z)) {
       hitBurst(b.position, 0xffffff, 3);
       scene.remove(b); bullets.splice(i, 1); continue;
     }

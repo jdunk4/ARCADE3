@@ -48,6 +48,7 @@ import { S } from './state.js';
 import { PARADISE_FALLEN_CHAPTER_IDX } from './config.js';
 import { player } from './player.js';
 import { isPiloting } from './mech.js';
+import { segmentBlockedByWall } from './endlessWalls.js';
 
 // =====================================================================
 // TUNING
@@ -576,6 +577,13 @@ export function updateTurrets(dt) {
         const dz = t.target.pos.z - t.pos.z;
         if (dx * dx + dz * dz > t.cfg.range * t.cfg.range) {
           t.target = null;
+        } else if (S.endlessGlyphs &&
+                   segmentBlockedByWall(t.pos.x, t.pos.z,
+                                        t.target.pos.x, t.target.pos.z)) {
+          // Endless Glyphs — target ducked behind a wall since lock-on.
+          // Drop the target so the turret stops streaming shots into
+          // geometry. Re-acquire fires on the next TURRET_ACQ_INTERVAL.
+          t.target = null;
         }
       }
     }
@@ -628,13 +636,32 @@ export function updateTurrets(dt) {
 function _findClosestEnemy(pos, range) {
   let best = null;
   let bestD2 = range * range;
+  // ENDLESS GLYPHS — skip enemies hidden behind walls. Per
+  // playtester: "Turrets do not lock on an enemy unless the
+  // bullets can hit them." All turret variants (MG, Tesla, Fire,
+  // Poison) are hitscan or short cone — no projectile travel —
+  // so a clear segment from turret to enemy is sufficient. We
+  // gate on S.endlessGlyphs so the regular game (where walls
+  // don't exist) skips the LOS cost entirely.
+  const checkLOS = !!S.endlessGlyphs;
   for (let i = 0; i < enemies.length; i++) {
     const e = enemies[i];
     if (!e || !e.pos || e.dying) continue;
     const dx = e.pos.x - pos.x;
     const dz = e.pos.z - pos.z;
     const d2 = dx * dx + dz * dz;
-    if (d2 < bestD2) { bestD2 = d2; best = e; }
+    if (d2 < bestD2) {
+      // Range gate passed; verify the shot can actually land.
+      // Without this, a turret on one side of a wall would lock
+      // onto an enemy on the other side and stream shots into
+      // the wall.
+      if (checkLOS &&
+          segmentBlockedByWall(pos.x, pos.z, e.pos.x, e.pos.z)) {
+        continue;
+      }
+      bestD2 = d2;
+      best = e;
+    }
   }
   return best;
 }

@@ -409,6 +409,68 @@ export function getWalls() {
   return _walls;
 }
 
+/**
+ * Test whether the segment from (x0,z0) to (x1,z1) crosses any
+ * wall. Used by the bullet update + rocket update to despawn shots
+ * that would visually fly through a wall, and by turret targeting
+ * to skip enemies hidden behind walls.
+ *
+ * Walls are treated as floor-to-ceiling for gameplay clarity — the
+ * y-coord of the projectile is ignored. Players will read "the wall
+ * blocked my shot" intuitively; making some shots fly over because
+ * they happened to spawn at y=1.9 vs the 1.5u wall height would
+ * feel inconsistent.
+ *
+ * Returns true if the segment hits at least one wall AABB.
+ *
+ * Algorithm: for each wall, run the standard 2D segment-vs-AABB
+ * slab test (Liang-Barsky). Early-exit on first hit. Cheap because
+ * walls are few (~100) and the slab test is constant-time per
+ * wall.
+ */
+export function segmentBlockedByWall(x0, z0, x1, z1) {
+  if (_walls.length === 0) return false;
+  const dx = x1 - x0;
+  const dz = z1 - z0;
+  for (let i = 0; i < _walls.length; i++) {
+    const w = _walls[i];
+    const minX = w.x - w.w * 0.5;
+    const maxX = w.x + w.w * 0.5;
+    const minZ = w.z - w.h * 0.5;
+    const maxZ = w.z + w.h * 0.5;
+    // Slab test: find intersection range tEnter..tExit; if it
+    // overlaps [0, 1], the segment hits the AABB.
+    let tEnter = 0, tExit = 1;
+    // X slab.
+    if (Math.abs(dx) < 1e-9) {
+      if (x0 < minX || x0 > maxX) continue;          // segment parallel + outside
+    } else {
+      const inv = 1 / dx;
+      let t1 = (minX - x0) * inv;
+      let t2 = (maxX - x0) * inv;
+      if (t1 > t2) { const tmp = t1; t1 = t2; t2 = tmp; }
+      if (t1 > tEnter) tEnter = t1;
+      if (t2 < tExit) tExit = t2;
+      if (tEnter > tExit) continue;
+    }
+    // Z slab.
+    if (Math.abs(dz) < 1e-9) {
+      if (z0 < minZ || z0 > maxZ) continue;
+    } else {
+      const inv = 1 / dz;
+      let t1 = (minZ - z0) * inv;
+      let t2 = (maxZ - z0) * inv;
+      if (t1 > t2) { const tmp = t1; t1 = t2; t2 = tmp; }
+      if (t1 > tEnter) tEnter = t1;
+      if (t2 < tExit) tExit = t2;
+      if (tEnter > tExit) continue;
+    }
+    // Both slabs intersected — segment hits this wall.
+    return true;
+  }
+  return false;
+}
+
 // =====================================================================
 // INTERNAL — MESH BUILDER
 // =====================================================================
