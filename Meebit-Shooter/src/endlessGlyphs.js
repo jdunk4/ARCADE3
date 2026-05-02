@@ -37,6 +37,8 @@ import { Audio } from './audio.js';
 import { applyTutorialFloor, restoreNormalFloor, setTutorialActive } from './tutorial.js';
 import { hitBurst } from './effects.js';
 import { clearAllEnemies } from './enemies.js';
+import { player } from './player.js';
+import { WEAPONS } from './config.js';
 
 // =====================================================================
 // PUBLIC API
@@ -387,11 +389,232 @@ function _spawnLocker() {
   hitBurst(new THREE.Vector3(0, 1.6, 0), 0xffffff, 8);
 }
 
+// =====================================================================
+// LOCKER PROXIMITY UI
+// =====================================================================
+// Per playtester: "When I go to endless glyphs I have no way to act on
+// the locker. I think this should just open when in radius." The
+// player walks up to the locker; an HTML panel auto-opens at the
+// edge of the screen with one tile per armory-unlocked weapon. Click
+// a tile → equip that weapon (S.currentWeapon swap + gun recolor +
+// toast + audio cue), panel closes. Walking out of radius also
+// hides the panel without picking anything.
+//
+// Movement is NOT blocked while the panel is open — the player can
+// keep walking. The panel auto-hides when distance exceeds the
+// radius again.
+
+const LOCKER_INTERACT_RADIUS = 4.0;     // world units — comfortable but not generous
+const LOCKER_INTERACT_HYSTERESIS = 0.5; // world units — close-only when noticeably outside
+
+let _lockerPanelEl = null;              // <div> root of the picker panel
+let _lockerPanelOpen = false;           // current visibility state
+let _lockerPanelLastWeaponId = null;    // last-equipped — highlighted in UI
+
+/**
+ * Lazily build the locker HTML panel. Idempotent — first call creates
+ * the element + listeners, subsequent calls re-render the tile grid
+ * (in case the player's armory unlocks have changed since last open).
+ */
+function _ensureLockerPanel() {
+  if (_lockerPanelEl) {
+    _refreshLockerPanelTiles();
+    return;
+  }
+  // Read armory unlocks. window.__armory is seeded by main.js's
+  // applyArmoryToRunStart. If endless glyphs launched without a
+  // proper armory record (corrupted save, dev cheat path), fall
+  // back to pistol-only.
+  const root = document.createElement('div');
+  root.id = 'glyphs-locker-panel';
+  // Inline styles so we don't have to add to styles.css. Pinned
+  // bottom-center, dark blueprint-blue card with a header + tile
+  // grid + hint text. Pointer-events on so click works; the rest
+  // of the screen still gets player input.
+  root.style.cssText = [
+    'position:fixed',
+    'left:50%',
+    'bottom:80px',
+    'transform:translateX(-50%)',
+    'min-width:380px',
+    'max-width:680px',
+    'padding:16px 20px 18px 20px',
+    'background:rgba(8, 14, 22, 0.94)',
+    'border:2px solid #66ccff',
+    'border-radius:8px',
+    'box-shadow:0 0 24px rgba(102, 204, 255, 0.45), inset 0 0 12px rgba(102, 204, 255, 0.18)',
+    'color:#cfeaff',
+    'font-family:monospace',
+    'letter-spacing:1px',
+    'z-index:8500',
+    'pointer-events:auto',
+    'user-select:none',
+  ].join(';');
+
+  const header = document.createElement('div');
+  header.textContent = 'WEAPON LOCKER';
+  header.style.cssText = [
+    'font-size:13px',
+    'font-weight:700',
+    'letter-spacing:3px',
+    'color:#66ccff',
+    'text-align:center',
+    'margin-bottom:10px',
+    'text-shadow:0 0 8px rgba(102,204,255,0.7)',
+  ].join(';');
+  root.appendChild(header);
+
+  const grid = document.createElement('div');
+  grid.id = 'glyphs-locker-grid';
+  grid.style.cssText = [
+    'display:flex',
+    'flex-wrap:wrap',
+    'justify-content:center',
+    'gap:8px',
+  ].join(';');
+  root.appendChild(grid);
+
+  const hint = document.createElement('div');
+  hint.textContent = 'CLICK A WEAPON TO EQUIP · WALK AWAY TO CLOSE';
+  hint.style.cssText = [
+    'font-size:9px',
+    'letter-spacing:2px',
+    'color:#5a7080',
+    'text-align:center',
+    'margin-top:10px',
+  ].join(';');
+  root.appendChild(hint);
+
+  document.body.appendChild(root);
+  _lockerPanelEl = root;
+  _refreshLockerPanelTiles();
+}
+
+/**
+ * Build the weapon-tile grid based on the player's current armory
+ * unlocks. Called whenever the panel opens — the player COULD
+ * theoretically gain unlocks mid-run (future drop / reward feature)
+ * so we re-read every time instead of caching.
+ */
+function _refreshLockerPanelTiles() {
+  if (!_lockerPanelEl) return;
+  const grid = _lockerPanelEl.querySelector('#glyphs-locker-grid');
+  if (!grid) return;
+  grid.innerHTML = '';
+
+  const unlocked = (window.__armory && window.__armory.unlocked) || { pistol: true };
+
+  // Show every weapon the player has unlocked, in catalog order. The
+  // catalog order matches the display order in the armory screen so
+  // the player can find what they expect at a glance.
+  // Pistol is always present (defaultArmory guarantees it).
+  const order = ['pistol', 'shotgun', 'smg', 'rocket', 'raygun', 'flamethrower'];
+  for (const id of order) {
+    if (!unlocked[id]) continue;
+    if (!WEAPONS[id]) continue;
+    const meta = WEAPONS[id];
+    const tile = document.createElement('button');
+    tile.dataset.weaponId = id;
+    tile.style.cssText = [
+      'flex:0 0 auto',
+      'min-width:96px',
+      'padding:12px 14px',
+      'background:rgba(20, 32, 48, 0.85)',
+      'border:1.5px solid #2a4055',
+      'border-radius:6px',
+      'color:#cfeaff',
+      'font-family:monospace',
+      'font-size:11px',
+      'font-weight:700',
+      'letter-spacing:2px',
+      'cursor:pointer',
+      'transition:transform 0.08s ease, border-color 0.08s ease, box-shadow 0.08s ease',
+      'text-align:center',
+    ].join(';');
+    // Highlight the currently-equipped weapon so the player can see
+    // their current selection. S.currentWeapon may be 'pickaxe'
+    // mid-run; in that case nothing's highlighted.
+    const isCurrent = (S.currentWeapon === id);
+    if (isCurrent) {
+      tile.style.borderColor = '#66ccff';
+      tile.style.boxShadow = '0 0 12px rgba(102,204,255,0.55)';
+    }
+    const colorHex = '#' + meta.color.toString(16).padStart(6, '0');
+    tile.innerHTML =
+      '<div style="font-size:13px; color:' + colorHex + '; text-shadow:0 0 6px ' + colorHex + 'aa; margin-bottom:4px;">' +
+        meta.name +
+      '</div>' +
+      '<div style="font-size:9px; color:#5a7080; letter-spacing:1px;">' +
+        (isCurrent ? 'EQUIPPED' : 'EQUIP') +
+      '</div>';
+    // Hover effect — slight lift.
+    tile.addEventListener('mouseenter', () => {
+      if (!isCurrent) {
+        tile.style.borderColor = '#4a7090';
+        tile.style.transform = 'translateY(-2px)';
+      }
+    });
+    tile.addEventListener('mouseleave', () => {
+      if (!isCurrent) {
+        tile.style.borderColor = '#2a4055';
+        tile.style.transform = '';
+      }
+    });
+    // Click → equip. Bridge is window.__equipWeapon set in main.js.
+    tile.addEventListener('click', () => {
+      if (typeof window.__equipWeapon === 'function') {
+        const ok = window.__equipWeapon(id);
+        if (ok) {
+          _lockerPanelLastWeaponId = id;
+          _refreshLockerPanelTiles();    // re-render so EQUIPPED highlight moves
+        }
+      }
+    });
+    grid.appendChild(tile);
+  }
+}
+
+function _showLockerPanel() {
+  if (_lockerPanelOpen) return;
+  _ensureLockerPanel();
+  if (_lockerPanelEl) _lockerPanelEl.style.display = 'block';
+  _lockerPanelOpen = true;
+}
+
+function _hideLockerPanel() {
+  if (!_lockerPanelOpen) return;
+  if (_lockerPanelEl) _lockerPanelEl.style.display = 'none';
+  _lockerPanelOpen = false;
+}
+
+function _disposeLockerPanel() {
+  if (_lockerPanelEl && _lockerPanelEl.parentNode) {
+    _lockerPanelEl.parentNode.removeChild(_lockerPanelEl);
+  }
+  _lockerPanelEl = null;
+  _lockerPanelOpen = false;
+}
+
 function _tickLockerVisuals(dt) {
   if (!_lockerMesh || !_lockerGlowMat) return;
   _lockerPulseT += dt;
   // Slow vertical glow pulse — opacity oscillates 0.55 → 0.95.
   _lockerGlowMat.opacity = 0.55 + Math.sin(_lockerPulseT * 2.0) * 0.20;
+
+  // ---- PROXIMITY UI ----
+  // Show the picker panel when the player is within
+  // LOCKER_INTERACT_RADIUS of the locker (centered at world 0,0,0).
+  // Hysteresis prevents flicker when the player walks the boundary —
+  // open at radius, close at radius + 0.5u.
+  if (!player || !player.pos) return;
+  const dx = player.pos.x;
+  const dz = player.pos.z;
+  const dist = Math.sqrt(dx * dx + dz * dz);
+  if (!_lockerPanelOpen && dist <= LOCKER_INTERACT_RADIUS) {
+    _showLockerPanel();
+  } else if (_lockerPanelOpen && dist > LOCKER_INTERACT_RADIUS + LOCKER_INTERACT_HYSTERESIS) {
+    _hideLockerPanel();
+  }
 }
 
 function _disposeLocker() {
@@ -410,4 +633,6 @@ function _disposeLocker() {
   if (_lockerMesh.parent) _lockerMesh.parent.remove(_lockerMesh);
   _lockerMesh = null;
   _lockerGlowMat = null;
+  // Hide + dispose the proximity UI panel too.
+  _disposeLockerPanel();
 }

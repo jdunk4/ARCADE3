@@ -3878,6 +3878,27 @@ window.__exitEndlessGlyphs = function() {
   exitEndlessGlyphs();
 };
 
+// Bridge for the endless-glyphs locker UI to equip a weapon. The
+// locker UI lives in endlessGlyphs.js (an HTML panel that pops up
+// when the player walks within radius of the locker mesh). When a
+// weapon tile is clicked, the locker calls this bridge to actually
+// swap the active weapon — same operations the in-run mech-exit /
+// tutorial-pickup flows use, but accessible from outside main.js
+// without exporting recolorGun + S directly.
+window.__equipWeapon = function(weaponId) {
+  if (!weaponId || !WEAPONS[weaponId]) return false;
+  S.currentWeapon = weaponId;
+  S.previousCombatWeapon = weaponId;
+  try { recolorGun(WEAPONS[weaponId].color); } catch (e) {}
+  try { UI.toast(WEAPONS[weaponId].name + ' EQUIPPED', '#' + WEAPONS[weaponId].color.toString(16).padStart(6, '0'), 1200); } catch (e) {}
+  try { Audio.pickup && Audio.pickup(); } catch (e) {}
+  // Re-sync HUD weapon cursor + reticle. The existing _syncWeaponCursor
+  // helper handles both — calling it directly bypasses the keyboard
+  // shortcut path but produces the same visual update.
+  try { _syncWeaponCursor && _syncWeaponCursor(); } catch (e) {}
+  return true;
+};
+
 document.getElementById('tutorial-btn').addEventListener('click', () => {
   Audio.init();
   startTutorial();
