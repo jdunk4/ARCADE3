@@ -412,7 +412,7 @@ canvas { display: block; cursor: var(--matrix-cursor); }
 #title-row {
   display: flex;
   flex-direction: row;
-  align-items: flex-start;            /* top-align so columns of different heights line up at the top */
+  align-items: stretch;               /* columns grow to match each other's height — lets the right-stack fill the available space alongside a tall left column */
   justify-content: center;
   gap: 48px;
   width: 100%;
@@ -481,49 +481,31 @@ canvas { display: block; cursor: var(--matrix-cursor); }
 }
 
 /* Right-side stack — holds TUTORIAL + ATTACK THE AI + ENDLESS GLYPHS.
-   Per playtester redesign: "Can we make the cards on the main screen
-   sit on top of one another. The tutorial should be top card on
-   right. The main game ATTACK THE AI should be underneath it. The
-   Endless GLYPHS should be underneath that." All three are landscape.
-   Three stacked landscape cards × 200px tall + 2 × 14px gap = 628px
-   total — comfortably fits in a typical viewport's vertical space. */
+   Per playtester: "is there any way we can make tutorial option fill
+   up this whole space? Like make the right side of the screen cut
+   into three triangles with three options?"
+   
+   The right column is a positioned container with absolutely-
+   positioned cards, each card occupying the full container area.
+   Three cards layered with z-index; each is clipped to a
+   triangular slice of the container. Together they tile the entire
+   right column with no gaps or overlap visible.
+   
+   Because all three cards have the same bounding box (full
+   container), their polygons share the SAME coordinate system —
+   so polygon vertices can be matched exactly between adjacent
+   cards' diagonal edges. */
 #title-right-stack {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
+  position: relative;
   flex: 0 0 auto;
-}
-/* Landscape variant — 480px wide × 200px tall (~2.4:1 ratio).
-   Slightly more elongated than the previous 480×300 because we now
-   stack THREE cards instead of two; flatter cards keep the total
-   stack height within a normal viewport.
-
-   Per playtester: "Can we make options for tutorial / attack the AI
-   / Endless glyphs like broken glass on the right hand side of the
-   screen instead of squares?" Each card uses a clip-path polygon
-   that traces a jagged shard silhouette — irregular angled vertices
-   evoke a broken-glass shape. The :nth-child(N) modifier rotates
-   slightly different polygons across the three cards so they don't
-   look identical. The shape is large enough to contain the existing
-   image + label without rework — only the silhouette changes.
-
-   Note: clip-path replaces the soft border-radius/outline aesthetic
-   of the original square, so we also bump the inset glow stronger
-   to compensate for the lost rectangular outline. Hover + selected
-   states inherit the same clip — they just brighten / scale. */
-.mode-card.mode-card-landscape {
+  align-self: stretch;
+  min-height: 640px;
   width: 480px;
-  height: 200px;
-  /* SHARD 1 — slight downward jag on the right, notch on the left.
-     Reads as a horizontal landscape glass shard. */
-  clip-path: polygon(
-    3% 8%,    18% 0%,   42% 4%,   65% 0%,   88% 6%,
-    100% 18%, 96% 42%,  100% 70%, 92% 96%,  78% 100%,
-    52% 96%,  28% 100%, 8% 92%,   0% 64%,   4% 32%
-  );
+}
+.mode-card.mode-card-landscape {
+  position: absolute;
+  inset: 0;                   /* fill the container */
   border: none;
-  /* Glass-edge highlight: subtle inner gradient pretending to catch
-     light along the top-left edge of the shard. */
   background:
     linear-gradient(135deg,
       rgba(0, 255, 102, 0.18) 0%,
@@ -531,69 +513,99 @@ canvas { display: block; cursor: var(--matrix-cursor); }
       transparent 88%,
       rgba(0, 255, 102, 0.10) 100%),
     rgba(2, 12, 6, 0.62);
-  /* drop-shadow respects clip-path (unlike box-shadow which cuts at
-     the rectangular bounding box) — gives the shard a true outer
-     green halo that traces its jagged silhouette. */
   filter: saturate(0.55) brightness(0.78) drop-shadow(0 0 12px rgba(0, 255, 102, 0.55));
-  /* Box-shadow no longer renders the outer halo (drop-shadow does
-     that now); keep only the inner glow for surface depth. The inset
-     gets clipped to the shard interior, which is what we want. */
   box-shadow: inset 0 0 32px rgba(0, 255, 102, 0.20);
 }
-/* Vary the shard silhouettes per-card so the three don't read as
-   identical clones. Card 2 has more vertices on the bottom edge,
-   card 3 has a bigger top-right corner notch. */
+/* CARD 1 — TUTORIAL — top triangular slice. Polygon spans the top
+   third of the container, with a diagonal bottom edge sloping from
+   right (40%) down to left (33%) — slight angle. */
+#title-right-stack > .mode-card-landscape:nth-child(1) {
+  clip-path: polygon(
+    0% 0%,    100% 0%,
+    100% 30%, 50% 38%, 0% 33%
+  );
+  z-index: 3;
+}
+/* CARD 2 — ATTACK THE AI — middle slice. Top edge mirrors card 1's
+   bottom edge EXACTLY (same vertices), bottom edge mirrors card 3's
+   top edge. Because all three cards share the same coordinate
+   system (same bounding box), the vertices align pixel-perfectly. */
 #title-right-stack > .mode-card-landscape:nth-child(2) {
   clip-path: polygon(
-    0% 14%,   24% 4%,   48% 0%,   72% 6%,   100% 0%,
-    96% 28%,  100% 56%, 94% 84%,  82% 100%, 60% 92%,
-    34% 100%, 14% 94%,  4% 76%,   8% 48%,   0% 28%
+    0% 33%,   50% 38%,  100% 30%,
+    100% 65%, 50% 72%,  0% 67%
   );
+  z-index: 2;
 }
+/* CARD 3 — ENDLESS GLYPHS — bottom slice. Top edge mirrors card 2's
+   bottom edge; flat bottom at 100%. */
 #title-right-stack > .mode-card-landscape:nth-child(3) {
   clip-path: polygon(
-    6% 0%,    32% 6%,   58% 0%,   80% 8%,   100% 4%,
-    98% 36%,  92% 60%,  100% 84%, 84% 100%, 56% 94%,
-    30% 100%, 8% 96%,   0% 72%,   6% 42%,   2% 18%
+    0% 67%,   50% 72%,  100% 65%,
+    100% 100%, 0% 100%
   );
+  z-index: 1;
+}
+/* Card image — fills the absolute container behind the polygon clip.
+   The image is the full-container background; the clip-path on the
+   parent card crops it to the visible slice. */
+.mode-card.mode-card-landscape .mode-card-img {
+  background-position: center center;
+  background-size: cover;
+}
+/* Card label — positioned to sit inside each card's visible triangle
+   slice. Card 1 occupies top ~33% of column; label centered in that
+   area at 16%. Card 2 middle ~33%; label at 49%. Card 3 bottom ~33%;
+   label at 83%. The text-shadow + glow apply at full strength so
+   labels read clearly across the dim card backgrounds. */
+.mode-card.mode-card-landscape .mode-card-label {
+  font-size: 56px;
+  letter-spacing: 8px;
+  bottom: auto;
+  /* Default top — overridden per-card below. */
+  top: 16%;
+  transform: translateY(-50%);
+}
+#title-right-stack > .mode-card-landscape:nth-child(2) .mode-card-label {
+  top: 49%;
+}
+#title-right-stack > .mode-card-landscape:nth-child(3) .mode-card-label {
+  top: 83%;
 }
 @media (max-width: 1200px) {
-  .mode-card.mode-card-landscape { width: 420px; height: 175px; }
-  #title-right-stack { gap: 12px; }
+  #title-right-stack { width: 420px; min-height: 580px; }
   #title-left-col { flex: 0 0 460px; }
   #title-left-col h1 { font-size: 60px; }
+  .mode-card.mode-card-landscape .mode-card-label { font-size: 48px; letter-spacing: 6px; }
 }
 @media (max-width: 980px) {
-  .mode-card.mode-card-landscape { width: 380px; height: 158px; }
+  #title-right-stack { width: 380px; min-height: 520px; }
   #title-left-col { flex: 0 0 400px; }
   #title-left-col h1 { font-size: 52px; }
+  .mode-card.mode-card-landscape .mode-card-label { font-size: 42px; letter-spacing: 5px; }
 }
-/* Tablet / small landscape — keep the two-column layout. Cards stay
-   on the right next to a narrower title column. Per playtester:
-   "Right now all options are under the text we need all three
-   options on the right." We do NOT collapse to a single stack
-   here. */
+/* Tablet — keep the two-column row, narrow both sides. */
 @media (max-width: 760px) {
-  .mode-card.mode-card-landscape { width: 300px; height: 130px; }
+  #title-right-stack { width: 320px; min-height: 460px; }
   #title-row { gap: 16px; flex-wrap: nowrap; }
   #title-left-col { flex: 1 1 auto; min-width: 0; }
   #title-left-col h1 { font-size: 38px; }
   #title-left-col h2 { font-size: 12px; letter-spacing: 2px; }
   #title-left-col p { font-size: 10px; line-height: 1.5; margin-bottom: 10px; }
   #title-left-buttons { max-width: 100%; }
+  .mode-card.mode-card-landscape .mode-card-label { font-size: 32px; letter-spacing: 4px; }
 }
-/* Phone — three landscape cards stacked on the right of a narrow
-   left column. The cards shrink to ~45% of viewport width so they
-   sit alongside the title text. Per playtester: "Can we fix how
-   this appears on mobile? Right now all options are under the
-   text we need all three options on the right." Layout stays two-
-   column at any width down to ~360px viewport. */
+/* Phone — three triangular cards on the right alongside a narrow
+   left column. Per playtester: "Mobile three options on the right
+   not under the main menu." */
 @media (max-width: 480px) {
   #title-row {
-    gap: 10px;
+    gap: 8px;
     flex-wrap: nowrap;
-    padding: 0 8px;
+    padding: 0 6px;
     box-sizing: border-box;
+    align-items: stretch;
+    min-height: 95vh;
   }
   #title-left-col {
     flex: 1 1 0;
@@ -601,7 +613,7 @@ canvas { display: block; cursor: var(--matrix-cursor); }
     max-width: 50%;
   }
   #title-left-col h1 {
-    font-size: 24px;
+    font-size: 22px;
     line-height: 0.95;
     margin-bottom: 6px;
   }
@@ -616,7 +628,6 @@ canvas { display: block; cursor: var(--matrix-cursor); }
     margin-bottom: 8px;
   }
   #title-left-col #title-save-panel {
-    /* Compact save panel — single row, no padding bloat. */
     margin-bottom: 8px;
   }
   #title-left-col #mode-picker-hint {
@@ -635,23 +646,16 @@ canvas { display: block; cursor: var(--matrix-cursor); }
     padding: 6px 8px;
     letter-spacing: 1px;
   }
-  /* Right column — fixed-ish width for the cards. Each card takes
-     the full column width. Narrower than tablet but still readable;
-     the label text shrinks too. */
+  /* Right column on phone — narrow, fills available height since
+     the row is min-height: 95vh and align-items: stretch. */
   #title-right-stack {
     flex: 0 0 auto;
-    gap: 6px;
-  }
-  .mode-card.mode-card-landscape {
     width: 170px;
-    height: 64px;
+    min-height: 0;       /* let row stretch determine height */
   }
-  /* Card label needs to scale down with the smaller card. The base
-     48px font is way too large for a 64px-tall card. */
   .mode-card.mode-card-landscape .mode-card-label {
-    font-size: 14px;
-    letter-spacing: 1.5px;
-    bottom: 8px;
+    font-size: 16px;
+    letter-spacing: 2px;
   }
 }
 /* Procedural placeholder image for the ENDLESS GLYPHS card. Per
@@ -793,18 +797,21 @@ canvas { display: block; cursor: var(--matrix-cursor); }
               inset 0 0 44px rgba(0, 255, 102, 0.28);
   transform: translateY(-5px);
 }
-/* Shard cards — hover/select use drop-shadow + brightness instead of
-   box-shadow/border, because clip-path masks the rectangular
-   box-shadow halo. */
+/* Shard cards — hover/select use drop-shadow + brightness instead
+   of box-shadow/border, because clip-path masks the rectangular
+   box-shadow halo. Absolute positioning handles layout, so transform
+   is free for the hover lift effect. */
 .mode-card.mode-card-landscape:hover {
-  transform: translateY(-6px);
   filter: saturate(0.85) brightness(1.05) drop-shadow(0 0 24px rgba(0, 255, 102, 0.95));
   box-shadow: inset 0 0 48px rgba(0, 255, 102, 0.30);
+  transform: translateY(-6px);
+  z-index: 10;     /* lift above sibling cards while hovered */
 }
 .mode-card.mode-card-landscape.selected {
   filter: saturate(1.0) brightness(1.10) drop-shadow(0 0 32px rgba(0, 255, 102, 1.0));
   box-shadow: inset 0 0 56px rgba(0, 255, 102, 0.40);
   transform: translateY(-5px);
+  z-index: 9;
 }
 #mode-picker-hint {
   text-align: center;
@@ -2423,18 +2430,25 @@ canvas { display: block; cursor: var(--matrix-cursor); }
 .mode-card.locked::before {
   animation: _lockedCardPulse 2.2s ease-in-out infinite;
 }
-/* Shard variant — pull the locked badge inward so it sits inside
-   the polygon's safe zone (the shard's edge jags can otherwise
-   clip the badge corners). Smaller font scaled to the landscape
-   card height. */
+/* Locked badge — must sit inside the card's visible triangular zone.
+   Cards 2 and 3 are the only ones that can be locked, but include
+   card 1's positioning here for completeness. */
 .mode-card.mode-card-landscape.locked::before {
-  top: 22px;
-  left: 8%;
-  right: 8%;
-  padding: 10px 8px;
-  font-size: 14px;
-  letter-spacing: 2px;
+  /* Default — for any landscape card. Per-card overrides below
+     anchor the badge inside each card's visible triangle. */
+  top: 8%;
+  left: 6%;
+  right: 6%;
+  padding: 8px 6px;
+  font-size: 13px;
+  letter-spacing: 1.5px;
   border-width: 2px;
+}
+#title-right-stack > .mode-card-landscape:nth-child(2).locked::before {
+  top: 36%;
+}
+#title-right-stack > .mode-card-landscape:nth-child(3).locked::before {
+  top: 70%;
 }
 
 /* Hint flash on the locked card — added by JS for ~1s after a click,
