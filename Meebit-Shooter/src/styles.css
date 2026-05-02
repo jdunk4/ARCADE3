@@ -496,10 +496,66 @@ canvas { display: block; cursor: var(--matrix-cursor); }
 /* Landscape variant — 480px wide × 200px tall (~2.4:1 ratio).
    Slightly more elongated than the previous 480×300 because we now
    stack THREE cards instead of two; flatter cards keep the total
-   stack height within a normal viewport. */
+   stack height within a normal viewport.
+
+   Per playtester: "Can we make options for tutorial / attack the AI
+   / Endless glyphs like broken glass on the right hand side of the
+   screen instead of squares?" Each card uses a clip-path polygon
+   that traces a jagged shard silhouette — irregular angled vertices
+   evoke a broken-glass shape. The :nth-child(N) modifier rotates
+   slightly different polygons across the three cards so they don't
+   look identical. The shape is large enough to contain the existing
+   image + label without rework — only the silhouette changes.
+
+   Note: clip-path replaces the soft border-radius/outline aesthetic
+   of the original square, so we also bump the inset glow stronger
+   to compensate for the lost rectangular outline. Hover + selected
+   states inherit the same clip — they just brighten / scale. */
 .mode-card.mode-card-landscape {
   width: 480px;
   height: 200px;
+  /* SHARD 1 — slight downward jag on the right, notch on the left.
+     Reads as a horizontal landscape glass shard. */
+  clip-path: polygon(
+    3% 8%,    18% 0%,   42% 4%,   65% 0%,   88% 6%,
+    100% 18%, 96% 42%,  100% 70%, 92% 96%,  78% 100%,
+    52% 96%,  28% 100%, 8% 92%,   0% 64%,   4% 32%
+  );
+  border: none;
+  /* Glass-edge highlight: subtle inner gradient pretending to catch
+     light along the top-left edge of the shard. */
+  background:
+    linear-gradient(135deg,
+      rgba(0, 255, 102, 0.18) 0%,
+      transparent 12%,
+      transparent 88%,
+      rgba(0, 255, 102, 0.10) 100%),
+    rgba(2, 12, 6, 0.62);
+  /* drop-shadow respects clip-path (unlike box-shadow which cuts at
+     the rectangular bounding box) — gives the shard a true outer
+     green halo that traces its jagged silhouette. */
+  filter: saturate(0.55) brightness(0.78) drop-shadow(0 0 12px rgba(0, 255, 102, 0.55));
+  /* Box-shadow no longer renders the outer halo (drop-shadow does
+     that now); keep only the inner glow for surface depth. The inset
+     gets clipped to the shard interior, which is what we want. */
+  box-shadow: inset 0 0 32px rgba(0, 255, 102, 0.20);
+}
+/* Vary the shard silhouettes per-card so the three don't read as
+   identical clones. Card 2 has more vertices on the bottom edge,
+   card 3 has a bigger top-right corner notch. */
+#title-right-stack > .mode-card-landscape:nth-child(2) {
+  clip-path: polygon(
+    0% 14%,   24% 4%,   48% 0%,   72% 6%,   100% 0%,
+    96% 28%,  100% 56%, 94% 84%,  82% 100%, 60% 92%,
+    34% 100%, 14% 94%,  4% 76%,   8% 48%,   0% 28%
+  );
+}
+#title-right-stack > .mode-card-landscape:nth-child(3) {
+  clip-path: polygon(
+    6% 0%,    32% 6%,   58% 0%,   80% 8%,   100% 4%,
+    98% 36%,  92% 60%,  100% 84%, 84% 100%, 56% 94%,
+    30% 100%, 8% 96%,   0% 72%,   6% 42%,   2% 18%
+  );
 }
 @media (max-width: 1200px) {
   .mode-card.mode-card-landscape { width: 420px; height: 175px; }
@@ -512,25 +568,91 @@ canvas { display: block; cursor: var(--matrix-cursor); }
   #title-left-col { flex: 0 0 400px; }
   #title-left-col h1 { font-size: 52px; }
 }
+/* Tablet / small landscape — keep the two-column layout. Cards stay
+   on the right next to a narrower title column. Per playtester:
+   "Right now all options are under the text we need all three
+   options on the right." We do NOT collapse to a single stack
+   here. */
 @media (max-width: 760px) {
-  .mode-card.mode-card-landscape { width: 320px; height: 134px; }
-  #title-row { gap: 24px; }
-  #title-left-col { flex: 0 0 100%; min-width: 0; align-items: center; text-align: center; }
-  #title-left-col h1, #title-left-col h2, #title-left-col p { text-align: center; }
-  #title-left-col #title-save-panel { align-self: center; max-width: 320px; }
-  #title-left-col #mode-picker-hint, #title-left-col #mode-picker-desc { text-align: center; align-self: center; }
-  #title-left-buttons { align-items: center; }
-}
-@media (max-width: 480px) {
-  /* Phone — three landscape cards × ~95px tall + 8px gap × 2 = ~301px
-     vertical. Plus title text + save panel + buttons compresses to
-     fit a typical mobile viewport without much scrolling. */
-  .mode-card.mode-card-landscape { width: 280px; height: 95px; }
-  #title-right-stack { gap: 8px; }
-  #title-row { gap: 14px; }
+  .mode-card.mode-card-landscape { width: 300px; height: 130px; }
+  #title-row { gap: 16px; flex-wrap: nowrap; }
+  #title-left-col { flex: 1 1 auto; min-width: 0; }
   #title-left-col h1 { font-size: 38px; }
   #title-left-col h2 { font-size: 12px; letter-spacing: 2px; }
   #title-left-col p { font-size: 10px; line-height: 1.5; margin-bottom: 10px; }
+  #title-left-buttons { max-width: 100%; }
+}
+/* Phone — three landscape cards stacked on the right of a narrow
+   left column. The cards shrink to ~45% of viewport width so they
+   sit alongside the title text. Per playtester: "Can we fix how
+   this appears on mobile? Right now all options are under the
+   text we need all three options on the right." Layout stays two-
+   column at any width down to ~360px viewport. */
+@media (max-width: 480px) {
+  #title-row {
+    gap: 10px;
+    flex-wrap: nowrap;
+    padding: 0 8px;
+    box-sizing: border-box;
+  }
+  #title-left-col {
+    flex: 1 1 0;
+    min-width: 0;
+    max-width: 50%;
+  }
+  #title-left-col h1 {
+    font-size: 24px;
+    line-height: 0.95;
+    margin-bottom: 6px;
+  }
+  #title-left-col h2 {
+    font-size: 9px;
+    letter-spacing: 1.5px;
+    margin-bottom: 8px;
+  }
+  #title-left-col p {
+    font-size: 8px;
+    line-height: 1.4;
+    margin-bottom: 8px;
+  }
+  #title-left-col #title-save-panel {
+    /* Compact save panel — single row, no padding bloat. */
+    margin-bottom: 8px;
+  }
+  #title-left-col #mode-picker-hint {
+    font-size: 9px;
+    margin: 4px 0 4px 0;
+  }
+  #title-left-col #mode-picker-desc {
+    font-size: 8px;
+    min-height: 12px;
+  }
+  #title-left-buttons {
+    max-width: 100%;
+  }
+  #title-left-buttons .wallet-btn {
+    font-size: 9px;
+    padding: 6px 8px;
+    letter-spacing: 1px;
+  }
+  /* Right column — fixed-ish width for the cards. Each card takes
+     the full column width. Narrower than tablet but still readable;
+     the label text shrinks too. */
+  #title-right-stack {
+    flex: 0 0 auto;
+    gap: 6px;
+  }
+  .mode-card.mode-card-landscape {
+    width: 170px;
+    height: 64px;
+  }
+  /* Card label needs to scale down with the smaller card. The base
+     48px font is way too large for a 64px-tall card. */
+  .mode-card.mode-card-landscape .mode-card-label {
+    font-size: 14px;
+    letter-spacing: 1.5px;
+    bottom: 8px;
+  }
 }
 /* Procedural placeholder image for the ENDLESS GLYPHS card. Per
    playtester: "Placeholder for now." Builds a blueprint-blue
@@ -669,6 +791,19 @@ canvas { display: block; cursor: var(--matrix-cursor); }
   border-color: #9fffc4;
   box-shadow: 0 0 70px rgba(0, 255, 102, 0.85),
               inset 0 0 44px rgba(0, 255, 102, 0.28);
+  transform: translateY(-5px);
+}
+/* Shard cards — hover/select use drop-shadow + brightness instead of
+   box-shadow/border, because clip-path masks the rectangular
+   box-shadow halo. */
+.mode-card.mode-card-landscape:hover {
+  transform: translateY(-6px);
+  filter: saturate(0.85) brightness(1.05) drop-shadow(0 0 24px rgba(0, 255, 102, 0.95));
+  box-shadow: inset 0 0 48px rgba(0, 255, 102, 0.30);
+}
+.mode-card.mode-card-landscape.selected {
+  filter: saturate(1.0) brightness(1.10) drop-shadow(0 0 32px rgba(0, 255, 102, 1.0));
+  box-shadow: inset 0 0 56px rgba(0, 255, 102, 0.40);
   transform: translateY(-5px);
 }
 #mode-picker-hint {
@@ -2287,6 +2422,19 @@ canvas { display: block; cursor: var(--matrix-cursor); }
 }
 .mode-card.locked::before {
   animation: _lockedCardPulse 2.2s ease-in-out infinite;
+}
+/* Shard variant — pull the locked badge inward so it sits inside
+   the polygon's safe zone (the shard's edge jags can otherwise
+   clip the badge corners). Smaller font scaled to the landscape
+   card height. */
+.mode-card.mode-card-landscape.locked::before {
+  top: 22px;
+  left: 8%;
+  right: 8%;
+  padding: 10px 8px;
+  font-size: 14px;
+  letter-spacing: 2px;
+  border-width: 2px;
 }
 
 /* Hint flash on the locked card — added by JS for ~1s after a click,
