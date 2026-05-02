@@ -31,7 +31,7 @@
 // (Phase 3b) and locker UI + pickups (Phase 3c) build on this.
 
 import * as THREE from 'three';
-import { scene } from './scene.js';
+import { scene, Scene } from './scene.js';
 import { S, resetGame } from './state.js';
 import { Audio } from './audio.js';
 import { applyTutorialFloor, restoreNormalFloor, setTutorialActive } from './tutorial.js';
@@ -39,6 +39,7 @@ import { hitBurst } from './effects.js';
 import { enemies, makeEnemy, clearAllEnemies } from './enemies.js';
 import { player } from './player.js';
 import { WEAPONS, CHAPTERS } from './config.js';
+import { generateWallsForWave, clearWalls } from './endlessWalls.js';
 
 // =====================================================================
 // PUBLIC API
@@ -176,7 +177,9 @@ export function exitEndlessGlyphs() {
   S.endlessVictory = false;
 
   restoreNormalFloor();
+  _restoreWaveFloor();             // also restore in case wave was active
   setTutorialActive(false);
+  clearWalls();
   _disposeLocker();
   _disposeWaveHUD();
   clearAllEnemies();
@@ -226,9 +229,19 @@ function _enterTilesTransition() {
   restoreNormalFloor();
   setTutorialActive(false);
   _disposeLocker();
+  // Swap the arena floor to plain white during waves. Per playtester:
+  // "When the rainbow tile fades and the grid arrives for wave 1 we
+  // should make it white. The walls will really stand out as black
+  // objects and the enemies will be in full color."
+  _applyWaveWhiteFloor();
   // Pre-warm the wave so the spawn loop has its config ready when
   // _enterWave fires after the transition completes.
   _prepareWave(S.endlessWave + 1);
+  // Generate the wave's procedural floorplan obstacles. Walls are
+  // built immediately so they're visible during the GET READY beat —
+  // gives the player a fraction of a second to scan the layout
+  // before enemies start spawning.
+  generateWallsForWave(_pendingWaveNum);
 }
 function _tickTilesTransition(dt) {
   _setWaveHUD('GET READY', '');
@@ -390,6 +403,11 @@ function _spawnWaveEnemy() {
 function _enterIntermission() {
   S.endlessPhase = 'INTERMISSION';
   S.endlessPhaseT = 0;
+  // Walls disappear instantly for Ship 1 — the autoglyph dissolve
+  // animation comes in Ship 3.
+  clearWalls();
+  // Restore rainbow lobby tiles + lobby ambient lighting.
+  _restoreWaveFloor();
   applyTutorialFloor();
   setTutorialActive(true);
   _spawnLocker();
@@ -492,6 +510,65 @@ function _fmtTimer(sec) {
   const m = Math.floor(total / 60);
   const s = total % 60;
   return m + ':' + (s < 10 ? '0' : '') + s;
+}
+
+// =====================================================================
+// WAVE FLOOR — white during combat
+// =====================================================================
+// Per playtester: "When the rainbow tile fades and the grid arrives
+// for wave 1 we should make it white. The walls will really stand
+// out as black objects and the enemies will be in full color."
+//
+// Mirrors the tutorial.js pattern: snapshot the ground material's
+// current color/emissive/map state, swap in pure white, and restore
+// on demand. Idempotent — multiple apply calls are safe; restore is a
+// no-op if no snapshot was taken.
+
+let _waveFloorSnapshot = null;
+
+function _applyWaveWhiteFloor() {
+  if (!Scene || !Scene.groundMat) return;
+  if (_waveFloorSnapshot) return;        // already applied
+  _waveFloorSnapshot = {
+    color: Scene.groundMat.color.getHex(),
+    emissive: Scene.groundMat.emissive ? Scene.groundMat.emissive.getHex() : 0x000000,
+    emissiveIntensity: Scene.groundMat.emissiveIntensity || 0,
+    emissiveMap: Scene.groundMat.emissiveMap || null,
+    map: Scene.groundMat.map || null,
+    roughness: Scene.groundMat.roughness,
+    metalness: Scene.groundMat.metalness,
+  };
+  // Pure white floor — kill the chapter texture so we get a flat sheet.
+  Scene.groundMat.map = null;
+  Scene.groundMat.color.setHex(0xffffff);
+  Scene.groundMat.emissive = new THREE.Color(0xeeeeee);
+  Scene.groundMat.emissiveMap = null;
+  // Self-illumination ~1.0 so the floor reads as bright white regardless
+  // of ambient lighting (mirrors the tutorial-floor trick — the floor
+  // is its own light source).
+  Scene.groundMat.emissiveIntensity = 0.95;
+  Scene.groundMat.roughness = 1.0;
+  Scene.groundMat.metalness = 0.0;
+  Scene.groundMat.needsUpdate = true;
+}
+
+function _restoreWaveFloor() {
+  if (!_waveFloorSnapshot) return;
+  if (!Scene || !Scene.groundMat) {
+    _waveFloorSnapshot = null;
+    return;
+  }
+  Scene.groundMat.color.setHex(_waveFloorSnapshot.color);
+  if (Scene.groundMat.emissive) {
+    Scene.groundMat.emissive.setHex(_waveFloorSnapshot.emissive);
+  }
+  Scene.groundMat.emissiveIntensity = _waveFloorSnapshot.emissiveIntensity;
+  Scene.groundMat.emissiveMap = _waveFloorSnapshot.emissiveMap;
+  Scene.groundMat.map = _waveFloorSnapshot.map;
+  Scene.groundMat.roughness = _waveFloorSnapshot.roughness;
+  Scene.groundMat.metalness = _waveFloorSnapshot.metalness;
+  Scene.groundMat.needsUpdate = true;
+  _waveFloorSnapshot = null;
 }
 
 // =====================================================================

@@ -236,6 +236,7 @@ import { updateShockwaves } from './shockwave.js';
 import { updateMissileArrow, hideMissileArrow } from './missileArrow.js';
 import { initGamepad, updateGamepad, setTitleMode, rumble } from './gamepad.js';
 import { startEndlessGlyphs, updateEndlessGlyphs, exitEndlessGlyphs } from './endlessGlyphs.js';
+import { resolveWallCollision, clearWalls as clearEndlessWalls } from './endlessWalls.js';
 
 // =====================================================================
 // STRATAGEM SYSTEM HOOKS
@@ -3581,6 +3582,10 @@ function _setupEndlessCleanArena() {
   if (_hudTop) _hudTop.style.display = 'none';
   // Hero hexagons are chapter-themed; hide them.
   try { setHeroHexagonsVisible(false); } catch (e) {}
+  // Endless Glyphs procedural walls — defensive clear in case a
+  // previous run left some in the scene. Idempotent when no walls
+  // are active.
+  try { clearEndlessWalls(); } catch (e) {}
 }
 // Expose so endlessGlyphs.js can call without touching the rest of
 // main.js's surface area. NEW symbol — doesn't change any existing
@@ -5117,6 +5122,13 @@ function updatePlayer(dt) {
   // Silo + turrets act as solid obstacles — push the player out if they'd
   // overlap either. No-ops when the compound isn't built or has retracted.
   resolveCompoundCollision(player.pos, 0.8);
+  // Endless Glyphs procedural floorplan walls. Gated on S.endlessGlyphs
+  // so the regular game / tutorial don't pay the per-frame cost. Walls
+  // are short AABBs scattered around the arena; the resolver pushes
+  // the player out along the closest axis. See endlessWalls.js.
+  if (S.endlessGlyphs) {
+    resolveWallCollision(player.pos, 0.8);
+  }
   // Turn 9: pod lock-in. While S._dcPlayerInPod is true, clamp the
   // player's position to within pod radius. Active during chapter 2
   // wave 2 from the moment the player first enters the pod through
@@ -6740,6 +6752,13 @@ function updateEnemies(dt) {
       // Enemies also can't walk through the silo or turrets. Bosses skip
       // this — they have their own scripted movement / patterns.
       resolveCompoundCollision(e.pos, 0.5, /*isEnemy*/ true);
+      // Endless Glyphs floorplan walls. Same AABB pushout as the
+      // player's collision above. Without Ship 2 pathfinding,
+      // enemies will get briefly stuck against walls — the sparse
+      // layout limits how often this happens.
+      if (S.endlessGlyphs) {
+        resolveWallCollision(e.pos, 0.5);
+      }
     }
     // Push the enemy out of any floor-hazard it overlaps. Bosses are
     // too big to path around them, so they take the lava (narratively
