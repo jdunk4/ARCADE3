@@ -237,6 +237,7 @@ import { updateMissileArrow, hideMissileArrow } from './missileArrow.js';
 import { initGamepad, updateGamepad, setTitleMode, rumble } from './gamepad.js';
 import { startEndlessGlyphs, updateEndlessGlyphs, exitEndlessGlyphs } from './endlessGlyphs.js';
 import { resolveWallCollision, clearWalls as clearEndlessWalls } from './endlessWalls.js';
+import { getEnemyMoveTarget as _endlessPathTarget, resetReplanBudget as _endlessResetReplans } from './endlessPathing.js';
 
 // =====================================================================
 // STRATAGEM SYSTEM HOOKS
@@ -6540,6 +6541,13 @@ function updateCamera(dt) {
 // ENEMIES -- includes vampire blink, wizard triangle proj, goo spitter etc.
 // ============================================================================
 function updateEnemies(dt) {
+  // Endless Glyphs A* pathfinding budget reset. Capped at
+  // MAX_REPLANS_PER_FRAME (8) replans per frame across all enemies
+  // — without this, all 60 enemies could replan on the same tick
+  // and stutter the frame. When endless mode isn't active this is a
+  // ~1ns no-op.
+  if (S.endlessGlyphs) _endlessResetReplans();
+
   for (let i = enemies.length - 1; i >= 0; i--) {
     const e = enemies[i];
     const dx = player.pos.x - e.pos.x;
@@ -6730,6 +6738,19 @@ function updateEnemies(dt) {
           moveTargetX = tp.x;
           moveTargetZ = tp.z;
         }
+      }
+    }
+    // ENDLESS GLYPHS — A* pathfinding around procedural walls. Asks
+    // the pathing module for the next waypoint toward the current
+    // moveTarget. If line-of-sight is clear (most of the time given
+    // sparse layouts), the module returns null and the enemy
+    // direct-chases as before. Bosses and stationary enemies skip
+    // pathfinding — they have scripted movement / fixed positions.
+    if (S.endlessGlyphs && !e.isBoss && !e.stationary) {
+      const wp = _endlessPathTarget(e, moveTargetX, moveTargetZ, dt);
+      if (wp) {
+        moveTargetX = wp.x;
+        moveTargetZ = wp.z;
       }
     }
     const mdx = moveTargetX - e.pos.x;

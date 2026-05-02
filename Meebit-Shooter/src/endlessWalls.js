@@ -29,6 +29,7 @@
 
 import * as THREE from 'three';
 import { scene } from './scene.js';
+import { buildNavGrid, clearPathing } from './endlessPathing.js';
 
 // =====================================================================
 // CONSTANTS
@@ -138,6 +139,12 @@ export function generateWallsForWave(waveNum) {
     _addWall(cx, cz, size, size);
     placedCols++;
   }
+
+  // Build the navigation grid from the walls we just placed. Enemies
+  // pathfind against this grid in main.js's updateEnemies path-following
+  // hook (see endlessPathing.js). Rebuilt every wave so paths stay in
+  // sync with the current floorplan.
+  buildNavGrid(_walls);
 }
 
 /**
@@ -157,6 +164,10 @@ export function clearWalls() {
     }
   }
   _walls.length = 0;
+  // Tear down the nav grid + invalidate all enemy paths. Without this,
+  // enemies that were mid-path when the wave ended would keep chasing
+  // stale waypoints into the cleared space.
+  clearPathing();
 }
 
 /**
