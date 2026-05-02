@@ -36,9 +36,9 @@ import { S, resetGame } from './state.js';
 import { Audio } from './audio.js';
 import { applyTutorialFloor, restoreNormalFloor, setTutorialActive } from './tutorial.js';
 import { hitBurst } from './effects.js';
-import { clearAllEnemies } from './enemies.js';
+import { enemies, makeEnemy, clearAllEnemies } from './enemies.js';
 import { player } from './player.js';
-import { WEAPONS } from './config.js';
+import { WEAPONS, CHAPTERS } from './config.js';
 
 // =====================================================================
 // PUBLIC API
@@ -178,6 +178,7 @@ export function exitEndlessGlyphs() {
   restoreNormalFloor();
   setTutorialActive(false);
   _disposeLocker();
+  _disposeWaveHUD();
   clearAllEnemies();
 
   // Restore fog / shadows / lighting so the next mode the player
@@ -201,16 +202,18 @@ const LOBBY_PREP_DURATION = 60;        // seconds — per playtester spec
  * On expiry: tile transition begins.
  */
 function _tickLobbyPrep(dt) {
+  // HUD timer — countdown to wave 1.
+  const remaining = Math.max(0, LOBBY_PREP_DURATION - S.endlessPhaseT);
+  _setWaveHUD('WAVE 1 BEGINS IN', _fmtTimer(remaining));
   if (S.endlessPhaseT >= LOBBY_PREP_DURATION) {
     _enterTilesTransition();
   }
-  // Phase 3c: surface a HUD timer + locker proximity hint.
 }
 
 /**
  * TILES_TRANSITION — 1.5-second crossfade where the rainbow tutorial
  * tiles fade out and the normal arena tiles fade in. The locker
- * disappears (sinks into ground), the wave 1 spawn loop begins
+ * disappears (sinks into ground), the wave spawn loop begins
  * underneath the fading visuals so enemies start trickling in just
  * as the arena reveals.
  */
@@ -218,47 +221,162 @@ const TILES_TRANSITION_DURATION = 1.5;
 function _enterTilesTransition() {
   S.endlessPhase = 'TILES_TRANSITION';
   S.endlessPhaseT = 0;
-  // Floor swap is instant for now — Phase 3b will animate the alpha
-  // crossfade between the rainbow texture + the regular grid. For
-  // skeleton purposes we just call restore.
+  // Floor swap is instant for now — a future polish pass can animate
+  // the alpha crossfade between the rainbow texture + the regular grid.
   restoreNormalFloor();
   setTutorialActive(false);
   _disposeLocker();
-  // TODO Phase 3b: kick off wave 1 enemy spawn loop here.
+  // Pre-warm the wave so the spawn loop has its config ready when
+  // _enterWave fires after the transition completes.
+  _prepareWave(S.endlessWave + 1);
 }
 function _tickTilesTransition(dt) {
+  _setWaveHUD('GET READY', '');
   if (S.endlessPhaseT >= TILES_TRANSITION_DURATION) {
-    _enterWave(1);
+    _enterWave(_pendingWaveNum);
   }
 }
 
+// =====================================================================
+// WAVE RUNNER
+// =====================================================================
+// Per playtester: "we need to spawn enemies for wave 1." For Phase 3b
+// I'm shipping a straightforward wave spawn loop. Per the design:
+//
+//   • Waves 1-5 use chapter 1 enemies (zomeeb / sprinter — visually
+//     rendered as procedural box ants because S.chapter === 0)
+//   • HP scales ×1.05 per wave (geometric)
+//   • Spawns drip in from the arena edge at intervals
+//   • Wave ends when all queued enemies are spawned AND killed
+//
+// Wave→chapter mapping for waves 6-30 is future work — for now only
+// wave 1 actually runs, and after wave 1 we advance to the next
+// (which will spawn the same wave-1 config again, scaled). Real
+// chapter mapping comes in the next pass.
+//
+// Per-wave config:
+//   _waveSpawnQueue   — number of enemies still to spawn
+//   _waveSpawnTimer   — countdown to next spawn
+//   _waveSpawnGap     — seconds between spawns (computed per wave)
+//   _waveTotalCount   — how many total this wave (for HUD display)
+//   _waveSpawnedSoFar — how many actually spawned (for HUD)
+//   _pendingWaveNum   — wave number to enter on transition complete
+
+let _waveSpawnQueue = 0;
+let _waveSpawnTimer = 0;
+let _waveSpawnGap = 2.5;
+let _waveTotalCount = 0;
+let _waveSpawnedSoFar = 0;
+let _pendingWaveNum = 1;
+
 /**
- * WAVE — active combat. Wave runner spawns enemies on a schedule
- * proportional to the wave number, scaling HP ×1.05^wave. When the
- * kill target is met (or all spawns dead), advance to next wave or
- * to intermission every 5th wave.
- *
- * Phase 3a stub: just transitions immediately to the next phase
- * after a placeholder duration so the state machine flows end-to-end
- * during testing. Phase 3b replaces this with real combat logic.
+ * Compute the spawn config for a wave. Called by tile-transition
+ * preparation so the wave is fully configured before the WAVE phase
+ * begins.
  */
+function _prepareWave(waveNum) {
+  _pendingWaveNum = waveNum;
+  // Wave 1 = 18 enemies, +2 per subsequent wave (rough escalation).
+  // Caps at 60 by wave 22+ so the screen doesn't completely fill.
+  const count = Math.min(60, 18 + (waveNum - 1) * 2);
+  _waveTotalCount = count;
+  _waveSpawnQueue = count;
+  _waveSpawnedSoFar = 0;
+  // Spawn cadence — early waves are slow drip, later waves stack
+  // pressure. ~2.5s/spawn at wave 1, down to 0.6s by wave 30.
+  const cadence = Math.max(0.6, 2.5 - (waveNum - 1) * 0.07);
+  _waveSpawnGap = cadence;
+  _waveSpawnTimer = 0.5;          // first spawn after a short delay
+}
+
 function _enterWave(waveNum) {
   S.endlessPhase = 'WAVE';
   S.endlessPhaseT = 0;
   S.endlessWave = waveNum;
-  // Phase 3b: spawn loop, HP scaling, jumper introduction at wave 5+.
+  // _prepareWave was already called by the tile-transition; if some
+  // path skipped it, prepare now defensively.
+  if (_pendingWaveNum !== waveNum) _prepareWave(waveNum);
 }
+
 function _tickWave(dt) {
-  // Phase 3a stub — auto-completes after 8s for end-to-end flow test.
-  // Phase 3b replaces with real wave logic.
-  if (S.endlessPhaseT >= 8) {
+  // Spawn loop — drip-feed enemies from the arena edge until the
+  // queue is empty.
+  if (_waveSpawnQueue > 0) {
+    _waveSpawnTimer -= dt;
+    if (_waveSpawnTimer <= 0) {
+      _spawnWaveEnemy();
+      _waveSpawnQueue--;
+      _waveSpawnedSoFar++;
+      _waveSpawnTimer = _waveSpawnGap;
+    }
+  }
+
+  // HUD: show remaining alive count when spawning is done, otherwise
+  // show "spawned/total" + alive count.
+  const aliveCount = enemies.length;
+  _setWaveHUD(
+    'WAVE ' + S.endlessWave,
+    _waveSpawnQueue > 0
+      ? aliveCount + ' ALIVE · ' + _waveSpawnQueue + ' INCOMING'
+      : aliveCount + ' LEFT',
+  );
+
+  // Wave-end check: all spawned + nothing alive → next phase.
+  if (_waveSpawnQueue === 0 && aliveCount === 0) {
     if (S.endlessWave >= 30) {
       _enterVictory();
     } else if (S.endlessWave % 5 === 0) {
       _enterIntermission();
     } else {
-      _enterWave(S.endlessWave + 1);
+      // Roll directly into the next wave WITHOUT a tile transition
+      // (transitions are reserved for the 5-wave intermission boundary).
+      // Brief 2-second breather before the next spawn cycle.
+      S.endlessPhase = 'WAVE';
+      S.endlessPhaseT = 0;
+      S.endlessWave += 1;
+      _prepareWave(S.endlessWave);
     }
+  }
+}
+
+/**
+ * Spawn a single wave enemy at the arena edge. Spawn position is on
+ * a circle around the player at distance ~16-22 units (just outside
+ * normal sight) with a random angle. enemy type is rotated through
+ * the chapter-1 pool (zomeeb / sprinter) — both render as box ants
+ * because S.chapter === 0 triggers the mesh substitution.
+ */
+function _spawnWaveEnemy() {
+  if (!player || !player.pos) return;
+  const angle = Math.random() * Math.PI * 2;
+  const dist = 16 + Math.random() * 6;
+  // Clamp inside arena — arena half-extent is 50, leave a 2u buffer.
+  const ARENA = 50;
+  const px = player.pos.x;
+  const pz = player.pos.z;
+  const x = Math.max(-(ARENA - 2), Math.min(ARENA - 2, px + Math.cos(angle) * dist));
+  const z = Math.max(-(ARENA - 2), Math.min(ARENA - 2, pz + Math.sin(angle) * dist));
+  // Type roll — 70% zomeeb, 30% sprinter so the player sees both
+  // movement profiles (steady walker vs faster rusher).
+  const type = Math.random() < 0.7 ? 'zomeeb' : 'sprinter';
+  // Chapter 1 tint (orange) — uniform across the run for visual
+  // consistency. enemies.js's _useAntForChapter1 check on
+  // (S.chapter === 0 && (zomeeb|sprinter)) substitutes the box-ant
+  // mesh; resetGame at run-start guarantees S.chapter === 0.
+  const tint = CHAPTERS[0].full.enemyTint;
+  // HP scaling: ×1.05^(wave-1). Wave 1 = baseline (×1.0), wave 30 ≈
+  // ×4.1. The hpMul kwarg is passed via the optional 4th arg to
+  // makeEnemy; current factory signature is makeEnemy(typeKey, tint,
+  // pos) — the `hpMul` is applied internally after consulting the
+  // ENEMY_TYPES base. We emulate it by scaling the spawned enemy's
+  // hp/hpMax inline.
+  const e = makeEnemy(type, tint, new THREE.Vector3(x, 0, z));
+  if (e) {
+    const hpMul = Math.pow(1.05, S.endlessWave - 1);
+    e.hp = Math.round(e.hp * hpMul);
+    e.hpMax = Math.round(e.hpMax * hpMul);
+    // Spawn-in flourish so the enemy doesn't just pop into existence.
+    hitBurst(new THREE.Vector3(x, 1.4, z), tint, 6);
   }
 }
 
@@ -278,6 +396,8 @@ function _enterIntermission() {
   clearAllEnemies();
 }
 function _tickIntermission(dt) {
+  const remaining = Math.max(0, LOBBY_PREP_DURATION - S.endlessPhaseT);
+  _setWaveHUD('WAVE ' + (S.endlessWave + 1) + ' BEGINS IN', _fmtTimer(remaining));
   if (S.endlessPhaseT >= LOBBY_PREP_DURATION) {
     _enterTilesTransition();
   }
@@ -287,11 +407,91 @@ function _enterVictory() {
   S.endlessPhase = 'VICTORY';
   S.endlessPhaseT = 0;
   S.endlessVictory = true;
-  // Phase 3c: full victory screen with stats. For now just stash
-  // the flag so external code can detect.
 }
 function _tickVictory(dt) {
-  // Wait for player input or auto-exit after 10s. Phase 3c handles.
+  _setWaveHUD('VICTORY', '30 WAVES SURVIVED');
+}
+
+// =====================================================================
+// WAVE HUD
+// =====================================================================
+// Top-center fixed banner showing current phase status. Two lines:
+//   - title  (e.g. "WAVE 1 BEGINS IN" / "WAVE 1" / "GET READY")
+//   - detail (e.g. "0:42" timer, "12 LEFT", "8 ALIVE · 4 INCOMING")
+// Lazy-built on first call. Disposed by exitEndlessGlyphs / locker
+// teardown so the HUD doesn't linger after the player quits.
+
+let _waveHudEl = null;
+let _waveHudTitleEl = null;
+let _waveHudDetailEl = null;
+
+function _ensureWaveHUD() {
+  if (_waveHudEl) return;
+  const root = document.createElement('div');
+  root.id = 'glyphs-wave-hud';
+  root.style.cssText = [
+    'position:fixed',
+    'left:50%',
+    'top:18px',
+    'transform:translateX(-50%)',
+    'min-width:240px',
+    'padding:10px 18px 12px 18px',
+    'background:rgba(8, 14, 22, 0.85)',
+    'border:1.5px solid #66ccff',
+    'border-radius:6px',
+    'box-shadow:0 0 16px rgba(102, 204, 255, 0.35)',
+    'color:#cfeaff',
+    'font-family:monospace',
+    'letter-spacing:2px',
+    'text-align:center',
+    'z-index:8400',
+    'pointer-events:none',
+    'user-select:none',
+  ].join(';');
+
+  const title = document.createElement('div');
+  title.style.cssText = 'font-size:11px;font-weight:700;letter-spacing:3px;color:#66ccff;text-shadow:0 0 6px rgba(102,204,255,0.7);margin-bottom:3px;';
+  root.appendChild(title);
+
+  const detail = document.createElement('div');
+  detail.style.cssText = 'font-size:18px;font-weight:700;letter-spacing:2px;color:#ffffff;text-shadow:0 0 8px rgba(255,255,255,0.5);';
+  root.appendChild(detail);
+
+  document.body.appendChild(root);
+  _waveHudEl = root;
+  _waveHudTitleEl = title;
+  _waveHudDetailEl = detail;
+}
+
+function _setWaveHUD(title, detail) {
+  _ensureWaveHUD();
+  if (_waveHudTitleEl && _waveHudTitleEl.textContent !== title) {
+    _waveHudTitleEl.textContent = title;
+  }
+  if (_waveHudDetailEl && _waveHudDetailEl.textContent !== detail) {
+    _waveHudDetailEl.textContent = detail;
+  }
+}
+
+function _disposeWaveHUD() {
+  if (_waveHudEl && _waveHudEl.parentNode) {
+    _waveHudEl.parentNode.removeChild(_waveHudEl);
+  }
+  _waveHudEl = null;
+  _waveHudTitleEl = null;
+  _waveHudDetailEl = null;
+}
+
+/**
+ * Format a seconds value as M:SS for the HUD countdown. Caps at 59:59
+ * (we never get anywhere near that — max LOBBY_PREP_DURATION is 60s,
+ * but defensive).
+ */
+function _fmtTimer(sec) {
+  const total = Math.max(0, Math.ceil(sec));
+  const m = Math.floor(total / 60);
+  const s = total % 60;
+  return m + ':' + (s < 10 ? '0' : '') + s;
 }
 
 // =====================================================================
