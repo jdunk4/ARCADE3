@@ -6851,14 +6851,24 @@ function updateEnemies(dt) {
         e.bodyMat.emissiveIntensity = e.hitFlash * peakMult;
       }
     } else if (e.bodyMat) {
-      // Chapter 7 — green-glow reveal. When inside the player's
-      // flashlight cone OR within the glyphstone's reveal dome, the
-      // enemy's body emissive flips bright bioluminescent green.
-      // Per playtester: "make all the enemies turn bright green and
-      // glow in the dark when the player shines the light on them.
-      // Almost like he's discovering a forbidden species."
+      // FLASHLIGHT REVEAL — chapter 7 ("forbidden species" green
+      // glow) AND endless glyphs (chapter-tinted glow). When the
+      // enemy is inside the player's flashlight cone, body emissive
+      // amps to a bright "glow-in-the-dark" intensity. Outside the
+      // cone, the emissive falls back to the resting baseline.
+      //
+      // Endless variant per playtester: "Would love to create a
+      // glow on flashlight shine where the enemies color amplifies
+      // when under the light - kind of like glow in the dark."
+      // The reveal color is the wave's chapter tint (orange for
+      // waves 1-5, red for 6-10, etc.) so the chapter identity
+      // bleeds into the visible color cue. In chapter 7 we keep
+      // the existing fixed bioluminescent green.
       let revealed = false;
-      if (S.chapter === PARADISE_FALLEN_CHAPTER_IDX && S.chapter7Atmosphere) {
+      const _flashlightActive =
+        S.chapter7Atmosphere &&
+        (S.chapter === PARADISE_FALLEN_CHAPTER_IDX || S.endlessGlyphs);
+      if (_flashlightActive) {
         // Flashlight cone test — dot product of (enemy_relative_to_player)
         // against the flashlight aim vector. Cone half-angle 45° (90°
         // total) → dot >= cos(45°) ≈ 0.707, with max range 30u.
@@ -6876,6 +6886,7 @@ function updateEnemies(dt) {
         // ascend phase. ch7Blueprints exposes the position+radius
         // via window.__ch7GlyphReveal which is set/cleared as the
         // phase enters/exits. Cheap fallback: skip when undefined.
+        // (Endless mode never sets this; check is a no-op there.)
         if (!revealed && window.__ch7GlyphReveal) {
           const g = window.__ch7GlyphReveal;
           const gdx = e.pos.x - g.x;
@@ -6884,8 +6895,16 @@ function updateEnemies(dt) {
         }
       }
       if (revealed) {
-        // Bright bioluminescent green — "forbidden species" reveal.
-        e.bodyMat.emissive && e.bodyMat.emissive.setHex(0x33ff44);
+        // Reveal color: ch7 = bioluminescent green; endless = the
+        // active wave's chapter tint (read from CHAPTERS via the
+        // current endless wave). Falls back to green if endless wave
+        // somehow can't be mapped.
+        let revealColor = 0x33ff44;
+        if (S.endlessGlyphs && typeof S.endlessWave === 'number') {
+          const chIdx = Math.max(0, Math.min(5, Math.floor((S.endlessWave - 1) / 5)));
+          revealColor = CHAPTERS[chIdx].full.enemyTint;
+        }
+        e.bodyMat.emissive && e.bodyMat.emissive.setHex(revealColor);
         e.bodyMat.emissiveIntensity = 1.4;
       } else {
         // Default — restore the body's resting emissive.

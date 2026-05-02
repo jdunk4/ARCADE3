@@ -31,10 +31,10 @@
 // (Phase 3b) and locker UI + pickups (Phase 3c) build on this.
 
 import * as THREE from 'three';
-import { scene, Scene } from './scene.js';
+import { scene, Scene, enterChapter7Atmosphere, exitChapter7Atmosphere, updateFlashlight } from './scene.js';
 import { S, resetGame } from './state.js';
 import { Audio } from './audio.js';
-import { applyTutorialFloor, restoreNormalFloor, setTutorialActive } from './tutorial.js';
+import { applyTutorialFloor, restoreNormalFloor, setTutorialActive, boostTutorialLighting, restoreTutorialLighting } from './tutorial.js';
 import { hitBurst } from './effects.js';
 import { enemies, makeEnemy, clearAllEnemies } from './enemies.js';
 import { player } from './player.js';
@@ -220,6 +220,10 @@ export function exitEndlessGlyphs() {
   setTutorialActive(false);
   cancelDissolve();
   cancelAssemble();
+  // Defensive — atmosphere stays on between waves but gets explicitly
+  // turned off when leaving the mode. Without this, dropping back to
+  // the title screen would inherit the dim ambient.
+  _exitDarkMode();
   clearWalls();
   _disposeLocker();
   _disposeWaveHUD();
@@ -340,7 +344,16 @@ function _prepareWave(waveNum) {
   _waveSpawnedSoFar = 0;
   // Spawn cadence — early waves are slow drip, later waves stack
   // pressure. ~2.5s/spawn at wave 1, down to 0.6s by wave 30.
-  const cadence = Math.max(0.6, 2.5 - (waveNum - 1) * 0.07);
+  let cadence = Math.max(0.6, 2.5 - (waveNum - 1) * 0.07);
+  // Per playtester: "For waves 4 & 5 can we make the enemies spawn a
+  // bit faster? We need to overwhelm the player." Apply a 0.65× multi
+  // (35% faster) to those specific waves so the chapter-1 cap
+  // (waves 1-5 share the INFERNO mix) ends with real pressure before
+  // the chapter-2 transition. After wave 5 the natural curve takes
+  // over again.
+  if (waveNum === 4 || waveNum === 5) {
+    cadence *= 0.65;
+  }
   _waveSpawnGap = cadence;
   _waveSpawnTimer = 0.5;          // first spawn after a short delay
 }
@@ -362,6 +375,11 @@ function _prepareWave(waveNum) {
 function _enterWaveAssemble(waveNum) {
   S.endlessPhase = 'WAVE_ASSEMBLE';
   S.endlessPhaseT = 0;
+  // Dark mode on — the assemble particles read better against a dim
+  // arena (the cyan emissive really pops), and gameplay phases all
+  // share the chapter-7-style ambience. _enterDarkMode is idempotent
+  // so calling between back-to-back wave assembles is harmless.
+  _enterDarkMode();
   // Generate the walls now — they'll be visually invisible until the
   // assemble animation fades them in. The wall meshes need to exist
   // in the scene before startAssemble runs because the assemble code
@@ -589,6 +607,10 @@ function _enterIntermission() {
   cancelDissolve();
   cancelAssemble();
   clearWalls();
+  // Dark mode off — intermission returns to the bright tutorial
+  // lobby aesthetic so the player can comfortably scan the locker
+  // and weapon options.
+  _exitDarkMode();
   // Restore rainbow lobby tiles + lobby ambient lighting.
   _restoreWaveFloor();
   applyTutorialFloor();
@@ -721,15 +743,22 @@ function _applyWaveWhiteFloor() {
     roughness: Scene.groundMat.roughness,
     metalness: Scene.groundMat.metalness,
   };
-  // Pure white floor — kill the chapter texture so we get a flat sheet.
+  // White floor — pure white color (not textured) so the flashlight
+  // cone reads as a bright illuminated patch against the dim arena.
+  // The floor is NOT self-illuminating (emissiveIntensity 0) — that
+  // would drown out the dark atmosphere we just turned on. Instead
+  // the SpotLight illuminates the cone area; outside the cone the
+  // floor sits at the ambient level (dark grey under DARK_AMBIENT
+  // ≈ 0.08). Reads as a real flashlight game where the player can
+  // only see what they're pointing at.
   Scene.groundMat.map = null;
   Scene.groundMat.color.setHex(0xffffff);
-  Scene.groundMat.emissive = new THREE.Color(0xeeeeee);
+  Scene.groundMat.emissive = new THREE.Color(0x000000);
   Scene.groundMat.emissiveMap = null;
-  // Self-illumination ~1.0 so the floor reads as bright white regardless
-  // of ambient lighting (mirrors the tutorial-floor trick — the floor
-  // is its own light source).
-  Scene.groundMat.emissiveIntensity = 0.95;
+  Scene.groundMat.emissiveIntensity = 0;
+  // High roughness so the floor doesn't show specular highlights
+  // from the flashlight (those would look like puddles). Pure
+  // diffuse response.
   Scene.groundMat.roughness = 1.0;
   Scene.groundMat.metalness = 0.0;
   Scene.groundMat.needsUpdate = true;
@@ -752,6 +781,59 @@ function _restoreWaveFloor() {
   Scene.groundMat.metalness = _waveFloorSnapshot.metalness;
   Scene.groundMat.needsUpdate = true;
   _waveFloorSnapshot = null;
+}
+
+// =====================================================================
+// DARK MODE — chapter-7-style dim arena + player flashlight
+// =====================================================================
+// Per playtester: "It might be nice to turn the arena dark like
+// Chapter 7 of the main game. Would love to create a glow on
+// flashlight shine where the enemies color amplifies when under
+// the light - kind of like glow in the dark."
+//
+// Reuses the existing chapter-7 atmosphere infrastructure in
+// scene.js (enterChapter7Atmosphere / exitChapter7Atmosphere /
+// updateFlashlight). The "glow under light" is the same mechanic
+// as ch7's "forbidden species reveal" — main.js per-frame enemy
+// update tests each enemy against the flashlight cone and amps
+// emissive intensity when in cone. We extend that gate to fire
+// in endless mode too (see main.js — gate now reads
+// `S.chapter === PARADISE_FALLEN_CHAPTER_IDX || S.endlessGlyphs`).
+//
+// Phase rules:
+//   LOBBY_PREP / TILES_TRANSITION / INTERMISSION → bright tutorial
+//                                                  lighting
+//   WAVE_ASSEMBLE / WAVE / WAVE_DISSOLVE         → dark + flashlight
+//   VICTORY                                       → dark (so the
+//                                                   victory glyph
+//                                                   reads against
+//                                                   the dim arena)
+
+let _darkModeActive = false;
+
+function _enterDarkMode() {
+  if (_darkModeActive) return;
+  // The tutorial lighting boost (applied in _setupEndlessCleanArena
+  // to make the lobby readable) needs to come off before we can
+  // actually go dark. Without this, the dark atmosphere snapshot
+  // would capture the BOOSTED values, then "exit" restores them
+  // back to the boosted state — defeating the purpose.
+  try { restoreTutorialLighting(); } catch (e) {}
+  try { enterChapter7Atmosphere(); } catch (e) {}
+  // Tell main.js's update loop the flashlight + glow logic should
+  // run this frame onward.
+  S.chapter7Atmosphere = true;
+  _darkModeActive = true;
+}
+
+function _exitDarkMode() {
+  if (!_darkModeActive) return;
+  try { exitChapter7Atmosphere(); } catch (e) {}
+  S.chapter7Atmosphere = false;
+  // Restore the tutorial brightness so the lobby/intermission
+  // reads correctly under the rainbow-tile floor again.
+  try { boostTutorialLighting(); } catch (e) {}
+  _darkModeActive = false;
 }
 
 // =====================================================================
