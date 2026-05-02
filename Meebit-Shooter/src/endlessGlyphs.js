@@ -42,6 +42,7 @@ import { WEAPONS, CHAPTERS } from './config.js';
 import { generateWallsForWave, clearWalls, getWalls } from './endlessWalls.js';
 import { startDissolve, tickDissolve, cancelDissolve } from './endlessDissolve.js';
 import { startAssemble, tickAssemble, cancelAssemble } from './endlessAssemble.js';
+import { grantArtifact } from './stratagems.js';
 
 // =====================================================================
 // PUBLIC API
@@ -122,6 +123,22 @@ export function startEndlessGlyphs(playerCount = 1) {
     try { window.__setupEndlessCleanArena(); }
     catch (e) { console.warn('[glyphs] clean arena', e); }
   }
+
+  // Grant all stratagem artifacts for the endless run. Per playtester:
+  // "Can we make sure all turret and mine strategems are available
+  // for endless glyphs?" Granting the full set (turret + mines + mech
+  // + thermonuclear) so the player has all combat tools through the
+  // 30-wave run. Count of 99 each = effectively unlimited; endless is
+  // an arcade sandbox, not a resource management mode.
+  // resetStratagems() (called inside __setupEndlessCleanArena) clears
+  // active beacons/mechs but does NOT clear S.stratagemArtifacts —
+  // grants here persist through the run until exitEndlessGlyphs.
+  try {
+    grantArtifact('turret', 99);
+    grantArtifact('mines', 99);
+    grantArtifact('mech', 99);
+    grantArtifact('thermonuclear', 99);
+  } catch (e) { console.warn('[glyphs] grant artifacts', e); }
 
   // Apply rainbow tile floor — the lobby visually matches the tutorial.
   // Per playtester: "The same rainbow tile grid that the tutorial uses."
@@ -212,7 +229,12 @@ export function exitEndlessGlyphs() {
 // PHASE TICKS
 // =====================================================================
 
-const LOBBY_PREP_DURATION = 60;        // seconds — per playtester spec
+// Lobby + intermission window — same duration. Per playtester:
+// "Can we reduce the lobby/intermission time from 1 min to 15
+// seconds?" Was 60s; the longer prep window encouraged dawdling
+// without adding meaningful planning beats. 15s is enough to glance
+// at the locker, pick a weapon if desired, and brace for the wave.
+const LOBBY_PREP_DURATION = 15;
 
 /**
  * LOBBY_PREP — player is in the rainbow-tile lobby. Locker is up,
@@ -654,7 +676,7 @@ function _disposeWaveHUD() {
 
 /**
  * Format a seconds value as M:SS for the HUD countdown. Caps at 59:59
- * (we never get anywhere near that — max LOBBY_PREP_DURATION is 60s,
+ * (we never get anywhere near that — max LOBBY_PREP_DURATION is 15s,
  * but defensive).
  */
 function _fmtTimer(sec) {
