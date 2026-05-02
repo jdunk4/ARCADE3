@@ -85,7 +85,16 @@ export function startEndlessGlyphs(playerCount = 1) {
   // is defined in audio.js MUSIC_SECTIONS and rotates indices 5,6,7
   // (XIAN.mp3, YOMI.mp3, ZION.mp3) — high-energy combat tracks
   // matching the wave structure.
+  //
+  // CRITICAL: setMusicSection alone does NOT start playback if
+  // _musicOn is false (which it always is when entering endless from
+  // the title screen — title plays CDrone, not the music playlist).
+  // We have to follow up with startMusic(1) to actually kick the
+  // first track. Without this, the section flag is set correctly
+  // but no audio plays for the entire run. Mirrors what startGame()
+  // does for main runs (it calls startMusic(1) ~3s after launch).
   Audio.setMusicSection && Audio.setMusicSection('endless_glyphs');
+  try { Audio.startMusic && Audio.startMusic(1); } catch (e) {}
 
   // Hide the title screen.
   const titleEl = document.getElementById('title');
