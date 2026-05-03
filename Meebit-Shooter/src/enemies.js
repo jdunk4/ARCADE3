@@ -8,6 +8,94 @@ import { S } from './state.js';
 // "I'm not using this GLB. I like your square meshes 100x better."
 // The antMesh.js module is no longer imported anywhere.
 
+// =====================================================================
+// TOON SHADING — banded illumination for cel-shaded enemy look
+// =====================================================================
+// Per playtester: "I want the enemies to look a little more cartoonish."
+// Path A (minimum effort): swap MeshStandardMaterial for MeshToonMaterial
+// on enemy body parts. Toon shading uses a small gradient ramp texture
+// to produce DISCRETE brightness bands on each surface (the classic
+// cel-shaded look) instead of smooth lambert lighting.
+//
+// The ramp texture is a 4-pixel-wide image where each pixel represents
+// one lighting band (dark → mid-dark → mid-light → light). When light
+// hits a surface, Three.js samples this ramp by the lambert dot product
+// and clamps to whichever pixel the dot lands in — producing 4 hard
+// brightness steps instead of the usual continuous gradient.
+//
+// We generate the ramp inline (no asset file needed) via a 4×1 canvas.
+// Cached at module load — reused across every toon material.
+//
+// Why 4 steps and not 2 or 6:
+//   - 2 = stark, looks like Borderlands. Too cartoony for our pixel
+//     style; the box-meeb shapes already read as voxel art so we
+//     don't need brutal contrast.
+//   - 4 = sweet spot. Reads as cel-shaded but preserves enough
+//     gradation that round-ish curves (pumpkinhead crown, etc) still
+//     show form.
+//   - 6 = barely distinguishable from smooth lambert. Defeats the
+//     purpose.
+
+const _toonRampTexture = (() => {
+  const canvas = document.createElement('canvas');
+  canvas.width = 4;
+  canvas.height = 1;
+  const ctx = canvas.getContext('2d');
+  // Four bands from dark → light. Values tuned so the lit side reads
+  // bright (band 4 = white, fully lit) but the shadow side stays
+  // visible (band 1 = ~30% gray, NOT fully black — saves enemies
+  // from looking like silhouettes when seen against the dark
+  // chapter-7 / endless arena).
+  const bands = ['#4a4a4a', '#8a8a8a', '#cfcfcf', '#ffffff'];
+  for (let i = 0; i < 4; i++) {
+    ctx.fillStyle = bands[i];
+    ctx.fillRect(i, 0, 1, 1);
+  }
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.minFilter = THREE.NearestFilter;     // hard bands, no interpolation
+  tex.magFilter = THREE.NearestFilter;
+  tex.generateMipmaps = false;
+  tex.needsUpdate = true;
+  return tex;
+})();
+
+/**
+ * Construct a MeshToonMaterial mirroring the same fields the existing
+ * MeshStandardMaterial calls use. Drops `roughness` and `metalness`
+ * (toon doesn't use them) — callers can pass them harmlessly.
+ *
+ * Properties supported per toon's API:
+ *   - color (THREE.Color or hex)
+ *   - emissive (THREE.Color or hex)
+ *   - emissiveIntensity (number)
+ *   - transparent / opacity (passed through)
+ *   - depthWrite (passed through)
+ *   - The gradient ramp is auto-applied so all toon materials in this
+ *     module share the same banded look.
+ *
+ * Designed as a drop-in replacement: `new THREE.MeshStandardMaterial({
+ *   color, emissive, emissiveIntensity, roughness })` becomes
+ * `_toonMat({ color, emissive, emissiveIntensity })` — same spelling,
+ * same behavior on color + emissive, different lighting response.
+ *
+ * IMPORTANT: keeps `bodyMat.emissive` and `bodyMat.emissiveIntensity`
+ * working so the chapter-7 / endless flashlight glow-under-light
+ * mechanic (in main.js's enemy update loop) still functions —
+ * MeshToonMaterial supports both fields.
+ */
+function _toonMat(opts) {
+  const m = new THREE.MeshToonMaterial({
+    color: opts.color !== undefined ? opts.color : 0xffffff,
+    emissive: opts.emissive !== undefined ? opts.emissive : 0x000000,
+    emissiveIntensity: opts.emissiveIntensity !== undefined ? opts.emissiveIntensity : 0,
+    gradientMap: _toonRampTexture,
+    transparent: opts.transparent || false,
+    opacity: opts.opacity !== undefined ? opts.opacity : 1,
+    depthWrite: opts.depthWrite !== undefined ? opts.depthWrite : true,
+  });
+  return m;
+}
+
 export const enemies = [];
 export const enemyProjectiles = [];
 
@@ -85,14 +173,14 @@ export function applyKnockback(enemy, fromPos, units = 0.3) {
 // runtime where needed via material.color.set() before the per-type
 // dispatch returns. (We clone them when an instance needs an enemy-
 // specific tint that won't suit other instances.)
-const _darkAccentMat = new THREE.MeshStandardMaterial({
-  color: 0x1a1a22, roughness: 0.9, metalness: 0.05,
+const _darkAccentMat = _toonMat({
+  color: 0x1a1a22,
 });
-const _midAccentMat = new THREE.MeshStandardMaterial({
-  color: 0x2c2a35, roughness: 0.85, metalness: 0.1,
+const _midAccentMat = _toonMat({
+  color: 0x2c2a35,
 });
-const _boneMat = new THREE.MeshStandardMaterial({
-  color: 0xd9d4c0, roughness: 0.7, metalness: 0.0,
+const _boneMat = _toonMat({
+  color: 0xd9d4c0,
 });
 
 // ---- SHARED ACCENT GEOMETRIES ----
@@ -125,12 +213,10 @@ const _mummyHeadStripGeo  = new THREE.BoxGeometry(0.92, 0.10, 0.92);
 const _mummyTagGeo        = new THREE.BoxGeometry(0.10, 0.32, 0.04);
 // Yellowed cream — old bandage. Slight warm emissive so the cloth
 // catches even the dim chapter-2 fog without going dead-gray.
-const _mummyClothMat = new THREE.MeshStandardMaterial({
+const _mummyClothMat = _toonMat({
   color: 0xd4c098,
   emissive: 0x3a2e1e,
   emissiveIntensity: 0.22,
-  roughness: 0.95,
-  metalness: 0.02,
 });
 
 function makeHumanoid(tintHex, scale, extraEmissive = 0, typeKey = null) {
@@ -142,12 +228,15 @@ function makeHumanoid(tintHex, scale, extraEmissive = 0, typeKey = null) {
 
   const head = new THREE.Mesh(
     new THREE.BoxGeometry(0.9, 0.9, 0.9),
-    new THREE.MeshStandardMaterial({
-      color: headColor, emissive: tint, emissiveIntensity: 0.25 + extraEmissive, roughness: 0.85,
+    _toonMat({
+      color: headColor, emissive: tint, emissiveIntensity: 0.25 + extraEmissive,
     })
   );
   head.position.y = 2.6; head.castShadow = true; group.add(head);
 
+  // Visor stays as MeshBasicMaterial-equivalent — pure emissive at
+  // intensity 1.8 is the visual "eye glow" effect; toon shading
+  // would add unwanted shadow bands across this small bright cube.
   const visor = new THREE.Mesh(
     new THREE.BoxGeometry(0.85, 0.12, 0.06),
     new THREE.MeshStandardMaterial({
@@ -165,8 +254,8 @@ function makeHumanoid(tintHex, scale, extraEmissive = 0, typeKey = null) {
   cheekR.position.set(0.40, 2.55, 0.46);
   group.add(cheekR);
 
-  const bodyMat = new THREE.MeshStandardMaterial({
-    color: bodyColor, emissive: tint, emissiveIntensity: extraEmissive, roughness: 0.9,
+  const bodyMat = _toonMat({
+    color: bodyColor, emissive: tint, emissiveIntensity: extraEmissive,
   });
   const body = new THREE.Mesh(new THREE.BoxGeometry(1.1, 1.3, 0.7), bodyMat);
   body.position.y = 1.55; body.castShadow = true; group.add(body);
@@ -179,7 +268,7 @@ function makeHumanoid(tintHex, scale, extraEmissive = 0, typeKey = null) {
   group.add(belt);
 
   const armGeo = new THREE.BoxGeometry(0.3, 1.0, 0.3);
-  const armMat = new THREE.MeshStandardMaterial({ color: bodyColor, roughness: 0.9 });
+  const armMat = _toonMat({ color: bodyColor });
   const armL = new THREE.Group();
   const armLMesh = new THREE.Mesh(armGeo, armMat);
   armLMesh.position.y = -0.5; armLMesh.castShadow = true; armL.add(armLMesh);
@@ -199,7 +288,7 @@ function makeHumanoid(tintHex, scale, extraEmissive = 0, typeKey = null) {
   armR.position.set(0.7, 2.1, 0); group.add(armR);
 
   const legGeo = new THREE.BoxGeometry(0.4, 1.0, 0.4);
-  const legMat = new THREE.MeshStandardMaterial({ color: legColor, roughness: 0.95 });
+  const legMat = _toonMat({ color: legColor });
   const legL = new THREE.Group();
   const legLMesh = new THREE.Mesh(legGeo, legMat);
   legLMesh.position.y = -0.5; legLMesh.castShadow = true; legL.add(legLMesh);
@@ -264,11 +353,10 @@ function makeHumanoid(tintHex, scale, extraEmissive = 0, typeKey = null) {
   } else if (typeKey === 'spitter') {
     // Cheek pouches — bulges on the SIDES of the head suggesting the
     // enemy is loaded with goo. Distinctive silhouette from above.
-    const pouchTint = new THREE.MeshStandardMaterial({
+    const pouchTint = _toonMat({
       color: tint.clone().multiplyScalar(0.6),
       emissive: tint,
       emissiveIntensity: 0.25,
-      roughness: 0.85,
     });
     const pouchL = new THREE.Mesh(_pouchGeo, pouchTint);
     pouchL.position.set(-0.50, 2.55, 0);
@@ -426,18 +514,20 @@ function makeSpider(tintHex, scale) {
   const bodyColor = tint.clone().multiplyScalar(0.4);
   const legColor = tint.clone().multiplyScalar(0.3);
 
-  const bodyMat = new THREE.MeshStandardMaterial({
-    color: bodyColor, emissive: tint, emissiveIntensity: 0.3, roughness: 0.85,
+  const bodyMat = _toonMat({
+    color: bodyColor, emissive: tint, emissiveIntensity: 0.3,
   });
   const body = new THREE.Mesh(new THREE.BoxGeometry(1.2, 0.8, 1.5), bodyMat);
   body.position.y = 0.8; body.castShadow = true; group.add(body);
 
   const head = new THREE.Mesh(
     new THREE.BoxGeometry(0.6, 0.5, 0.5),
-    new THREE.MeshStandardMaterial({ color: bodyColor, roughness: 0.85 })
+    _toonMat({ color: bodyColor })
   );
   head.position.set(0, 0.9, 0.95); head.castShadow = true; group.add(head);
 
+  // Spider eyes — pure emissive at intensity 3 (the bright red dots).
+  // Stay as MeshStandardMaterial; toon banding would muddy the glow.
   const eyeMat = new THREE.MeshStandardMaterial({
     color: 0xff2e4d, emissive: 0xff2e4d, emissiveIntensity: 3,
   });
@@ -448,7 +538,7 @@ function makeSpider(tintHex, scale) {
   }
 
   const legGeo = new THREE.BoxGeometry(0.12, 0.12, 0.9);
-  const legMat = new THREE.MeshStandardMaterial({ color: legColor, roughness: 0.8 });
+  const legMat = _toonMat({ color: legColor });
   const legs = [];
   const positions = [
     [-0.55, 0.4, Math.PI * 0.25], [0.55, 0.4, -Math.PI * 0.25],
@@ -511,8 +601,8 @@ function makeAnt(tintHex, scale) {
   const abdomenColor = tint.clone().multiplyScalar(0.75);
   // Common dark material for legs / mandibles / antennae /
   // dorsal ridges. The figurine's black bits all share this look.
-  const blackMat = new THREE.MeshStandardMaterial({
-    color: 0x080808, roughness: 0.85, metalness: 0.10,
+  const blackMat = _toonMat({
+    color: 0x080808,
   });
 
   // Posture constants — body rides high on long legs.
@@ -527,8 +617,8 @@ function makeAnt(tintHex, scale) {
   // (further down). The thorax itself stays an angular box but
   // is taller (1.10) than wide/deep (0.95 × 1.05) — gives a
   // standing-up silhouette rather than a pancake.
-  const bodyMat = new THREE.MeshStandardMaterial({
-    color: thoraxColor, emissive: tint, emissiveIntensity: 0.35, roughness: 0.80,
+  const bodyMat = _toonMat({
+    color: thoraxColor, emissive: tint, emissiveIntensity: 0.35,
   });
   const body = new THREE.Mesh(new THREE.BoxGeometry(0.95, 1.10, 1.05), bodyMat);
   body.position.set(0, BODY_Y, 0);
@@ -562,8 +652,8 @@ function makeAnt(tintHex, scale) {
   // 0.85 cube — smaller than the previous 1.30 monster head, more
   // proportional to the figurine. Tilted slightly down so the
   // mandibles project at a predatory angle.
-  const headMat = new THREE.MeshStandardMaterial({
-    color: headColor, emissive: tint, emissiveIntensity: 0.25, roughness: 0.85,
+  const headMat = _toonMat({
+    color: headColor, emissive: tint, emissiveIntensity: 0.25,
   });
   const head = new THREE.Mesh(new THREE.BoxGeometry(0.85, 0.85, 0.85), headMat);
   head.position.set(0, HEAD_Y, 0.85);
@@ -575,8 +665,8 @@ function makeAnt(tintHex, scale) {
   // Sits BEHIND the thorax, slightly LOWER than thorax centerline.
   // Smaller than the previous 1.20-deep block — 0.85 cube reads as
   // a discrete rear segment, not a torpedo.
-  const abdomenMat = new THREE.MeshStandardMaterial({
-    color: abdomenColor, emissive: tint, emissiveIntensity: 0.30, roughness: 0.75,
+  const abdomenMat = _toonMat({
+    color: abdomenColor, emissive: tint, emissiveIntensity: 0.30,
   });
   const abdomen = new THREE.Mesh(new THREE.BoxGeometry(0.90, 0.85, 0.95), abdomenMat);
   abdomen.position.set(0, BODY_Y - 0.10, -0.85);
@@ -587,8 +677,11 @@ function makeAnt(tintHex, scale) {
   // Two black squares on the FRONT of the head. Larger than the
   // earlier version (0.26 vs 0.22) and pushed further apart so
   // the predatory wide-set look reads at game distance.
-  const eyeMat = new THREE.MeshStandardMaterial({
-    color: 0x020202, roughness: 0.3, metalness: 0.0,
+  // Eyes use toon shading too — they're tiny dark squares, the
+  // banding makes their glossy "compound eye" surface read better
+  // than smooth lambert.
+  const eyeMat = _toonMat({
+    color: 0x020202,
   });
   const eyeGeo = new THREE.BoxGeometry(0.26, 0.20, 0.04);
   const eyeL = new THREE.Mesh(eyeGeo, eyeMat);
@@ -725,8 +818,8 @@ function makePumpkin(tintHex, scale) {
   const stemColor = 0x1a3a0a;
   const bodyColor = new THREE.Color(0x1a0a04).lerp(tint, 0.3);
 
-  const pumpMat = new THREE.MeshStandardMaterial({
-    color: pumpkinColor, emissive: pumpkinColor, emissiveIntensity: 0.35, roughness: 0.75,
+  const pumpMat = _toonMat({
+    color: pumpkinColor, emissive: pumpkinColor, emissiveIntensity: 0.35,
   });
   const pumpCenter = new THREE.Mesh(new THREE.BoxGeometry(1.15, 0.9, 1.15), pumpMat);
   pumpCenter.position.y = 2.6; pumpCenter.castShadow = true; group.add(pumpCenter);
@@ -737,10 +830,13 @@ function makePumpkin(tintHex, scale) {
 
   const stem = new THREE.Mesh(
     new THREE.BoxGeometry(0.2, 0.3, 0.2),
-    new THREE.MeshStandardMaterial({ color: stemColor, roughness: 0.9 })
+    _toonMat({ color: stemColor })
   );
   stem.position.y = 3.2; group.add(stem);
 
+  // Pumpkin face — pure emissive at intensity 4 (the jack-o-lantern
+  // glow). Keep standard material; toon banding would dim the
+  // glow-through-darkness reading that makes pumpkin faces iconic.
   const faceMat = new THREE.MeshStandardMaterial({
     color: 0xffee00, emissive: 0xffaa00, emissiveIntensity: 4,
   });
@@ -752,15 +848,15 @@ function makePumpkin(tintHex, scale) {
   mouth.position.set(0, 2.4, 0.6); group.add(mouth);
 
   // Small body
-  const bodyMat = new THREE.MeshStandardMaterial({
-    color: bodyColor, emissive: tint, emissiveIntensity: 0.2, roughness: 0.9,
+  const bodyMat = _toonMat({
+    color: bodyColor, emissive: tint, emissiveIntensity: 0.2,
   });
   const body = new THREE.Mesh(new THREE.BoxGeometry(0.8, 1.2, 0.6), bodyMat);
   body.position.y = 1.4; body.castShadow = true; group.add(body);
 
   // Stumpy legs
   const legGeo = new THREE.BoxGeometry(0.35, 0.7, 0.35);
-  const legMat = new THREE.MeshStandardMaterial({ color: bodyColor, roughness: 0.9 });
+  const legMat = _toonMat({ color: bodyColor });
   const legL = new THREE.Group();
   const legLMesh = new THREE.Mesh(legGeo, legMat);
   legLMesh.position.y = -0.35; legLMesh.castShadow = true; legL.add(legLMesh);
