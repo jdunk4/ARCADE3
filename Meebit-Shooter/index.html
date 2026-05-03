@@ -60,7 +60,26 @@
        ENDLESS GLYPHS bottom. -->
   <div id="title-row">
     <div id="title-left-col">
-      <h1>EXTINGUISH<br>THE VIRUS</h1>
+      <!-- SIMVOID — game title. Per playtester: "SIMVOID. Can we
+           create a really cool graphic for this and place it on the
+           main page in place of Extinguish the Virus?"
+           
+           Two-part structure splits the word into SIM (sharper, brighter
+           green, reads as the synthetic / computational half) and VOID
+           (heavier, darker, recessed — reads as the emptiness it
+           describes). Per-letter spans inside each half allow individual
+           glitch animation. The 'simvoid-glyph' class on the O in VOID
+           triggers an overlay ring treatment turning it into a glyph
+           portal. All visual treatment is in CSS — see #simvoid-title
+           in styles.css. -->
+      <h1 id="simvoid-title" aria-label="SIMVOID">
+        <span class="simvoid-half simvoid-sim" aria-hidden="true">
+          <span class="simvoid-char">S</span><span class="simvoid-char">I</span><span class="simvoid-char">M</span>
+        </span>
+        <span class="simvoid-half simvoid-void" aria-hidden="true">
+          <span class="simvoid-char">V</span><span class="simvoid-char simvoid-glyph">O</span><span class="simvoid-char">I</span><span class="simvoid-char">D</span>
+        </span>
+      </h1>
       <h2>:: OTHERSIDE DEPLOYMENT ::</h2>
       <p>
         THE GRID IS BREACHED. THE ZOMEEBS APPROACH.<br>
