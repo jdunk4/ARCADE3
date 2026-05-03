@@ -5527,15 +5527,21 @@ function explodeRocket(r) {
 
 const GRENADE_GRAVITY = 22;    // m/s^2 — snappy feel
 const _grenades = [];
-// Shared geometry + material for all grenades. Building a NEW material
-// per throw forced a 5-second shader compile on first draw. Sharing
-// one instance means the shader compiles once (on first throw) and
-// every subsequent throw reuses it for free.
+// Shared geometry + material for all grenades.
 const _grenadeGeo = new THREE.IcosahedronGeometry(0.22, 0);
 const _grenadeMat = new THREE.MeshStandardMaterial({
-  color: 0x2b3d1e, emissive: 0x00ff44, emissiveIntensity: 1.4,
+  color: 0x2b3d1e, emissive: 0x88ff55, emissiveIntensity: 1.4,
   roughness: 0.5, metalness: 0.3,
 });
+// Single persistent PointLight for grenade trail glow. Added to the
+// scene ONCE at first throw and NEVER REMOVED — just repositioned each
+// frame to follow the newest in-flight grenade. When no grenades are
+// in flight, intensity is zeroed so it costs nothing. This avoids the
+// catastrophic performance issue where adding/removing PointLights
+// changes the scene's light count, which invalidates ALL cached shader
+// programs and forces Three.js to recompile every material on the next
+// render frame (~1-5 second freeze PER light count change).
+let _grenadeLight = null;
 
 function tryThrowGrenade() {
   if (!S.running || S.paused) return;
@@ -5558,12 +5564,12 @@ function tryThrowGrenade() {
     player.pos.z + Math.cos(player.facing) * 0.8,
   );
   // Reuse shared geometry + material (defined at module level).
-  // Eliminates per-throw shader compile.
   const mesh = new THREE.Mesh(_grenadeGeo, _grenadeMat);
   mesh.castShadow = true;
   mesh.position.copy(origin);
-  const trailLight = new THREE.PointLight(w.color, 1.4, 4, 2);
-  mesh.add(trailLight);
+  // NO per-grenade PointLight — adding/removing lights changes the
+  // scene's light count which invalidates ALL shader caches. Instead
+  // we use a single persistent _grenadeLight (see updateGrenades).
 
   const vx = Math.sin(player.facing) * w.speed;
   const vz = Math.cos(player.facing) * w.speed;
@@ -5632,6 +5638,31 @@ function updateGrenades(dt) {
 
     // Fuse expired — detonate mid-air
     if (ud.life <= 0) {
+      _detonateGrenade(g);
+      scene.remove(g);
+      _grenades.splice(i, 1);
+      continue;
+    }
+  }
+
+  // Persistent grenade trail light — follows the newest in-flight
+  // grenade. Lazy-created on first throw so it's in the scene from
+  // that point forward and the light count NEVER changes again.
+  if (_grenades.length > 0) {
+    if (!_grenadeLight) {
+      _grenadeLight = new THREE.PointLight(0x88ff55, 1.4, 4, 2);
+      scene.add(_grenadeLight);
+    }
+    // Track the most recently thrown (last in array)
+    const active = _grenades[_grenades.length - 1];
+    _grenadeLight.position.copy(active.position);
+    _grenadeLight.intensity = 1.4;
+  } else if (_grenadeLight) {
+    // No grenades in flight — zero the light so it has no visual
+    // cost, but do NOT remove it from the scene.
+    _grenadeLight.intensity = 0;
+  }
+}
       _detonateGrenade(g);
       scene.remove(g);
       _grenades.splice(i, 1);
