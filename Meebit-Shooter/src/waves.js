@@ -134,10 +134,6 @@ import { resetSlowDripState } from './herdVrmLoader.js';
 import { maybeShowChapterReward } from './powerups.js';
 import { getCentroidFor } from './triangles.js';
 import { showMissileArrow, hideMissileArrow } from './missileArrow.js';
-import {
-  prepareBlueprintForWave, getSpawnRateMultiplier as ch7BlueprintSpawnMult,
-  shouldEndWaveNow as ch7BlueprintShouldEnd,
-} from './ch7Blueprints.js';
 
 // How long after RADIO completes before the missile auto-fires. Was the
 // LAUNCH zone's 14-second hold — now it's a 10-second countdown toast
@@ -692,24 +688,6 @@ export function startWave(waveNum) {
     UI.toast(_twLbl.exposeToast, '#ff8826', 2500);
   }
 
-  // SURVIVAL — chapter 7 fresh-slate. Per user direction: NO
-  // objective HUD bar. The wave still has a kill target internally
-  // (waveDef.killTarget) so it can advance to the next wave, but
-  // the player doesn't see a counter — they just survive the
-  // infestation until the wave ends. Defensive hide in case a prior
-  // wave's objective was still showing.
-  if (waveDef.type === 'survival') {
-    try { UI.hideObjective(); } catch (e) {}
-    // Chapter 7 blueprint hunt — wave-1 (and eventually 2-3) starts
-    // with a paced narrative phase. The blueprint module spawns the
-    // pillar + glyphstone for the current wave (no-op for waves
-    // without a configured blueprint), drives the slow-trickle and
-    // 30s-prep timing, and signals wave-end via shouldEndWaveNow().
-    try { prepareBlueprintForWave(waveNum); } catch (e) {
-      console.warn('[waves] prepareBlueprintForWave failed:', e);
-    }
-  }
-
   UI.showWaveStart(waveNum);
   Audio.waveStart();
   shake(0.3, 0.3);
@@ -754,10 +732,6 @@ export function updateWaves(dt) {
   // objective state when S.tutorialMode is true, so updateWaves
   // would only fight it for control of S.* flags.
   if (S.tutorialMode) return;
-  // Endless Glyphs mode disables the standard wave system the same
-  // way — endlessGlyphs.js drives its own wave loop with chapter
-  // mapping, ×1.05 HP scaling, and 5-wave intermission cycles.
-  if (S.endlessGlyphs) return;
 
   // Per-frame dormant-prop updates (shield pulse + drop animation).
   // MUST run before the `!S.waveActive` gate below — otherwise the shield
@@ -1035,33 +1009,20 @@ export function updateWaves(dt) {
       // never floods the player.
       let baseRate = waveDef.spawnRate;
       if (S.tutorialMode) baseRate = tutorialSpawnRateOverride(baseRate);
-      // Chapter 7 blueprint multiplier — 0 during AWAIT_BLUEPRINT and
-      // OVERLAY phases, 0.10 during slow-trickle, 1.0 during flood.
-      // Returns 1.0 for any non-blueprint wave so this is a no-op
-      // outside chapter 7.
-      let bpMult = 1.0;
-      try { bpMult = ch7BlueprintSpawnMult(); } catch (e) {}
-      const effRate = baseRate * density * bpMult;
-      // bpMult of 0 → effRate is 0 → guard the cooldown calc to avoid
-      // dividing by zero. Just skip this spawn cycle and try again
-      // next frame; the rate gets re-evaluated.
-      if (effRate <= 0.0001) {
-        spawnCooldown = 0.1;
-      } else {
-        spawnCooldown = Math.max(0.15, 0.9 / effRate);
-        let baseCount = Math.min(3, 1 + Math.floor(S.wave / 3));
-        // Cannon-load — softened from 3 to 2 per-batch for new-player
-        // accessibility. Combined with the lower spawnRate (14→8) and
-        // lower maxOnScreen (40→25) the wave is now meaningfully gentler.
-        if (waveDef.type === 'cannon-load') {
-          baseCount = 2;
-        }
-        // Tutorial mode also limits the per-batch count so the spawn-rate
-        // clamp isn't undermined by 3-at-a-time bursts.
-        if (S.tutorialMode) baseCount = 1;
-        const count = Math.max(1, Math.round(baseCount * density));
-        for (let i = 0; i < count; i++) spawnFromMix(waveDef.enemies);
+      const effRate = baseRate * density;
+      spawnCooldown = Math.max(0.15, 0.9 / effRate);
+      let baseCount = Math.min(3, 1 + Math.floor(S.wave / 3));
+      // Cannon-load — softened from 3 to 2 per-batch for new-player
+      // accessibility. Combined with the lower spawnRate (14→8) and
+      // lower maxOnScreen (40→25) the wave is now meaningfully gentler.
+      if (waveDef.type === 'cannon-load') {
+        baseCount = 2;
       }
+      // Tutorial mode also limits the per-batch count so the spawn-rate
+      // clamp isn't undermined by 3-at-a-time bursts.
+      if (S.tutorialMode) baseCount = 1;
+      const count = Math.max(1, Math.round(baseCount * density));
+      for (let i = 0; i < count; i++) spawnFromMix(waveDef.enemies);
     }
   }
 
@@ -1955,27 +1916,6 @@ export function updateWaves(dt) {
       } else {
         UI.showObjective('PROTECT THE CAGE · ' + cagePct + '%', 'Stand near the cage to start rescue');
       }
-    }
-  }
-
-  // SURVIVAL — chapter 7 fresh-slate wave type. Wave ends when:
-  //   (a) the blueprint hunt completes its 90s flood phase
-  //       (waves with a configured blueprint — currently wave 1), OR
-  //   (b) the player has killed waveDef.killTarget enemies
-  //       (waves WITHOUT a blueprint configured — currently waves 2+3,
-  //       which are still plain survival).
-  // For the chapter 7 finale (ch7Finale flag, last of the 3 waves),
-  // endWave() handles the run-end transition.
-  if (waveDef.type === 'survival') {
-    let blueprintEnd = false;
-    try { blueprintEnd = ch7BlueprintShouldEnd(); } catch (e) {}
-    if (blueprintEnd) {
-      endWave();
-      return;
-    }
-    if (S.waveKillsProgress >= S.waveKillTarget) {
-      endWave();
-      return;
     }
   }
 
@@ -3329,110 +3269,6 @@ function grantBossReward() {
   }
 }
 
-// Unconditional cleanup sweep — used ONLY by the dev cheat to clear
-// every wave-scoped element regardless of which wave was "active" at
-// call time. Normal wave progression uses endWave() (below), which
-// gates its cleanup on S.miningActive / S.powerupActive / etc. so it
-// only runs the relevant teardown for the wave that just finished.
-//
-// This function is the kitchen-sink version: when the dev jumps from
-// (say) wave 1 directly to wave 5, we don't know what state the
-// world is in — there could be blocks falling, a truck mid-route,
-// shields up, EMP launchers mid-flight, hive activity flags lingering
-// from earlier debug jumps, all simultaneously. Rather than try to
-// reason about which subset to clean, we just call EVERY clear
-// function unconditionally. Each clear*() is a no-op if its target
-// isn't on the field, so there's no harm in running them all.
-//
-// Per playtester: "If we go to wave 3 we should call to remove all
-// contents in wave 1&2. If we go to wave 5 we should call to remove
-// all aspects of wave 1-4."
-//
-// SCOPE: this function is dev-skip only. Normal wave-end transitions
-// must continue to use endWave().
-export function silentlyEndCurrentWave() {
-  S.waveActive = false;
-  S.miningActive = false;
-  S.powerupActive = false;
-  S.spawnerWaveActive = false;
-  S.hiveWaveActive = false;
-  S.bonusWaveActive = false;
-  S.spawnersLive = 0;
-
-  // -------- BOSS BAR --------
-  // Wave 5 across all chapters spawns a boss + a top-of-screen HP bar.
-  // When fast-forwarding past a boss wave the bar would otherwise stick
-  // around showing "NIGHT HERALD" or "BLAZE WARDEN" on the next chapter.
-  try { UI.hideBossBar && UI.hideBossBar(); } catch (e) {}
-
-  // -------- BONUS WAVE (wave 4) --------
-  // Rescued meebits dancing in arena, etc.
-  try { clearBonusWave(); } catch (e) {}
-
-  // -------- CAPTURE / OBJECTIVE ZONE --------
-  if (S.objectiveZone) {
-    try { removeCaptureZone(S.objectiveZone); } catch (e) {}
-    S.objectiveZone = null;
-  }
-
-  // -------- WAVE 1: MINING / ESCORT --------
-  // Falling blocks, loose ores, the depot active state. Also clears
-  // chapter-1/4 egg shower + crusher finisher and chapter-2/5 escort
-  // truck. Pickaxe gets swapped off the player if equipped.
-  try { clearAllBlocks(); } catch (e) {}
-  try { clearAllOres(); } catch (e) {}
-  try { setDepotActive(false); } catch (e) {}
-  if (S.currentWeapon === 'pickaxe') {
-    S.currentWeapon = S.previousCombatWeapon || 'pistol';
-    try { UI.updateWeaponSlots(); } catch (e) {}
-  }
-  try { clearAllEggs(); } catch (e) {}
-  try { clearEscortTruck(); } catch (e) {}
-
-  // -------- WAVE 2: CANNON / DATACENTER / POWERUP --------
-  // Three flow variants depending on chapter:
-  //   chapters 1, 4: cannon-load (charges + cannon barrage)
-  //   chapters 2, 5: datacenter (server warehouse + safety pod + lasers)
-  //   chapters 3, 6, 7: powerup (5 zones + radio + EMP launcher)
-  try { endPowerupWave(); } catch (e) {}
-  try { clearPowerupZones(); } catch (e) {}
-  try { clearTurretBullets(); } catch (e) {}
-  try { clearChargeCubes(); } catch (e) {}
-  try { abortLaunch && abortLaunch(); } catch (e) {}
-  try { forceClearEmpResidue && forceClearEmpResidue(); } catch (e) {}
-  try { clearServerWarehouse(); } catch (e) {}
-  try { clearSafetyPod(); } catch (e) {}
-  try { clearHiveLasers(); } catch (e) {}
-  try { deactivateAllTurrets(); } catch (e) {}
-
-  // -------- WAVE 3: HIVE / SPAWNERS --------
-  // Drop any residual hive shields — wave 2's EMP normally drops these,
-  // but a player jumping past wave 2 needs them gone so the hive can
-  // be attacked at wave 3. The hive meshes themselves are chapter
-  // dormant props and persist; only the wave-active flags + shields
-  // are wave-scoped.
-  try { removeHiveShields(); } catch (e) {}
-
-  // -------- WAVE 5: BOSS --------
-  // Boss enemy itself is in the enemies array (caller handles); the
-  // arena charge cubes spawned for boss are wave-scoped here.
-  try { clearBossCubes(); } catch (e) {}
-
-  // -------- LEGACY ESCORT MARKERS --------
-  try { clearCornerMarkers(scene); } catch (e) {}
-
-  // -------- RESCUE NPC --------
-  if (S.rescueMeebit) {
-    if (!S.rescueMeebit.freed && !S.rescueMeebit.killed) {
-      try { removeRescueMeebit(S.rescueMeebit); } catch (e) {}
-    }
-    S.rescueMeebit = null;
-  }
-
-  // -------- HUD --------
-  try { UI.hideObjective(); } catch (e) {}
-}
-
 function endWave() {
   if (intermissionActive) return;
   intermissionActive = true;
@@ -3555,14 +3391,6 @@ function endWave() {
     teardownChapter();
     _chapterJustCompleted = true;
     _completedChapterIdx = S.chapter;
-    // ENDLESS GLYPHS unlock — fires when the player completes the
-    // last chapter of ATTACK THE AI (chapter 6 = idx 5). The bridge
-    // sets the localStorage gate flag and live-unlocks the title
-    // card. Per playtester: "This game mode unlocks when the player
-    // completes the main game."
-    if (S.chapter === 5 && typeof window !== 'undefined' && window.__markAttackCompleted) {
-      try { window.__markAttackCompleted(); } catch (_) {}
-    }
   }
 
   // PRE-BOSS CINEMATIC
@@ -3651,7 +3479,23 @@ export function resetWaves() {
   clearAllBlocks();
   // teardownChapter() clears the chapter-scoped dormant props (depot,
   // hives + their shield meshes). It's idempotent.
-  teardownChapter();
+  //
+  // OPTIMIZATION: skip the teardown if chapter 0 is already prepared
+  // and we're entering a fresh run (S.chapter === 0 or not yet set).
+  // The matrix-dive pre-builds chapter 0 during loading; tearing it
+  // down here just to rebuild it 100ms later in startWave(1) was
+  // costing 3-5 seconds of wasted mesh construction. On subsequent
+  // runs (player died, restarts from a later chapter), teardown IS
+  // needed because the old chapter's props don't match chapter 0.
+  //
+  // isChapterPrepared(0) returns true if prepareChapter(0) ran during
+  // the matrix dive and nothing has torn it down since. If the player
+  // is restarting from chapter 0, we keep the existing props. If
+  // restarting from a different chapter (e.g. died in chapter 3), we
+  // tear down because chapter 3's props are wrong for chapter 0.
+  if (!isChapterPrepared(0)) {
+    teardownChapter();
+  }
   clearAllOrbs();
   clearBossCubes();
   clearAllCivilians();
