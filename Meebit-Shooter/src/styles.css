@@ -347,6 +347,269 @@ canvas { display: block; cursor: var(--matrix-cursor); }
     0 0 44px rgba(0, 255, 102, 0.7),
     4px 4px 0 #000;
 }
+
+/* ===================================================================
+   SIMVOID — title graphic
+   ===================================================================
+   Per playtester: "We need to create a TITLE FOR THIS and I've found
+   it... SIMVOID. Can we create a really cool graphic for this and
+   place it on the main page in place of Extinguish the Virus?"
+   
+   Composition:
+   - SIM (left half): bright matrix-green, 3D extruded forward, sharp
+     reading. The "synthetic / simulation" half.
+   - VOID (right half): darker recessed green, inset shadow effect, sits
+     LOWER on the baseline by a few pixels. Reads as "empty / the void
+     that follows the simulation". Visual hierarchy reinforces the
+     meaning — SIM creates, VOID consumes.
+   - Chromatic aberration: red + cyan ghost copies offset by ±2px give
+     the title a CRT/glitch feel without animating constantly.
+   - Subtle scan-line overlay across the entire title (linear-gradient
+     of horizontal stripes at very low alpha).
+   - The O in VOID is given a glyph-ring overlay turning it into a
+     symbolic portal (matches the Endless Glyphs / blueprint aesthetic).
+   - 6-second-cycle glitch animation: every loop, "VOID" displaces
+     horizontally by 1-3 pixels for ~80ms then snaps back. Non-
+     distracting, lends a "this title is corrupted" vibe.
+   =================================================================== */
+
+#simvoid-title {
+  /* Override .overlay h1's pink — SIMVOID uses pure matrix-green
+     identity. We don't repeat .overlay h1's font-size/letter-spacing
+     here because #title-left-col h1 below sets those. */
+  font-family: 'Impact', 'Arial Black', sans-serif;
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;          /* on narrow viewports, VOID wraps below SIM */
+  align-items: baseline;
+  gap: 0.18em;              /* visual breathing space between the two halves */
+  line-height: 0.92;
+  margin-bottom: 12px;
+  /* Position context for the per-letter glitch + scan-line overlay. */
+  position: relative;
+  /* Faint repeating horizontal scan-lines layered over the entire
+     title — pseudo-CRT effect. Drawn via a background gradient on a
+     ::after pseudo so the gradient doesn't fight with the per-letter
+     text-shadow. */
+}
+#simvoid-title::after {
+  /* CRT scan-line overlay — 2px-tall dark stripes every 4px,
+     extremely faint so they suggest texture without obscuring the
+     letterforms. Sits on top of the text via z-index + pointer-events
+     none so clicks pass through. */
+  content: "";
+  position: absolute;
+  inset: -4px -4px;
+  background: repeating-linear-gradient(
+    0deg,
+    rgba(0, 0, 0, 0.18) 0px,
+    rgba(0, 0, 0, 0.18) 1px,
+    transparent 1px,
+    transparent 4px
+  );
+  pointer-events: none;
+  z-index: 5;
+  mix-blend-mode: multiply;
+}
+
+/* Each half is a flex container of per-letter spans. Letters can be
+   individually transformed for the glitch animation. */
+.simvoid-half {
+  display: inline-flex;
+  flex-direction: row;
+  align-items: baseline;
+}
+.simvoid-char {
+  display: inline-block;
+  position: relative;
+  /* Each character carries the chromatic aberration via two layered
+     copies in ::before / ::after — see rules below. The base color
+     and shadow are applied here. */
+  transition: transform 0.15s ease;
+}
+
+/* SIM — the bright synthetic half. Vivid matrix-green with strong
+   3D extrusion + outer glow. Letters sit on the natural baseline. */
+.simvoid-sim .simvoid-char {
+  color: #6dff95;          /* slightly lighter than var(--matrix-green) for "synthetic" pop */
+  text-shadow:
+    /* Layered extrusion stack — six steps marching down-and-right
+       in progressively darker green, building the 3D body of each
+       letter. */
+    1px 1px 0 #4adb6e,
+    2px 2px 0 #2bbb52,
+    3px 3px 0 #11993d,
+    4px 4px 0 #0a7a30,
+    5px 5px 0 #065d24,
+    6px 6px 0 #033f17,
+    /* Crisp 8-pixel offset hard shadow giving the whole letter
+       weight against the background. */
+    8px 8px 0 #000,
+    /* Outer matrix-green glow halo. */
+    0 0 14px rgba(110, 255, 160, 0.85),
+    0 0 32px rgba(0, 255, 102, 0.55);
+}
+
+/* VOID — the dark recessed half. Letters sit slightly LOWER (negative
+   margin-top via line-height shenanigan + small translateY) and use
+   darker greens trending toward black. Reads as carved-into the
+   surface rather than rising from it. */
+.simvoid-void .simvoid-char {
+  color: #11663a;          /* dark moss green base */
+  /* Inset / recessed effect — instead of an extrusion stack going
+     down-right (like SIM), VOID's shadow stack inverts: a darker
+     core with bright OUTER edge highlights, suggesting depth carved
+     into the surface. */
+  text-shadow:
+    /* Tight dark core — letters look thick but solid black-green. */
+    1px 1px 0 #062b16,
+    2px 2px 0 #031808,
+    3px 3px 0 #000,
+    /* Bottom-right edge highlight — bright matrix green tracing the
+       trailing edge, reading as light catching the recessed letter's
+       far face. */
+    4px 4px 0 #1a8c4a,
+    5px 5px 0 #2bbb52,
+    /* Thin top-left dark shadow grounds the letter into the surface. */
+    -1px -1px 0 #001508,
+    /* Subtle outer glow — much fainter than SIM, so VOID reads as
+       "darker / heavier". */
+    0 0 8px rgba(0, 80, 30, 0.6),
+    0 0 24px rgba(0, 255, 102, 0.18);
+  /* Push letters down a hair so VOID sits below SIM's baseline.
+     Reinforces the "VOID is heavier / sinking" reading. */
+  transform: translateY(0.05em);
+}
+
+/* Chromatic aberration — red + cyan ghost layers via ::before /
+   ::after pseudo-elements positioned just behind each character.
+   The pseudo-elements carry the same letter content (via attr or
+   ::before content) and get tinted + offset.
+   
+   Implementation note: pseudo-element content can't read the
+   character of the parent in pure CSS without `attr(data-char)`,
+   so we'd need a JS step to set data-char per letter. To keep this
+   pure CSS we instead use a different technique: filter
+   drop-shadows that mimic chromatic aberration on the whole word.
+   This applies one red shadow displaced left and one cyan shadow
+   displaced right — same visual idea, no JS or attribute. */
+#simvoid-title {
+  /* Two drop-shadows produce the red/cyan fringe that reads as
+     chromatic aberration on a CRT/old display. Very subtle on
+     purpose — should register peripherally, not dominate. */
+  filter:
+    drop-shadow(-1.5px 0 0 rgba(255, 60, 80, 0.45))
+    drop-shadow( 1.5px 0 0 rgba(60, 220, 255, 0.40));
+}
+
+/* The O in VOID — turn it into a glyph-portal. Adds an overlaid ring
+   around the letter via ::after on the .simvoid-glyph span,
+   suggesting the letter IS a portal/glyph rather than just typography.
+   Subtle — should read as "this O is special" without becoming a
+   full reskin of the letter. */
+.simvoid-glyph {
+  position: relative;
+}
+.simvoid-glyph::after {
+  content: "";
+  position: absolute;
+  /* Centered ring slightly larger than the letter's visual O. The
+     dimensions are tuned for the title size; if the title font-size
+     scales (it does, via media queries below), the ring scales
+     proportionally because we use em units. */
+  top: 50%;
+  left: 50%;
+  width: 0.85em;
+  height: 0.85em;
+  transform: translate(-50%, -50%);
+  border: 0.04em solid rgba(0, 255, 102, 0.55);
+  border-radius: 50%;
+  /* Faint inner glow on the ring. */
+  box-shadow:
+    inset 0 0 0.15em rgba(0, 255, 102, 0.4),
+    0 0 0.25em rgba(0, 255, 102, 0.5);
+  pointer-events: none;
+  /* Slow rotation gives the glyph a subtle "active" feel — barely
+     perceptible at 30s/turn but adds life. */
+  animation: simvoid_glyph_spin 30s linear infinite;
+}
+@keyframes simvoid_glyph_spin {
+  from { transform: translate(-50%, -50%) rotate(0deg); }
+  to   { transform: translate(-50%, -50%) rotate(360deg); }
+}
+
+/* Glitch animation — every 6 seconds, VOID's letters jitter for
+   ~120ms then snap back. Subtle horizontal displacement (1-2px) per
+   letter, asymmetric so different letters glitch at slightly
+   different times within the burst. Implemented with a single
+   keyframe applied to each .simvoid-void .simvoid-char with a
+   small per-letter delay. */
+.simvoid-void .simvoid-char {
+  animation: simvoid_glitch 6s steps(1, end) infinite;
+}
+.simvoid-void .simvoid-char:nth-child(1) { animation-delay: 0.00s; }
+.simvoid-void .simvoid-char:nth-child(2) { animation-delay: 0.06s; }
+.simvoid-void .simvoid-char:nth-child(3) { animation-delay: 0.03s; }
+.simvoid-void .simvoid-char:nth-child(4) { animation-delay: 0.09s; }
+@keyframes simvoid_glitch {
+  /* 0% to 95% — completely still (the bulk of the cycle is
+     stationary; the glitch is a punctuation, not the default state) */
+  0%, 95% {
+    transform: translateY(0.05em) translateX(0);
+    filter: none;
+  }
+  /* The actual glitch burst spans 95% → 100% (= 5% of 6s = 300ms).
+     Within that we step through 4 frames of progressively settling
+     displacement. */
+  95.5% {
+    transform: translateY(0.05em) translateX(2px);
+    filter: hue-rotate(15deg);
+  }
+  96.5% {
+    transform: translateY(0.05em) translateX(-2px);
+    filter: hue-rotate(-15deg);
+  }
+  97.5% {
+    transform: translateY(0.04em) translateX(1px);
+    filter: hue-rotate(8deg);
+  }
+  98.5% {
+    transform: translateY(0.05em) translateX(-1px);
+    filter: none;
+  }
+  100% {
+    transform: translateY(0.05em) translateX(0);
+    filter: none;
+  }
+}
+
+/* SIM glitches very rarely — every ~9s for ~80ms — so the two halves
+   don't glitch in unison (which would feel rhythmic / planned).
+   Asymmetric timing reads as "the system is failing in irregular
+   ways". */
+.simvoid-sim .simvoid-char {
+  animation: simvoid_glitch_sim 9s steps(1, end) infinite;
+}
+.simvoid-sim .simvoid-char:nth-child(1) { animation-delay: 1.4s; }
+.simvoid-sim .simvoid-char:nth-child(2) { animation-delay: 1.5s; }
+.simvoid-sim .simvoid-char:nth-child(3) { animation-delay: 1.45s; }
+@keyframes simvoid_glitch_sim {
+  0%, 97% {
+    transform: translateX(0);
+  }
+  97.5% {
+    transform: translateX(1px);
+  }
+  98% {
+    transform: translateX(-1px);
+  }
+  98.5% {
+    transform: translateX(0.5px);
+  }
+  100% {
+    transform: translateX(0);
+  }
+}
 .overlay h2 {
   font-size: 20px; letter-spacing: 6px; font-weight: 400;
   color: var(--matrix-green);
