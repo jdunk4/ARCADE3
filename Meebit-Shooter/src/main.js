@@ -98,7 +98,7 @@ import { updateHiveLasers, clearHiveLasers } from './hiveLasers.js';
 import { updateCockroach, clearCockroachBoss } from './cockroachBoss.js';
 import { initFogRing, updateFogRing, clearFogRing, setFogVisible } from './fogRing.js';
 import { spawners, damageSpawner, updateSpawners, spawnPortal, clearAllPortals } from './spawners.js';
-import { getShieldedHiveAt, shieldHitVisual, hiveShieldsIter } from './dormantProps.js';
+import { getShieldedHiveAt, shieldHitVisual, hiveShieldsIter, prepareChapter } from './dormantProps.js';
 import { Save } from './save.js';
 import {
   ARMORY_WEAPON_IDS,
@@ -948,8 +948,42 @@ function showIncomingCall() {
       // target. Snap the total DOWN to what actually got delivered so
       // loaded/total == 1.0 and the dive fires onReady.
       phase2Target = phase2Loaded;
-      progressState.total = phase1Total + phase2Target + phase0Total;
+
+      // --- Phase 3: prewarm shaders + pre-build game infrastructure ---
+      // These tasks run DURING the matrix dive, counting toward the
+      // progress bar. Each task gets one frame to execute, then yields
+      // so the matrix rain stays smooth and the progress bar trickles
+      // from ~65% → 100% naturally instead of snapping.
+      const phase3Tasks = [
+        () => { prewarmShaders(renderer); },
+        () => { try { initRain(CHAPTERS[0].full.grid1, 1); } catch(e) {} },
+        () => { try { ensureBeamMesh(); } catch(e) {} try { ensureFlameMeshes(); } catch(e) {} },
+        () => { try { applyTheme(0, 1); } catch(e) {} },
+        () => { try { buildCrowd(); } catch(e) {} try { recolorCrowd(CHAPTERS[0].full.grid1); } catch(e) {} },
+        () => { try { applyRainTo(CHAPTERS[0].full.grid1, 1); } catch(e) {} },
+        () => { try { prewarmBossCinematic(); } catch(e) {} },
+        () => { try { prepareChapter(0); } catch(e) {} },
+        () => {
+          // Pre-promote damage-flash compositor layer
+          const df = document.getElementById('damage-flash');
+          if (df) { df.style.transition='none'; df.style.opacity='0.01';
+            requestAnimationFrame(()=>requestAnimationFrame(()=>{df.style.opacity='0';df.style.transition=''}));
+          }
+        },
+      ];
+      const phase3Total = phase3Tasks.length;
+      let phase3Loaded = 0;
+      // Add phase 3 to the progress denominator so the bar trickles.
+      progressState.total = phase1Total + phase2Target + phase0Total + phase3Total;
       progressState.loaded = phase1Loaded + phase2Loaded + phase0Loaded;
+
+      for (let t = 0; t < phase3Tasks.length; t++) {
+        phase3Tasks[t]();
+        phase3Loaded++;
+        progressState.loaded = phase1Loaded + phase2Loaded + phase0Loaded + phase3Loaded;
+        // Yield to let the matrix rain render + progress bar update.
+        await new Promise(r => requestAnimationFrame(r));
+      }
     })();
 
     const diveCtrl = runMatrixDive(
@@ -979,67 +1013,8 @@ function showIncomingCall() {
         const attackBtn = document.getElementById('start-btn');
         const focusable = [attackBtn].filter(Boolean);
         setTitleMode(true, focusable);
-
-        // ============================================================
-        // PRE-BUILD GAME INFRASTRUCTURE WHILE USER READS THE MENU
-        // ============================================================
-        // The title screen is fading in over the matrix rain. The user
-        // will spend 2-10 seconds deciding which mode to play. Use
-        // that time to build all the heavy game infrastructure that
-        // previously caused 5-10 second freezes at startGame/
-        // startTutorial. All these functions are idempotent (internal
-        // guards prevent duplicate work), so calling them again in
-        // startGame/startTutorial is a no-op.
-        //
-        // Strategy: yield to the browser between batches so the title
-        // screen fade + matrix rain stay smooth. Each rAF callback
-        // does one chunk of work. If the user clicks ATTACK THE AI
-        // before all chunks finish, startGame/startTutorial will
-        // pick up any remaining work (the idempotent guards handle
-        // the partial-complete case cleanly).
-        const _bgTasks = [
-          () => {
-            try { initRain(CHAPTERS[0].full.grid1, 1); } catch(e) {}
-          },
-          () => {
-            try { ensureBeamMesh(); } catch(e) {}
-            try { ensureFlameMeshes(); } catch(e) {}
-          },
-          () => {
-            try { applyTheme(0, 1); } catch(e) {}
-          },
-          () => {
-            try { buildCrowd(); } catch(e) {}
-            try { recolorCrowd(CHAPTERS[0].full.grid1); } catch(e) {}
-          },
-          () => {
-            try { applyRainTo(CHAPTERS[0].full.grid1, 1); } catch(e) {}
-          },
-          () => {
-            try { prewarmBossCinematic(); } catch(e) {}
-          },
-          () => {
-            // Pre-promote damage-flash compositor layer
-            const df = document.getElementById('damage-flash');
-            if (df) {
-              df.style.transition = 'none';
-              df.style.opacity = '0.01';
-              requestAnimationFrame(() => {
-                requestAnimationFrame(() => {
-                  df.style.opacity = '0';
-                  df.style.transition = '';
-                });
-              });
-            }
-          },
-        ];
-        let _bgIdx = 0;
-        function _runNextBgTask() {
-          if (_bgIdx >= _bgTasks.length) return;
-          _bgTasks[_bgIdx++]();
-          requestAnimationFrame(_runNextBgTask);
-        }
-        requestAnimationFrame(_runNextBgTask);
+        // Game infrastructure pre-build now runs during matrix dive
+        // phase 3 (before onReady fires). Nothing left to do here.
       },
     );
 
@@ -1436,12 +1411,8 @@ loadPlayer(
   },
   () => {
     setLoad(100, 'READY');
-    // Run shader prewarm while the loading screen is still visible.
-    // This spawns sample meshes for every enemy/boss/projectile type
-    // offscreen and compiles their shaders. The loading bar stays at
-    // 100% during this work so the player has visual feedback.
-    prewarmShaders(renderer);
-    // NOW hide the loading screen — prewarm is done, title can show.
+    // Prewarm + game setup now runs during matrix dive phase 3
+    // (counted toward the progress bar). No work needed here.
     document.getElementById('loading').style.display = 'none';
     showIncomingCall();
     if (authCallback) tryUpgradeAvatarFromAuth(authCallback);
