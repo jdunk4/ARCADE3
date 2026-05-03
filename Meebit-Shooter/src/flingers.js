@@ -41,8 +41,6 @@ import { Audio } from './audio.js';
 import { S, shake } from './state.js';
 import { UI } from './ui.js';
 import { attachMixer, animationsReady, applyGunHoldPose, GUN_HOLD_EXCLUDE_BONES, IDLE_HIP_EXCLUDE_BONES } from './animation.js';
-// Performance instrumentation (REMOVE-ME after diagnosing first-spawn freezes)
-import { probe } from './perfProbe.js';
 
 // -----------------------------------------------------------------------------
 // ASSETS / CONSTANTS
@@ -149,10 +147,6 @@ const flungEnemies = [];         // enemies mid-flight (airborne)
 // Hidden mesh pool — prebuilt during matrix dive by preloadFlingerGLBs().
 // Mirrors the pixl-pal pool pattern. Zero-jank first arrival.
 const flingerPoolEntries = [];
-/** Expose pool entries for the startGame recompile pass in main.js.
- *  Returns the same array (not a copy) so the caller can toggle
- *  visibility on the actual objects. */
-export function getFlingerPoolEntries() { return flingerPoolEntries; }
 
 let lastWaveAwarded = 0;         // last wave for which we granted a charge
 let _killHandler = null;         // main.js registers a hook that routes kills
@@ -213,14 +207,14 @@ export async function preloadFlingerGLBs(onProgress, renderer, camera) {
         }
         if (parsed.length > 0) {
           names = parsed;
-          console.log(`[flinger] 1/3 manifest found (${names.length} files)`);
+          console.log(`[flinger] manifest found (${names.length} files)`);
         }
       }
     } else {
-      console.log('[flinger] 1/3 no manifest, using hardcoded list (' + names.length + ' files)');
+      console.log('[flinger] no manifest, using hardcoded list (' + names.length + ' files)');
     }
   } catch (e) {
-    console.log('[flinger] 1/3 manifest fetch failed, using hardcoded list');
+    console.log('[flinger] manifest fetch failed, using hardcoded list');
   }
 
   const total = names.length;
@@ -242,6 +236,7 @@ export async function preloadFlingerGLBs(onProgress, renderer, camera) {
   // already confirms the file count; the fetch completion is implied.
 
   // --- Phase B: build hidden mesh pool (clones parked at y=-1000) ---
+  const tmpScene = new THREE.Scene();
   for (let i = 0; i < names.length; i++) {
     const glbName = names[i];
     try {
@@ -252,6 +247,7 @@ export async function preloadFlingerGLBs(onProgress, renderer, camera) {
       mesh.updateMatrix();
       mesh.traverse(o => { o.frustumCulled = false; });
       scene.add(mesh);
+      tmpScene.add(mesh);
       flingerPoolEntries.push({ name: glbName, obj: mesh, inUse: false });
     } catch (err) {
       console.warn('[flinger] pool build failed for', glbName, err);
@@ -263,129 +259,20 @@ export async function preloadFlingerGLBs(onProgress, renderer, camera) {
     }
   }
 
-  // --- Phase C: PSO + animation + shadow + skinning warmup ---
-  // The previous fix (compile against live scene) eliminated MOST of
-  // the freeze, but ~1-2s residual stutter remained. Diagnostic logs
-  // showed all probe()'d functions completing in <2ms — meaning the
-  // residual block is in the renderer, AFTER the spawn JS returns.
-  //
-  // Three remaining first-render costs that renderer.compile() alone
-  // doesn't catch:
-  //
-  //   1. SKINNING SHADERS — when a SkinnedMesh first has its bone
-  //      matrices uploaded (first time mixer.update() drives it),
-  //      the GPU pipeline state changes. We force this by attaching
-  //      a mixer + playing walk + updating once during preload.
-  //
-  //   2. SHADOW MAP SHADERS — castShadow=true meshes get a separate
-  //      depth-pass shader compiled lazily the first time they enter
-  //      a shadow-casting light's frustum. renderer.compile() may
-  //      skip this for invisible meshes. We make the meshes visible
-  //      during the compile, then a single renderer.render() forces
-  //      shadow + main-pass shaders for each variant.
-  //
-  //   3. ANIMATION PROPERTY BINDINGS — mixer.clipAction(clip).play()
-  //      walks every track of a clip, resolves bone names to property
-  //      pointers via mesh.traverse, and caches them. For Unreal
-  //      skeletons with 100+ bones this is thousands of bindings.
-  //      We pay this once during preload via the mixer warmup below
-  //      so the FIRST in-game playWalk() is a cheap cache hit.
-  //
-  // Sequence (runs while loading screen still up — invisible to user):
-  //   a. Stash original visibility flag of each pool mesh, force visible.
-  //   b. renderer.compile(scene, camera) — covers main + shadow +
-  //      skinning shader variants for the visible meshes.
-  //   c. attachMixer + playWalk + update(0) on each pool mesh — caches
-  //      animation property bindings on each skeleton instance.
-  //   d. renderer.render(scene, camera) — forces actual GL draw,
-  //      resolves any remaining shader compilation that the compile()
-  //      pass may have queued lazily. Result is discarded — the user
-  //      doesn't see this frame because the loading screen is on top.
-  //   e. Restore visible=false so nothing draws in real gameplay
-  //      until summoned.
+  // --- Phase C: PSO warm ---
   try {
     if (renderer && camera) {
-      // Make pool meshes visible briefly so compile() sees them in
-      // the render path AND a render frame can force shadow/skinning
-      // shader compilation.
-      for (const entry of flingerPoolEntries) {
-        if (entry.obj) {
-          entry.obj._wasVisible = entry.obj.visible;
-          entry.obj.visible = true;
-          // matrixAutoUpdate=false earlier — temporarily allow updates
-          // so the renderer sees a non-stale world matrix for compile.
-          entry.obj._wasMatrixAutoUpdate = entry.obj.matrixAutoUpdate;
-          entry.obj.matrixAutoUpdate = true;
-          entry.obj.updateMatrixWorld(true);
-        }
-      }
-      // Use compileAsync (Three r152+) which returns a Promise that
-      // resolves only when the GPU has FULLY COMPILED all shaders,
-      // not just queued them. Crucial because WebGL shader compilation
-      // can be deferred to first-draw time — sync renderer.compile()
-      // queues the work but doesn't wait for the GPU. The first
-      // actual render then stalls the browser at GL state setup, which
-      // shows up as a long-task but is invisible to our synchronous
-      // timing probes.
-      //
-      // compileAsync forces the wait. Worth ~200ms of preload time
-      // (paid behind the loading screen) to eliminate ~1s of in-game
-      // freeze on first spawn.
-      if (typeof renderer.compileAsync === 'function') {
-        await renderer.compileAsync(scene, camera);
-      } else {
-        renderer.compile(scene, camera);
-      }
-
-      // Mixer warmup — caches per-skeleton animation property bindings.
-      // The mixer is STASHED on the pool entry so the runtime summon
-      // path can reuse it instead of building a fresh one (which
-      // would re-resolve all the bone-name → property-ref bindings).
-      if (animationsReady && animationsReady()) {
-        for (const entry of flingerPoolEntries) {
-          if (!entry.obj) continue;
-          try {
-            const m = attachMixer(entry.obj, {});
-            m.playWalk();
-            m.update(0);
-            // Stash on userData so the runtime summon path can grab
-            // it without changing the _acquireFlingerPoolMesh return
-            // shape. Runtime treats this as "if there's a warmup
-            // mixer, use it; else build a fresh one".
-            if (!entry.obj.userData) entry.obj.userData = {};
-            entry.obj.userData.__warmupMixer = m;
-          } catch (e) {
-            console.warn('[flinger] mixer warmup failed', e);
-          }
-        }
-      }
-
-      // Force a render to flush any lazily-queued shader compilation.
-      // The result paints to the canvas but the loading screen is
-      // still over the top so the user never sees it.
-      try {
-        renderer.render(scene, camera);
-      } catch (e) {
-        console.warn('[flinger] warmup render failed', e);
-      }
-
-      // Restore invisibility — pool meshes don't draw until summoned.
-      for (const entry of flingerPoolEntries) {
-        if (entry.obj) {
-          entry.obj.visible = entry.obj._wasVisible !== undefined
-            ? entry.obj._wasVisible : false;
-          entry.obj.matrixAutoUpdate = entry.obj._wasMatrixAutoUpdate !== undefined
-            ? entry.obj._wasMatrixAutoUpdate : false;
-          delete entry.obj._wasVisible;
-          delete entry.obj._wasMatrixAutoUpdate;
-        }
-      }
-      console.log(`[flinger] 2/3 prewarmed ${loaded} meshes`);
+      renderer.compile(tmpScene, camera);
     }
   } catch (err) {
-    console.warn('[flinger] warmup failed (non-fatal):', err);
+    console.warn('[flinger] renderer.compile failed (non-fatal):', err);
   }
-  console.log(`[flinger] 3/3 pool ready: ${loaded} clones`);
+  while (tmpScene.children.length > 0) {
+    const m = tmpScene.children[0];
+    tmpScene.remove(m);
+    scene.add(m);
+  }
+  console.log(`[flinger] ✓ pool ready — ${loaded}/${total} prewarmed`);
   return { loaded, total };
 }
 
@@ -738,14 +625,8 @@ function _tryAutoSummon() {
     FLINGER_GLB_NAMES[Math.floor(Math.random() * FLINGER_GLB_NAMES.length)];
   const tint = FLINGER_TINTS[glbName] || 0xff8800;
 
-  // Spawn offset just beside the player, within arena bounds. Per
-  // playtester: "It would be nice if the flinger did not spawn on top
-  // of the cannon or turrets." Cannons/silos sit at the arena center.
-  // Strategy: try 8 candidate angles, prefer the one whose resulting
-  // position is FARTHEST from origin (arena center), so as long as
-  // the player isn't dead-center the flinger lands on the player's
-  // outer side rather than wedging between them and the central
-  // structure. Falls back to the first try if all are out of bounds.
+  // Smart spawn position: try 8 angles, prefer positions away from
+  // arena center (where cannons/silos sit) and away from other flingers.
   const px = (S.playerPos && S.playerPos.x) || 0;
   const pz = (S.playerPos && S.playerPos.z) || 0;
   let spawnX = 0, spawnZ = 0;
@@ -757,23 +638,15 @@ function _tryAutoSummon() {
       const ang = (Math.PI * 2 * i) / 8 + Math.random() * 0.3;
       const cx = px + Math.cos(ang) * FLINGER_SPAWN_OFFSET;
       const cz = pz + Math.sin(ang) * FLINGER_SPAWN_OFFSET;
-      // Reject if outside arena bounds.
       if (Math.abs(cx) > halfArena || Math.abs(cz) > halfArena) continue;
-      // Score = distance from arena origin (preferring outer positions
-      // away from cannons/silos which cluster at center). Penalize
-      // proximity to other already-summoned flingers so they don't
-      // pile up.
       let score = Math.sqrt(cx * cx + cz * cz);
       for (const other of flingers) {
         if (!other.pos) continue;
         const dx = cx - other.pos.x, dz = cz - other.pos.z;
         const d = Math.sqrt(dx * dx + dz * dz);
-        if (d < 3) score -= (3 - d) * 4;     // strong penalty for piling up
+        if (d < 3) score -= (3 - d) * 4;
       }
-      if (score > bestScore) {
-        bestScore = score;
-        bestX = cx; bestZ = cz;
-      }
+      if (score > bestScore) { bestScore = score; bestX = cx; bestZ = cz; }
     }
     spawnX = bestX; spawnZ = bestZ;
   }
@@ -812,18 +685,15 @@ function _tryAutoSummon() {
   // Pool was built during the matrix dive by preloadFlingerGLBs(). All
   // six color variants are pre-cloned + PSO-warmed, so first-arrival is
   // zero-jank.
-  const pooledMesh = probe('flinger:acquirePool',
-    () => _acquireFlingerPoolMesh(glbName));
+  const pooledMesh = _acquireFlingerPoolMesh(glbName);
   if (pooledMesh) {
     scene.remove(f.obj);
     pooledMesh.visible = true;
     pooledMesh.matrixAutoUpdate = true;
     pooledMesh.position.copy(f.pos);
     pooledMesh.rotation.y = Math.random() * Math.PI * 2;
-    probe('flinger:resetHighlight',
-      () => _resetFlingerHighlight(pooledMesh));
-    probe('flinger:applyHighlight',
-      () => _applyFlingerHighlight(pooledMesh, tint));
+    _resetFlingerHighlight(pooledMesh);
+    _applyFlingerHighlight(pooledMesh, tint);
     f.obj = pooledMesh;
     f.pos = pooledMesh.position;
     f.ready = true;
@@ -833,25 +703,8 @@ function _tryAutoSummon() {
         // No excludeBones — flingers are on an Unreal rig, so the VRM-named
         // gun-hold pose never took effect anyway. Let the walk clip drive
         // every bone (pelvis, legs, arms, head) for a clean natural cycle.
-        //
-        // PREFER the warmup mixer stashed by the preload if available —
-        // it has its property bindings + skinning shader pre-resolved,
-        // saving the runtime path the synchronous binding work that
-        // contributed to the freeze. Falls back to a fresh mixer if
-        // for some reason the warmup wasn't run.
-        const warmup = pooledMesh.userData && pooledMesh.userData.__warmupMixer;
-        if (warmup) {
-          f.mixer = warmup;
-          // Consume so we don't reuse it on a future summon (each
-          // pool acquire gets one warmup mixer; subsequent summons
-          // build fresh, but by then the shader cache is hot anyway).
-          delete pooledMesh.userData.__warmupMixer;
-          probe('flinger:playWalk', () => f.mixer.playWalk());
-        } else {
-          f.mixer = probe('flinger:attachMixer',
-            () => attachMixer(pooledMesh, {}));
-          probe('flinger:playWalk', () => f.mixer.playWalk());
-        }
+        f.mixer = attachMixer(pooledMesh, {});
+        f.mixer.playWalk();
       } catch (e) {
         console.warn('[Flinger] attachMixer failed', e);
       }
@@ -1002,21 +855,11 @@ function _loadFlingerMesh(glbName) {
   }
   return glbCache.get(glbName).then(gltf => {
     const clone = skeletonClone(gltf.scene);
-    // CRITICAL — rebind clone materials to the original's. Mirrors the
-    // herd-VRM loader pattern (herdVrmLoader.js, see _cloneHerdMesh).
-    // SkeletonUtils.clone makes deep COPIES of every material, which
-    // means each clone has a unique material instance. Three.js
-    // compiles a shader PER MATERIAL INSTANCE (it caches by program +
-    // defines, but the material's needsUpdate flag is per-instance and
-    // the scene-walk in renderer.compile uses material identity for
-    // its compile-tracking). Result: prewarming the gltf.scene
-    // originals doesn't help the clones — the clones get their own
-    // first-render compile.
-    //
-    // Fix: walk original + clone in parallel, replace the clone's
-    // material reference with the original's. Now ALL pool entries
-    // share the same material instances as the original gltf.scene,
-    // and prewarming the original prewarms every clone.
+    // Rebind clone materials to the original's — same pattern as the
+    // herd VRM loader. SkeletonUtils.clone deep-copies materials,
+    // giving each clone unique instances. Rebinding means all pool
+    // entries share the original's materials, so shader compilation
+    // for ONE entry covers them ALL.
     const origMeshes = [];
     gltf.scene.traverse(obj => {
       if (obj.isMesh || obj.isSkinnedMesh) origMeshes.push(obj);
@@ -1145,26 +988,14 @@ function _loadGLBWithRetry(url, maxAttempts = 3) {
 }
 
 function _applyFlingerHighlight(mesh, tint) {
-  // INTENTIONALLY EMPTY. Per playtester: "We don't really need the
-  // chapter tint on the asset." The previous implementation
-  // traversed every material in the GLB and set `m.needsUpdate = true`
-  // after mutating `emissive`, which forced Three.js to recompile
-  // the shader for each material the FIRST time a flinger spawned.
-  // On Unreal-rigged GLBs with 8-15 materials per mesh, that
-  // recompile cascade was blocking the main thread for 2-3 seconds
-  // — the visible freeze on first flinger summon. Removing the
-  // tint pass + the two aura rings eliminates the freeze AND
-  // removes the unwanted color-on-asset effect in one change.
-  //
-  // Kept as a no-op stub so existing call sites (_tryAutoSummon,
-  // fallback path) don't need changing.
+  // No-op. Removed chapter tint + aura rings per playtester request
+  // AND to eliminate the m.needsUpdate=true cascade that forced
+  // shader recompilation on every material in the GLB.
   void mesh; void tint;
 }
 
 function _resetFlingerHighlight(mesh) {
-  // No-op: _applyFlingerHighlight no longer applies anything (per the
-  // playtester request to drop chapter tint), so there's nothing to
-  // reset. Kept as a stub for symmetry with call sites.
+  // No-op — _applyFlingerHighlight no longer applies anything.
   void mesh;
 }
 

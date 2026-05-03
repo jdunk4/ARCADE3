@@ -41,8 +41,6 @@ import { Audio } from './audio.js';
 import { S, shake } from './state.js';
 import { UI } from './ui.js';
 import { attachMixer, animationsReady, applyGunHoldPose, GUN_HOLD_EXCLUDE_BONES, IDLE_HIP_EXCLUDE_BONES } from './animation.js';
-// Performance instrumentation (REMOVE-ME after diagnosing first-spawn freezes)
-import { probe } from './perfProbe.js';
 
 // -----------------------------------------------------------------------------
 // ASSETS / CONSTANTS
@@ -102,8 +100,6 @@ const palBullets = [];   // bullets fired by pals (separate pipe)
 // summon we pull a not-in-use entry, flip it visible, teleport into place.
 // Zero-jank because the clone + shader-compile cost was paid up front.
 const poolEntries = [];
-/** Expose pool entries for the startGame recompile pass. */
-export function getPixlPalPoolEntries() { return poolEntries; }
 
 let lastWaveAwarded = 0; // last wave on which we awarded a charge
 let _killHandler = null; // registered by main.js — wires kills to score/XP
@@ -164,14 +160,14 @@ export async function preloadPixlPalGLBs(onProgress, renderer, camera) {
         }
         if (parsed.length > 0) {
           ids = parsed;
-          console.log(`[pixlPal] 1/3 manifest found (${ids.length} files)`);
+          console.log(`[pixlPal] manifest found (${ids.length} files)`);
         }
       }
     } else {
-      console.log('[pixlPal] 1/3 no manifest, using hardcoded list (' + ids.length + ' files)');
+      console.log('[pixlPal] no manifest, using hardcoded list (' + ids.length + ' files)');
     }
   } catch (e) {
-    console.log('[pixlPal] 1/3 manifest fetch failed, using hardcoded list');
+    console.log('[pixlPal] manifest fetch failed, using hardcoded list');
   }
 
   const total = ids.length;
@@ -193,6 +189,7 @@ export async function preloadPixlPalGLBs(onProgress, renderer, camera) {
   // [pixlPal] fetched log suppressed — see [flinger] rationale above.
 
   // --- Phase B: build the hidden mesh pool (clones, parked at y=-1000) ---
+  const tmpScene = new THREE.Scene();
   for (let i = 0; i < ids.length; i++) {
     const id = ids[i];
     try {
@@ -204,6 +201,7 @@ export async function preloadPixlPalGLBs(onProgress, renderer, camera) {
       mesh.updateMatrix();
       mesh.traverse(o => { o.frustumCulled = false; });
       scene.add(mesh);
+      tmpScene.add(mesh);
       poolEntries.push({ id, obj: mesh, inUse: false });
     } catch (err) {
       console.warn('[pixlPal] pool build failed for', id, err);
@@ -217,75 +215,22 @@ export async function preloadPixlPalGLBs(onProgress, renderer, camera) {
     }
   }
 
-  // --- Phase C: PSO + animation + shadow + skinning warmup ---
-  // Same comprehensive warmup as flingers (see flingers.js phase C
-  // for the detailed rationale). Three goals: (1) compile main +
-  // shadow + skinning shaders by making meshes visible during
-  // compile, (2) cache animation property bindings via mixer warmup,
-  // (3) force a render frame to flush any lazy compilation.
+  // --- Phase C: PSO / shader warm for the whole set ---
   try {
     if (renderer && camera) {
-      // Make pool meshes visible briefly for the warmup pass.
-      for (const entry of poolEntries) {
-        if (entry.obj) {
-          entry.obj._wasVisible = entry.obj.visible;
-          entry.obj.visible = true;
-          entry.obj._wasMatrixAutoUpdate = entry.obj.matrixAutoUpdate;
-          entry.obj.matrixAutoUpdate = true;
-          entry.obj.updateMatrixWorld(true);
-        }
-      }
-      // compileAsync (Three r152+) waits for GPU shader compile
-      // completion, not just queueing. Sync compile() leaves shader
-      // work pending, which stalls on first draw. See flingers.js
-      // for the full rationale.
-      if (typeof renderer.compileAsync === 'function') {
-        await renderer.compileAsync(scene, camera);
-      } else {
-        renderer.compile(scene, camera);
-      }
-
-      // Mixer warmup — caches per-skeleton animation property bindings.
-      // Stashed on userData for reuse by the runtime summon path.
-      if (animationsReady && animationsReady()) {
-        for (const entry of poolEntries) {
-          if (!entry.obj) continue;
-          try {
-            const m = attachMixer(entry.obj, {});
-            m.playWalk();
-            m.update(0);
-            if (!entry.obj.userData) entry.obj.userData = {};
-            entry.obj.userData.__warmupMixer = m;
-          } catch (e) {
-            console.warn('[pixlPal] mixer warmup failed', e);
-          }
-        }
-      }
-
-      // Force a render to flush lazy shader compilation.
-      try {
-        renderer.render(scene, camera);
-      } catch (e) {
-        console.warn('[pixlPal] warmup render failed', e);
-      }
-
-      // Restore invisibility — pool meshes don't draw until summoned.
-      for (const entry of poolEntries) {
-        if (entry.obj) {
-          entry.obj.visible = entry.obj._wasVisible !== undefined
-            ? entry.obj._wasVisible : false;
-          entry.obj.matrixAutoUpdate = entry.obj._wasMatrixAutoUpdate !== undefined
-            ? entry.obj._wasMatrixAutoUpdate : false;
-          delete entry.obj._wasVisible;
-          delete entry.obj._wasMatrixAutoUpdate;
-        }
-      }
-      console.log(`[pixlPal] 2/3 prewarmed ${loaded} meshes`);
+      renderer.compile(tmpScene, camera);
     }
   } catch (err) {
-    console.warn('[pixlPal] warmup failed (non-fatal):', err);
+    console.warn('[pixlPal] renderer.compile failed (non-fatal):', err);
   }
-  console.log(`[pixlPal] 3/3 pool ready: ${loaded} clones`);
+  // Re-parent clones back to the real scene (they were attached to
+  // tmpScene temporarily for the compile pass).
+  while (tmpScene.children.length > 0) {
+    const m = tmpScene.children[0];
+    tmpScene.remove(m);
+    scene.add(m);
+  }
+  console.log(`[pixlPal] ✓ pool ready — ${loaded}/${total} prewarmed`);
   return { loaded, total };
 }
 
@@ -386,7 +331,7 @@ export function trySummonPixlPal(playerPos) {
   // shader compile. All paid during the matrix dive. Pool was seeded by
   // preloadPixlPalGLBs(). Ring tint comes from the current chapter.
   const chapterTint = CHAPTERS[S.chapter % CHAPTERS.length].full.grid1;
-  const pooledMesh = probe('pixlpal:acquirePool', () => _acquirePoolMesh());
+  const pooledMesh = _acquirePoolMesh();
   if (pooledMesh) {
     pal.glbId = pooledMesh.userData && pooledMesh.userData.__palId;
     scene.remove(pal.obj);
@@ -396,9 +341,8 @@ export function trySummonPixlPal(playerPos) {
     pooledMesh.rotation.y = Math.random() * Math.PI * 2;
     // Reset per-summon ring (remove any stale aura from a previous use,
     // then attach a fresh one in the current chapter's tint).
-    probe('pixlpal:resetHighlight', () => _resetPalHighlight(pooledMesh));
-    probe('pixlpal:applyHighlight',
-      () => _applyPalHighlight(pooledMesh, chapterTint));
+    _resetPalHighlight(pooledMesh);
+    _applyPalHighlight(pooledMesh, chapterTint);
     pal.obj = pooledMesh;
     pal.pos = pooledMesh.position;
     pal.ready = true;
@@ -408,17 +352,8 @@ export function trySummonPixlPal(playerPos) {
         // No excludeBones — pixlpals are on an Unreal rig, the VRM gun-hold
         // pose never hit them, and the idle2/idle3 clips had a sideways
         // lean baked in. Plain walk on all bones reads clean and natural.
-        // Prefer the warmup mixer if one was stashed during preload.
-        const warmup = pooledMesh.userData && pooledMesh.userData.__warmupMixer;
-        if (warmup) {
-          pal.mixer = warmup;
-          delete pooledMesh.userData.__warmupMixer;
-          probe('pixlpal:playWalk', () => pal.mixer.playWalk());
-        } else {
-          pal.mixer = probe('pixlpal:attachMixer',
-            () => attachMixer(pooledMesh, {}));
-          probe('pixlpal:playWalk', () => pal.mixer.playWalk());
-        }
+        pal.mixer = attachMixer(pooledMesh, {});
+        pal.mixer.playWalk();
       } catch (e) {
         console.warn('[PixlPal] attachMixer failed', e);
       }
@@ -948,15 +883,9 @@ function _loadPalMesh(id) {
     // SkeletonUtils.clone is the standard Three.js fix — it rebinds the
     // skeleton to the cloned bones so the mesh renders correctly.
     const clone = skeletonClone(gltf.scene);
-
-    // CRITICAL — rebind clone materials to original's. Same fix as
-    // flingers and herd VRMs: SkeletonUtils.clone deep-copies materials,
-    // which means each pool entry has unique material instances.
-    // Three.js needs to compile a shader for each material the first
-    // time it's drawn, so without rebinding, prewarm only covers the
-    // gltf.scene originals — every pool clone still pays first-render
-    // compile cost. Rebinding to the originals means all clones share
-    // the same materials, and one prewarm covers them all.
+    // Rebind clone materials to original's — same fix as flingers
+    // and herd VRMs. All pool clones share original materials so
+    // shader compile for one covers all.
     const origMeshes = [];
     gltf.scene.traverse(obj => {
       if (obj.isMesh || obj.isSkinnedMesh) origMeshes.push(obj);

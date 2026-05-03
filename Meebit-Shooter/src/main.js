@@ -185,12 +185,12 @@ import { updateTurrets, registerTurretKillHandler } from './turrets.js';
 import {
   updatePixlPals, clearAllPixlPals, trySummonPixlPal,
   registerPixlPalKillHandler, onWaveStarted as onWaveStartedForPals,
-  initPixlPalHUD, preloadPixlPalGLBs, getPixlPalPoolEntries,
+  initPixlPalHUD, preloadPixlPalGLBs,
 } from './pixlPals.js';
 import {
   updateFlingers, clearAllFlingers,
   registerFlingerKillHandler, onWaveStartedForFlingers,
-  initFlingerHUD, preloadFlingerGLBs, getFlingerPoolEntries,
+  initFlingerHUD, preloadFlingerGLBs,
 } from './flingers.js';
 import {
   updateInfectors, clearInfectors, triggerSuperNuke, isInfector,
@@ -233,13 +233,6 @@ import { updateLaunch } from './empLaunch.js';
 import { updateShockwaves } from './shockwave.js';
 import { updateMissileArrow, hideMissileArrow } from './missileArrow.js';
 import { initGamepad, updateGamepad, setTitleMode, rumble } from './gamepad.js';
-// Performance instrumentation (REMOVE-ME after diagnosing first-spawn freezes)
-import { probe, installLongTaskObserver, getLastSlowTag } from './perfProbe.js';
-
-// Watch for long main-thread tasks. Catches anything blocking ≥50ms,
-// regardless of whether our explicit probe() wrappers cover it.
-// Browser support: Chrome/Edge (yes), Firefox (yes recent), Safari (no).
-installLongTaskObserver(50);
 
 // =====================================================================
 // STRATAGEM SYSTEM HOOKS
@@ -684,7 +677,6 @@ preloadAnimations();
 // After 8 seconds of matrix rain diving at the camera, the title screen
 // appears. No phone call -- the matrix dive IS the entry experience.
 function showIncomingCall() {
-  // Build the Initiate Protocol overlay
   const initOverlay = document.createElement('div');
   initOverlay.id = 'initiate-protocol';
   initOverlay.innerHTML = `
@@ -697,295 +689,92 @@ function showIncomingCall() {
         font-family: 'Impact', 'Arial Black', sans-serif;
         color: #00ff66;
       }
-      /* SIMVOID title — replaces the previous "INITIATE PROTOCOL"
-         text. Per playtester: "Instead of Initiate Protocol on the
-         screen with begin can we put SIM VOID in a really cool
-         unforgettable style? Maybe the mouse hovers over it and it
-         becomes numbers."
-
-         Composition mirrors the main title screen's #simvoid-title
-         (SIM bright + extruded, VOID darker + recessed, chromatic
-         aberration on the whole word) but scaled larger to fill the
-         pre-game splash. Each character is wrapped in a span so JS
-         can swap its content on hover for the decode-to-numbers
-         effect. The original letter is preserved in data-orig so we
-         can restore on hover-out. */
       #initiate-protocol .simvoid-launch {
-        display: flex;
-        flex-direction: row;
-        align-items: baseline;
-        gap: 0.18em;
-        line-height: 0.92;
-        margin-bottom: 18px;
-        font-size: clamp(56px, 12vw, 160px);
-        letter-spacing: 4px;
-        cursor: default;
-        position: relative;
-        filter:
-          drop-shadow(-1.5px 0 0 rgba(255, 60, 80, 0.45))
-          drop-shadow(1.5px 0 0 rgba(60, 220, 255, 0.40));
+        display: flex; flex-direction: row; align-items: baseline;
+        gap: 0.18em; line-height: 0.92; margin-bottom: 18px;
+        font-size: clamp(56px, 12vw, 160px); letter-spacing: 4px;
+        cursor: default; position: relative;
+        filter: drop-shadow(-1.5px 0 0 rgba(255,60,80,0.45)) drop-shadow(1.5px 0 0 rgba(60,220,255,0.40));
         animation: simvoid-launch-pulse 2.4s ease-in-out infinite;
-        user-select: none;
-        -webkit-user-select: none;
+        user-select: none; -webkit-user-select: none;
       }
       #initiate-protocol .simvoid-launch::after {
-        content: "";
-        position: absolute;
-        inset: -8px -8px;
-        background: repeating-linear-gradient(
-          0deg,
-          rgba(0, 0, 0, 0.20) 0px,
-          rgba(0, 0, 0, 0.20) 1px,
-          transparent 1px,
-          transparent 4px
-        );
-        pointer-events: none;
-        z-index: 5;
-        mix-blend-mode: multiply;
+        content:""; position:absolute; inset:-8px;
+        background: repeating-linear-gradient(0deg,rgba(0,0,0,0.20) 0px,rgba(0,0,0,0.20) 1px,transparent 1px,transparent 4px);
+        pointer-events:none; z-index:5; mix-blend-mode:multiply;
       }
-      .simvoid-launch-half {
-        display: inline-flex;
-        flex-direction: row;
-        align-items: baseline;
-      }
-      .simvoid-launch-char {
-        display: inline-block;
-        position: relative;
-        /* Fixed-width slot so glyph swaps don't reflow the title
-           during the hover-decode scramble. Without this, swapping
-           S→4→M would jiggle the title because Impact's character
-           widths differ. */
-        min-width: 0.62em;
-        text-align: center;
-        transition: color 0.15s ease;
-      }
+      .simvoid-launch-half { display:inline-flex; flex-direction:row; align-items:baseline; }
+      .simvoid-launch-char { display:inline-block; position:relative; min-width:0.62em; text-align:center; transition:color 0.15s ease; }
       .simvoid-launch-sim .simvoid-launch-char {
-        color: #6dff95;
-        text-shadow:
-          1px 1px 0 #4adb6e,
-          2px 2px 0 #2bbb52,
-          3px 3px 0 #11993d,
-          4px 4px 0 #0a7a30,
-          5px 5px 0 #065d24,
-          6px 6px 0 #033f17,
-          8px 8px 0 #000,
-          0 0 14px rgba(110, 255, 160, 0.85),
-          0 0 32px rgba(0, 255, 102, 0.55);
+        color:#6dff95;
+        text-shadow:1px 1px 0 #4adb6e,2px 2px 0 #2bbb52,3px 3px 0 #11993d,4px 4px 0 #0a7a30,5px 5px 0 #065d24,6px 6px 0 #033f17,8px 8px 0 #000,0 0 14px rgba(110,255,160,0.85),0 0 32px rgba(0,255,102,0.55);
       }
       .simvoid-launch-void .simvoid-launch-char {
-        color: #11663a;
-        text-shadow:
-          1px 1px 0 #062b16,
-          2px 2px 0 #031808,
-          3px 3px 0 #000,
-          4px 4px 0 #1a8c4a,
-          5px 5px 0 #2bbb52,
-          -1px -1px 0 #001508,
-          0 0 8px rgba(0, 80, 30, 0.6),
-          0 0 24px rgba(0, 255, 102, 0.18);
-        transform: translateY(0.05em);
+        color:#11663a;
+        text-shadow:1px 1px 0 #062b16,2px 2px 0 #031808,3px 3px 0 #000,4px 4px 0 #1a8c4a,5px 5px 0 #2bbb52,-1px -1px 0 #001508,0 0 8px rgba(0,80,30,0.6),0 0 24px rgba(0,255,102,0.18);
+        transform:translateY(0.05em);
       }
-      /* Decoding state — applied via JS during the hover scramble.
-         Letters become hot-white with strong matrix glow so the
-         decode reads as "the simulation is being pierced." */
       #initiate-protocol .simvoid-launch.decoding .simvoid-launch-char {
-        color: #ffffff;
-        text-shadow:
-          0 0 8px #6dff95,
-          0 0 18px #00ff66,
-          0 0 36px rgba(0, 255, 102, 0.7),
-          2px 2px 0 #000;
+        color:#fff; text-shadow:0 0 8px #6dff95,0 0 18px #00ff66,0 0 36px rgba(0,255,102,0.7),2px 2px 0 #000;
       }
-      /* Decoded state — after each letter has locked to a digit.
-         Slightly less hot than during-scramble so the eye reads
-         "this is the locked value, holding". */
       #initiate-protocol .simvoid-launch.decoded .simvoid-launch-char {
-        color: #b0ffcc;
-        text-shadow:
-          0 0 6px #00ff66,
-          0 0 16px rgba(0, 255, 102, 0.5),
-          2px 2px 0 #000;
+        color:#b0ffcc; text-shadow:0 0 6px #00ff66,0 0 16px rgba(0,255,102,0.5),2px 2px 0 #000;
       }
-      @keyframes simvoid-launch-pulse {
-        0%, 100% { opacity: 1; }
-        50%      { opacity: 0.85; }
-      }
-
-      #initiate-protocol .ip-sub {
-        font-size: 14px;
-        letter-spacing: 8px;
-        color: #6effaa;
-        margin-bottom: 60px;
-        opacity: 0.8;
-      }
-      #initiate-protocol .ip-btn {
-        font-family: inherit;
-        font-size: 24px;
-        letter-spacing: 6px;
-        padding: 20px 60px;
-        background: transparent;
-        color: #00ff66;
-        border: 2px solid #00ff66;
-        cursor: pointer;
-        box-shadow: 0 0 20px rgba(0,255,102,0.4);
-        transition: all 0.2s;
-      }
-      #initiate-protocol .ip-btn:hover {
-        background: #00ff66;
-        color: #000;
-        box-shadow: 0 0 40px rgba(0,255,102,0.8);
-        transform: scale(1.05);
-      }
-      /* Mobile — push the title block UP by switching from center
-         flex alignment to a top-anchored layout. Without this, the
-         large pulsing title gets centered on the viewport and the
-         BEGIN button sits low on the screen. Per playtester: "On the
-         main screen before we BEGIN simulation can we move BEGIN
-         up?" */
-      @media (max-width: 900px), (pointer: coarse) {
-        #initiate-protocol {
-          justify-content: flex-start;
-          padding-top: 12vh;
-        }
-        #initiate-protocol .simvoid-launch {
-          font-size: clamp(40px, 14vw, 100px);
-          letter-spacing: 2px;
-          margin-bottom: 12px;
-        }
-        #initiate-protocol .ip-sub {
-          font-size: 11px;
-          letter-spacing: 5px;
-          margin-bottom: 24px;
-        }
-        #initiate-protocol .ip-btn {
-          font-size: 18px;
-          letter-spacing: 4px;
-          padding: 14px 36px;
-        }
+      @keyframes simvoid-launch-pulse { 0%,100%{opacity:1} 50%{opacity:0.85} }
+      #initiate-protocol .ip-sub { font-size:14px; letter-spacing:8px; color:#6effaa; margin-bottom:60px; opacity:0.8; }
+      #initiate-protocol .ip-btn { font-family:inherit; font-size:24px; letter-spacing:6px; padding:20px 60px; background:transparent; color:#00ff66; border:2px solid #00ff66; cursor:pointer; box-shadow:0 0 20px rgba(0,255,102,0.4); transition:all 0.2s; }
+      #initiate-protocol .ip-btn:hover { background:#00ff66; color:#000; box-shadow:0 0 40px rgba(0,255,102,0.8); transform:scale(1.05); }
+      @media (max-width:900px),(pointer:coarse) {
+        #initiate-protocol { justify-content:flex-start; padding-top:12vh; }
+        #initiate-protocol .simvoid-launch { font-size:clamp(40px,14vw,100px); letter-spacing:2px; margin-bottom:12px; }
+        #initiate-protocol .ip-sub { font-size:11px; letter-spacing:5px; margin-bottom:24px; }
+        #initiate-protocol .ip-btn { font-size:18px; letter-spacing:4px; padding:14px 36px; }
       }
     </style>
     <h1 class="simvoid-launch" id="simvoid-launch" aria-label="SIMVOID">
-      <span class="simvoid-launch-half simvoid-launch-sim" aria-hidden="true">
-        <span class="simvoid-launch-char" data-orig="S">S</span><span class="simvoid-launch-char" data-orig="I">I</span><span class="simvoid-launch-char" data-orig="M">M</span>
-      </span>
-      <span class="simvoid-launch-half simvoid-launch-void" aria-hidden="true">
-        <span class="simvoid-launch-char" data-orig="V">V</span><span class="simvoid-launch-char" data-orig="O">O</span><span class="simvoid-launch-char" data-orig="I">I</span><span class="simvoid-launch-char" data-orig="D">D</span>
-      </span>
+      <span class="simvoid-launch-half simvoid-launch-sim" aria-hidden="true"><span class="simvoid-launch-char" data-orig="S">S</span><span class="simvoid-launch-char" data-orig="I">I</span><span class="simvoid-launch-char" data-orig="M">M</span></span>
+      <span class="simvoid-launch-half simvoid-launch-void" aria-hidden="true"><span class="simvoid-launch-char" data-orig="V">V</span><span class="simvoid-launch-char" data-orig="O">O</span><span class="simvoid-launch-char" data-orig="I">I</span><span class="simvoid-launch-char" data-orig="D">D</span></span>
     </h1>
     <div class="ip-sub">:: AWAITING USER INPUT ::</div>
     <button class="ip-btn" id="ip-begin">&gt;&gt; BEGIN &lt;&lt;</button>
   `;
   document.body.appendChild(initOverlay);
 
-  // Hover-to-decode wiring on the SIMVOID title.
-  // Per playtester: "Maybe the mouse hovers over it and it becomes
-  // numbers." On mouseenter (or first touch on mobile): each letter
-  // rapid-scrambles through random matrix glyphs for ~500ms, then
-  // settles on a random digit (0-9). On mouseleave (or 1.5s after
-  // touch on mobile): scramble briefly back to the original letter.
-  // The whole effect reads as "you've pierced through the simulation
-  // and are seeing the raw data underneath SIM VOID".
-  const _simvoidTitle = document.getElementById('simvoid-launch');
-  if (_simvoidTitle) {
-    const SCRAMBLE_GLYPHS = '0123456789ABCDEF#@$%&*+=<>{}[]/\\\\|アイウエオカキクケコサシスセソタチツテト';
-    const SETTLED_DIGITS = '0123456789';
-
-    function _randGlyph(pool) {
-      return pool.charAt(Math.floor(Math.random() * pool.length));
+  // Hover-to-decode
+  const _sv = document.getElementById('simvoid-launch');
+  if (_sv) {
+    const SG = '0123456789ABCDEF#@$%&*+=<>{}[]/\\\\|アイウエオカキクケコ';
+    const SD = '0123456789';
+    const _rg = p => p.charAt(Math.floor(Math.random()*p.length));
+    function _ct() {
+      if (_sv._st) { for (const t of _sv._st) clearTimeout(t); _sv._st=null; }
+      if (_sv._si) { clearInterval(_sv._si); _sv._si=null; }
     }
-
-    function _clearTitleTimers() {
-      if (_simvoidTitle._scrambleTimers) {
-        for (const t of _simvoidTitle._scrambleTimers) clearTimeout(t);
-        _simvoidTitle._scrambleTimers = null;
-      }
-      if (_simvoidTitle._scrambleInterval) {
-        clearInterval(_simvoidTitle._scrambleInterval);
-        _simvoidTitle._scrambleInterval = null;
-      }
+    function _ds() {
+      _ct(); const ch=_sv.querySelectorAll('.simvoid-launch-char');
+      _sv.classList.add('decoding'); _sv.classList.remove('decoded');
+      _sv._si=setInterval(()=>{for(const c of ch)if(!c._l)c.textContent=_rg(SG)},50);
+      _sv._st=[];
+      ch.forEach((c,i)=>{c._l=false;_sv._st.push(setTimeout(()=>{c._l=true;c.textContent=_rg(SD)},350+i*60))});
+      _sv._st.push(setTimeout(()=>{if(_sv._si){clearInterval(_sv._si);_sv._si=null}_sv.classList.remove('decoding');_sv.classList.add('decoded')},350+ch.length*60+50));
     }
-
-    function _decodeStart() {
-      _clearTitleTimers();
-      const chars = _simvoidTitle.querySelectorAll('.simvoid-launch-char');
-      _simvoidTitle.classList.add('decoding');
-      _simvoidTitle.classList.remove('decoded');
-      // Rapid scramble — every 50ms, each unlocked letter swaps to a
-      // new random glyph. Letters lock to a digit one-by-one in a
-      // staggered cascade (left-to-right) so the lock reads as a
-      // decryption progress bar.
-      _simvoidTitle._scrambleInterval = setInterval(() => {
-        for (const c of chars) {
-          if (!c._locked) c.textContent = _randGlyph(SCRAMBLE_GLYPHS);
-        }
-      }, 50);
-      _simvoidTitle._scrambleTimers = [];
-      chars.forEach((c, i) => {
-        c._locked = false;
-        const settleAt = 350 + i * 60;       // 350ms, 410ms, 470ms, ...
-        _simvoidTitle._scrambleTimers.push(setTimeout(() => {
-          c._locked = true;
-          c.textContent = _randGlyph(SETTLED_DIGITS);
-        }, settleAt));
-      });
-      const finalSettle = 350 + chars.length * 60 + 50;
-      _simvoidTitle._scrambleTimers.push(setTimeout(() => {
-        if (_simvoidTitle._scrambleInterval) {
-          clearInterval(_simvoidTitle._scrambleInterval);
-          _simvoidTitle._scrambleInterval = null;
-        }
-        _simvoidTitle.classList.remove('decoding');
-        _simvoidTitle.classList.add('decoded');
-      }, finalSettle));
+    function _de() {
+      _ct(); const ch=_sv.querySelectorAll('.simvoid-launch-char');
+      _sv.classList.remove('decoded'); _sv.classList.add('decoding');
+      _sv._si=setInterval(()=>{for(const c of ch)if(!c._l)c.textContent=_rg(SG)},50);
+      _sv._st=[];
+      ch.forEach((c,i)=>{c._l=false;_sv._st.push(setTimeout(()=>{c._l=true;c.textContent=c.dataset.orig||''},200+i*30))});
+      _sv._st.push(setTimeout(()=>{if(_sv._si){clearInterval(_sv._si);_sv._si=null}_sv.classList.remove('decoding')},200+ch.length*30+50));
     }
-
-    function _decodeEnd() {
-      _clearTitleTimers();
-      const chars = _simvoidTitle.querySelectorAll('.simvoid-launch-char');
-      _simvoidTitle.classList.remove('decoded');
-      _simvoidTitle.classList.add('decoding');
-      _simvoidTitle._scrambleInterval = setInterval(() => {
-        for (const c of chars) {
-          if (!c._locked) c.textContent = _randGlyph(SCRAMBLE_GLYPHS);
-        }
-      }, 50);
-      _simvoidTitle._scrambleTimers = [];
-      chars.forEach((c, i) => {
-        c._locked = false;
-        const settleAt = 200 + i * 30;
-        _simvoidTitle._scrambleTimers.push(setTimeout(() => {
-          c._locked = true;
-          c.textContent = c.dataset.orig || '';
-        }, settleAt));
-      });
-      const finalSettle = 200 + chars.length * 30 + 50;
-      _simvoidTitle._scrambleTimers.push(setTimeout(() => {
-        if (_simvoidTitle._scrambleInterval) {
-          clearInterval(_simvoidTitle._scrambleInterval);
-          _simvoidTitle._scrambleInterval = null;
-        }
-        _simvoidTitle.classList.remove('decoding');
-      }, finalSettle));
-    }
-
-    _simvoidTitle.addEventListener('mouseenter', _decodeStart);
-    _simvoidTitle.addEventListener('mouseleave', _decodeEnd);
-    // Touch — on mobile/coarse pointers there's no hover. Tap to
-    // decode; auto-restore after 2 seconds.
-    _simvoidTitle.addEventListener('touchstart', (ev) => {
-      ev.preventDefault();
-      _decodeStart();
-      setTimeout(_decodeEnd, 2000);
-    }, { passive: false });
-    _simvoidTitle._cleanup = _clearTitleTimers;
+    _sv.addEventListener('mouseenter',_ds);
+    _sv.addEventListener('mouseleave',_de);
+    _sv.addEventListener('touchstart',ev=>{ev.preventDefault();_ds();setTimeout(_de,2000)},{passive:false});
+    _sv._cleanup=_ct;
   }
 
   const beginBtn = document.getElementById('ip-begin');
   beginBtn.addEventListener('click', () => {
-    // Cancel any in-flight scramble timers so they don't fire after
-    // the overlay is gone.
-    if (_simvoidTitle && _simvoidTitle._cleanup) _simvoidTitle._cleanup();
-    // Critical: this click is the user gesture that unlocks audio for the session
+    if (_sv && _sv._cleanup) _sv._cleanup();
     Audio.init();
     Audio.resume();
 
@@ -2416,59 +2205,6 @@ function startGame() {
   // player so distant projectiles + enemies don't sneak shots from
   // beyond visibility.
   initFogRing();
-
-  // Pre-compile the grenade shader so first-throw doesn't hitch.
-  // Idempotent — sets up an invisible warmup mesh once and reuses
-  // it forever. Has to run after scene + lights are set up but
-  // before the first throw can possibly happen.
-  _warmupGrenadeShader();
-
-  // Full scene recompile with gameplay lights. The matrix-dive preload
-  // compiled pool meshes against the loading-screen light setup, but
-  // chapter atmosphere may have different light count/types (e.g.
-  // tutorial adds PointLights, chapter-7 adds SpotLight). A light
-  // count mismatch invalidates the cached shader variant — the first
-  // render with the new lights recompiles synchronously (the 3-5s
-  // freeze). This recompile at startGame fires AFTER chapter lighting
-  // is set up, so the shader variant matches what renderer.render()
-  // will encounter in gameplay. Runs async behind the wave-1 countdown.
-  (async () => {
-    try {
-      // Gather all pool meshes (flingers + pixlPals). Make them
-      // visible briefly so compileAsync/render sees them with the
-      // actual gameplay lights. Then hide again.
-      const allPool = [
-        ...getFlingerPoolEntries(),
-        ...getPixlPalPoolEntries(),
-      ];
-      for (const e of allPool) {
-        if (e.obj) {
-          e.obj._svVis = e.obj.visible;
-          e.obj.visible = true;
-          e.obj.matrixAutoUpdate = true;
-          e.obj.updateMatrixWorld(true);
-        }
-      }
-      if (typeof renderer.compileAsync === 'function') {
-        await renderer.compileAsync(scene, camera);
-      } else {
-        renderer.compile(scene, camera);
-      }
-      // Force a render to flush GPU-side lazy compilation.
-      renderer.render(scene, camera);
-      // Restore
-      for (const e of allPool) {
-        if (e.obj) {
-          e.obj.visible = e.obj._svVis !== undefined ? e.obj._svVis : false;
-          e.obj.matrixAutoUpdate = false;
-          delete e.obj._svVis;
-        }
-      }
-      console.log('[perf] startGame scene recompiled with gameplay lights');
-    } catch (e) {
-      console.warn('[perf] startGame recompile failed (non-fatal):', e);
-    }
-  })();
 
   // Exit title-screen gamepad mode — stick/d-pad input stops moving focus
   // between buttons and resumes driving the player.
@@ -4565,28 +4301,16 @@ function animate() {
 
   // Long-frame probe (see top of animate). If this frame took longer
   // than 80ms — well above 16ms target — log a single line with
-  // the elapsed time and the most recently observed slow probe()
-  // tag (e.g. flinger:applyHighlight, grenade:buildMesh) which
-  // tells us what likely caused the spike. Falls back to the older
-  // damage breadcrumb if no probe tag is recent. Defensive guards:
-  // skip during boss cinematic (cutscenes intentionally stall some
-  // systems), skip if probe was disabled via window.__noLongFrameWarn.
+  // the elapsed time and any breadcrumb (e.g. a damage event) that
+  // could explain it. Defensive guards: skip during boss cinematic
+  // (cutscenes intentionally stall some systems), skip if probe was
+  // disabled via window.__noLongFrameWarn.
   if (!window.__noLongFrameWarn) {
     const _frameElapsed = performance.now() - _frameStart;
     if (_frameElapsed > 80 && !isBossCinematicActive()) {
-      const _slowTag = getLastSlowTag && getLastSlowTag();
-      let _crumb;
-      if (_slowTag && _slowTag.agoMs < 200) {
-        // Recent slow probe tag — the long-frame is likely caused by
-        // whatever this tag wraps. 200ms window catches probe events
-        // from the same frame plus a small buffer for animation
-        // mixer / post-process paint that runs after the probe.
-        _crumb = `${_slowTag.tag} took ${Math.round(_slowTag.ms)}ms ${Math.round(_slowTag.agoMs)}ms ago`;
-      } else if (S._damageVfxFiredAt && performance.now() - S._damageVfxFiredAt < 500) {
-        _crumb = `damage at ${Math.round(performance.now() - S._damageVfxFiredAt)}ms ago`;
-      } else {
-        _crumb = 'no probe breadcrumb (cause unknown)';
-      }
+      const _crumb = S._damageVfxFiredAt
+        ? `damage at ${Math.round(performance.now() - S._damageVfxFiredAt)}ms ago`
+        : 'no damage breadcrumb';
       console.warn(`[long-frame] ${Math.round(_frameElapsed)}ms — ${_crumb}`);
     }
   }
@@ -5803,69 +5527,15 @@ function explodeRocket(r) {
 
 const GRENADE_GRAVITY = 22;    // m/s^2 — snappy feel
 const _grenades = [];
-
-// Grenade shader warmup — builds the same mesh + material + light
-// combination tryThrowGrenade() will create at run-time, adds it to
-// the live scene (invisible), runs renderer.compile() so the shader
-// variant is cached, then leaves the warmup mesh parked offscreen.
-//
-// Why an explicit warmup is needed: tryThrowGrenade() builds an
-// IcosahedronGeometry + StandardMaterial(emissive) + a child
-// PointLight on every throw. The FIRST throw introduces a
-// material+light shader variant the renderer hasn't seen, and Three.js
-// recompiles synchronously on the next render frame after the mesh
-// is added to the scene. On a complex scene (player + chapter mesh +
-// herds + lights) that compile blocks the main thread for 1-2 seconds
-// — the visible freeze the playtester reports.
-//
-// Called once at game-init time after renderer + scene + lights are
-// set up. The warmup mesh stays in the scene forever (parked at
-// y=-2000, visible=false, frustumCulled=false). Cost: 1 invisible
-// vertex pass per render, negligible.
-let _grenadeWarmupMesh = null;
-async function _warmupGrenadeShader() {
-  if (_grenadeWarmupMesh) return;       // idempotent
-  if (!renderer || !camera) return;
-  try {
-    const w = WEAPONS.grenade;
-    if (!w) return;
-    const geo = new THREE.IcosahedronGeometry(0.22, 0);
-    const mat = new THREE.MeshStandardMaterial({
-      color: 0x2b3d1e, emissive: w.color, emissiveIntensity: 1.4,
-      roughness: 0.5, metalness: 0.3,
-    });
-    const mesh = new THREE.Mesh(geo, mat);
-    mesh.castShadow = true;
-    mesh.position.set(0, -2000, 0);
-    // Start VISIBLE during compile so renderer.compileAsync sees it
-    // as part of the render path. Compile is per-material but it
-    // also needs to know the mesh is in the visible draw list to
-    // queue the shader properly. Hidden after compile finishes.
-    mesh.visible = true;
-    mesh.frustumCulled = false;
-    // Match the runtime build — child PointLight changes the shader
-    // variant. Without it, the warmup compiles a mesh-without-light
-    // shader and the FIRST throw still recompiles for the
-    // mesh-with-attached-light variant.
-    const trailLight = new THREE.PointLight(w.color, 1.4, 4, 2);
-    mesh.add(trailLight);
-    scene.add(mesh);
-    // compileAsync waits for GPU compile to actually complete;
-    // sync compile() only queues the work and the actual GL compile
-    // happens later (during first draw), causing a 1-2s freeze on
-    // first throw. See flingers.js for the full rationale.
-    if (typeof renderer.compileAsync === 'function') {
-      await renderer.compileAsync(scene, camera);
-    } else {
-      renderer.compile(scene, camera);
-    }
-    mesh.visible = false;       // hide now that compile is done
-    _grenadeWarmupMesh = mesh;
-    console.log('[perf] grenade shader warmed');
-  } catch (e) {
-    console.warn('[perf] grenade warmup failed (non-fatal):', e);
-  }
-}
+// Shared geometry + material for all grenades. Building a NEW material
+// per throw forced a 5-second shader compile on first draw. Sharing
+// one instance means the shader compiles once (on first throw) and
+// every subsequent throw reuses it for free.
+const _grenadeGeo = new THREE.IcosahedronGeometry(0.22, 0);
+const _grenadeMat = new THREE.MeshStandardMaterial({
+  color: 0x2b3d1e, emissive: 0x00ff44, emissiveIntensity: 1.4,
+  roughness: 0.5, metalness: 0.3,
+});
 
 function tryThrowGrenade() {
   if (!S.running || S.paused) return;
@@ -5876,73 +5546,44 @@ function tryThrowGrenade() {
     UI.toast('NO GRENADES', '#ff2e4d', 900);
     return;
   }
-  // probe('grenade:throw') wraps the entire throw construction so we
-  // can see if the FIRST throw of a run hitches (suspected: shader
-  // compile for the unique IcosahedronGeometry + emissive standard
-  // material + attached PointLight combo). REMOVE-ME after diagnosis.
-  probe('grenade:throw', () => {
-    const w = WEAPONS.grenade;
-    S.grenadeCharges -= 1;
-    S.grenadeCooldown = w.fireRate;
-    if (S.tutorialMode) tutorialOnGrenadeThrown();
-    _syncGrenadeHUD();
+  const w = WEAPONS.grenade;
+  S.grenadeCharges -= 1;
+  S.grenadeCooldown = w.fireRate;
+  if (S.tutorialMode) tutorialOnGrenadeThrown();
+  _syncGrenadeHUD();
 
-    const origin = new THREE.Vector3(
-      player.pos.x + Math.sin(player.facing) * 0.8,
-      1.5,
-      player.pos.z + Math.cos(player.facing) * 0.8,
-    );
-    probe('grenade:buildMesh', () => {
-      // CRITICAL: reuse the SAME geometry + material from the warmup
-      // mesh. Building `new MeshStandardMaterial(...)` per throw
-      // creates a unique material instance that the renderer has never
-      // seen → 5-second shader compile on first draw. The warmup mesh's
-      // material was already compiled via compileAsync during the
-      // matrix dive. Sharing that instance means zero compile at throw
-      // time. The geometry is also shared (small perf win — avoids
-      // re-uploading the same vertex data to the GPU every throw).
-      //
-      // _grenadeWarmupMesh is guaranteed to exist by the time a player
-      // can throw (it's built at startGame, before any input is
-      // possible). If somehow missing, fall back to building fresh.
-      let geo, mat;
-      if (_grenadeWarmupMesh) {
-        geo = _grenadeWarmupMesh.geometry;
-        mat = _grenadeWarmupMesh.material;
-      } else {
-        geo = new THREE.IcosahedronGeometry(0.22, 0);
-        mat = new THREE.MeshStandardMaterial({
-          color: 0x2b3d1e, emissive: w.color, emissiveIntensity: 1.4,
-          roughness: 0.5, metalness: 0.3,
-        });
-      }
-      const mesh = new THREE.Mesh(geo, mat);
-      mesh.castShadow = true;
-      mesh.position.copy(origin);
-      const trailLight = new THREE.PointLight(w.color, 1.4, 4, 2);
-      mesh.add(trailLight);
+  const origin = new THREE.Vector3(
+    player.pos.x + Math.sin(player.facing) * 0.8,
+    1.5,
+    player.pos.z + Math.cos(player.facing) * 0.8,
+  );
+  // Reuse shared geometry + material (defined at module level).
+  // Eliminates per-throw shader compile.
+  const mesh = new THREE.Mesh(_grenadeGeo, _grenadeMat);
+  mesh.castShadow = true;
+  mesh.position.copy(origin);
+  const trailLight = new THREE.PointLight(w.color, 1.4, 4, 2);
+  mesh.add(trailLight);
 
-      const vx = Math.sin(player.facing) * w.speed;
-      const vz = Math.cos(player.facing) * w.speed;
-      const vy = w.arc;
-      mesh.userData = {
-        vel: new THREE.Vector3(vx, vy, vz),
-        life: w.fuse,
-        bounces: 0,
-        color: w.color,
-        explosionRadius: w.explosionRadius,
-        explosionDamage: w.explosionDamage,
-        spin: new THREE.Vector3(
-          Math.random() * 6 - 3,
-          Math.random() * 6 - 3,
-          Math.random() * 6 - 3,
-        ),
-      };
-      probe('grenade:sceneAdd', () => scene.add(mesh));
-      _grenades.push(mesh);
-    });
-    Audio.shot && Audio.shot('shotgun');   // throwing thump — reuses shotgun sfx
-  });
+  const vx = Math.sin(player.facing) * w.speed;
+  const vz = Math.cos(player.facing) * w.speed;
+  const vy = w.arc;
+  mesh.userData = {
+    vel: new THREE.Vector3(vx, vy, vz),
+    life: w.fuse,
+    bounces: 0,
+    color: w.color,
+    explosionRadius: w.explosionRadius,
+    explosionDamage: w.explosionDamage,
+    spin: new THREE.Vector3(
+      Math.random() * 6 - 3,
+      Math.random() * 6 - 3,
+      Math.random() * 6 - 3,
+    ),
+  };
+  scene.add(mesh);
+  _grenades.push(mesh);
+  Audio.shot && Audio.shot('shotgun');   // throwing thump — reuses shotgun sfx
 }
 
 function updateGrenades(dt) {
@@ -6720,14 +6361,9 @@ function _takePlayerDamageVfx(shakeAmt, shakeDur) {
   if (S._damageVfxThisFrame) return;
   S._damageVfxThisFrame = true;
   S._damageVfxFiredAt = performance.now();
-  // probe('damage:vfx') — first-time hitch suspected to be the
-  // damage-flash compositor layer + heart HUD updates triggering
-  // first paint. REMOVE-ME after diagnosis.
-  probe('damage:vfx', () => {
-    probe('damage:flash', () => UI.damageFlash());
-    probe('damage:audio', () => Audio.damage());
-    probe('damage:shake', () => shake(shakeAmt, shakeDur));
-  });
+  UI.damageFlash();
+  Audio.damage();
+  shake(shakeAmt, shakeDur);
 }
 
 // ============================================================================
