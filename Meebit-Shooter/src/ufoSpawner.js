@@ -694,9 +694,12 @@ function _shedNextPanel(s) {
   };
   s.shedFlying.push(rec);
   // Visual feedback at the detach point — a small spark burst in the
-  // chapter tint.
-  hitBurst(wpos, s.tint, 6);
-  hitBurst(wpos, 0xffffff, 3);
+  // chapter tint. spreadScale 0.3 keeps the spark tight around the
+  // detach point rather than scattering far from the UFO. Per
+  // playtester: "UFO pieces falling off need to follow off closer
+  // to the UFO."
+  hitBurst(wpos, s.tint, 6, 0.3);
+  hitBurst(wpos, 0xffffff, 3, 0.3);
 }
 
 // =====================================================================
@@ -716,11 +719,15 @@ export function explodeUfo(s) {
   // Multi-stage explosion — bigger than the default destroySpawner
   // burst because we asked for it. Three burst layers fired in
   // quick succession read as a coherent fireball.
-  hitBurst(pos, 0xffffff, 60);
-  hitBurst(pos, s.tint, 50);
-  setTimeout(() => hitBurst(pos, 0xffaa00, 40), 60);
-  setTimeout(() => hitBurst(pos, 0xff5520, 32), 130);
-  setTimeout(() => hitBurst(pos, 0xff3cac, 24), 220);
+  // spreadScale 0.5 keeps the debris within ~4u of the UFO instead
+  // of the default 8u radius — the explosion still reads as a big
+  // dramatic moment but the cubes don't blanket the whole arena.
+  // Per playtester: debris should fall close to the UFO, not far.
+  hitBurst(pos, 0xffffff, 60, 0.5);
+  hitBurst(pos, s.tint, 50, 0.5);
+  setTimeout(() => hitBurst(pos, 0xffaa00, 40, 0.5), 60);
+  setTimeout(() => hitBurst(pos, 0xff5520, 32, 0.5), 130);
+  setTimeout(() => hitBurst(pos, 0xff3cac, 24, 0.5), 220);
 
   // Mushroom cloud — spawned at GROUND level (not hover level) so
   // the stem rises naturally from the floor. The cloud is its own

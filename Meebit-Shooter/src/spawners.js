@@ -418,13 +418,20 @@ export function damageSpawner(spawner, dmg) {
   // Extra-visible hit burst — sparks at the impact point plus a shower
   // of chapter-color chunks. Bigger than the default so the hive feels
   // meaty to shoot.
+  // UFOs use a tighter spread (0.35) so the spark debris stays
+  // clustered around the saucer instead of scattering all the way
+  // across the arena. Per playtester: "UFO pieces falling off need
+  // to follow off closer to the UFO." Ground-based hives keep the
+  // default wider spread.
+  const _isUfo = spawner.structureType === 'ufo';
+  const _spread = _isUfo ? 0.35 : 1.0;
   hitBurst(
     new THREE.Vector3(spawner.pos.x, 2.2, spawner.pos.z),
-    0xffffff, 4
+    0xffffff, 4, _spread
   );
   hitBurst(
     new THREE.Vector3(spawner.pos.x, 2, spawner.pos.z),
-    spawner.tint, 8
+    spawner.tint, 8, _spread
   );
   // Pop an egg! Pick a random intact target — cap first if available
   // (shatters the wax lid revealing the egg below), otherwise an exposed
@@ -476,17 +483,21 @@ function _popRandomEgg(spawner) {
     cap.userData._shatterT = 0;
     cap.userData._shatterDir = target.userData.outward.clone();
     target.userData.covered = false;
-    // Small white spark at the cap
-    hitBurst(worldPos, 0xffffff, 4);
-    hitBurst(worldPos, spawner.tint, 6);
+    // Small white spark at the cap. UFO eggs spread tighter.
+    const _eggSpread = (spawner.structureType === 'ufo') ? 0.35 : 1.0;
+    hitBurst(worldPos, 0xffffff, 4, _eggSpread);
+    hitBurst(worldPos, spawner.tint, 6, _eggSpread);
   } else {
     // Pop the egg itself. Flag it so the animation tick shrinks + fades.
     target.userData.popped = true;
     target.userData._popT = 0;
     spawner.eggsAlive = Math.max(0, spawner.eggsAlive - 1);
-    // Bigger pop burst — chapter tint + yellow yolk mix
-    hitBurst(worldPos, spawner.tint, _POP_PARTICLES);
-    hitBurst(worldPos, 0xfff3d0, 6);
+    // Bigger pop burst — chapter tint + yellow yolk mix.
+    // UFO egg pops use tighter spread so the splash stays clustered
+    // around the side of the saucer where the egg was.
+    const _eggSpread = (spawner.structureType === 'ufo') ? 0.35 : 1.0;
+    hitBurst(worldPos, spawner.tint, _POP_PARTICLES, _eggSpread);
+    hitBurst(worldPos, 0xfff3d0, 6, _eggSpread);
   }
 }
 

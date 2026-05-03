@@ -204,15 +204,28 @@ export function clearPickups() {
 // ============================================================
 const particles = [];
 
-export function hitBurst(pos, color, count = 8) {
+export function hitBurst(pos, color, count = 8, spreadScale = 1.0) {
+  // spreadScale (default 1.0) lets specific callers tighten or widen
+  // the particle scatter without changing the global behavior. Per
+  // playtester: "it looks like the UFO pieces are falling off here
+  // but need to follow off closer to the UFO" — UFO callers pass
+  // ~0.3-0.5 so destroy/damage particles stay clustered around the
+  // hover position rather than scattering across the arena.
+  // Multiplies the base horizontal velocity (4-10 m/s) and the
+  // upward kick — both directions get the same scale so the burst
+  // shape stays consistent, just smaller.
   for (let i = 0; i < count; i++) {
     const mat = getParticleMat(color);
     const p = new THREE.Mesh(PARTICLE_GEO, mat);
     p.position.copy(pos);
     const a = Math.random() * Math.PI * 2;
-    const s = 4 + Math.random() * 6;
+    const s = (4 + Math.random() * 6) * spreadScale;
     p.userData = {
-      vel: new THREE.Vector3(Math.cos(a) * s, Math.random() * 4 + 1, Math.sin(a) * s),
+      vel: new THREE.Vector3(
+        Math.cos(a) * s,
+        (Math.random() * 4 + 1) * spreadScale,
+        Math.sin(a) * s,
+      ),
       life: 0.5 + Math.random() * 0.3,
       ageMax: 0.8,
     };
