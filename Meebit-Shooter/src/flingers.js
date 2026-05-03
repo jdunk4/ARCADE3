@@ -209,14 +209,14 @@ export async function preloadFlingerGLBs(onProgress, renderer, camera) {
         }
         if (parsed.length > 0) {
           names = parsed;
-          console.log(`[flinger] manifest found (${names.length} files)`);
+          console.log(`[flinger] 1/3 manifest found (${names.length} files)`);
         }
       }
     } else {
-      console.log('[flinger] no manifest, using hardcoded list (' + names.length + ' files)');
+      console.log('[flinger] 1/3 no manifest, using hardcoded list (' + names.length + ' files)');
     }
   } catch (e) {
-    console.log('[flinger] manifest fetch failed, using hardcoded list');
+    console.log('[flinger] 1/3 manifest fetch failed, using hardcoded list');
   }
 
   const total = names.length;
@@ -360,11 +360,12 @@ export async function preloadFlingerGLBs(onProgress, renderer, camera) {
           delete entry.obj._wasMatrixAutoUpdate;
         }
       }
+      console.log(`[flinger] 2/3 prewarmed ${loaded} meshes`);
     }
   } catch (err) {
     console.warn('[flinger] warmup failed (non-fatal):', err);
   }
-  console.log(`[flinger] ✓ pool ready — ${loaded}/${total} prewarmed`);
+  console.log(`[flinger] 3/3 pool ready: ${loaded} clones`);
   return { loaded, total };
 }
 
@@ -981,6 +982,34 @@ function _loadFlingerMesh(glbName) {
   }
   return glbCache.get(glbName).then(gltf => {
     const clone = skeletonClone(gltf.scene);
+    // CRITICAL — rebind clone materials to the original's. Mirrors the
+    // herd-VRM loader pattern (herdVrmLoader.js, see _cloneHerdMesh).
+    // SkeletonUtils.clone makes deep COPIES of every material, which
+    // means each clone has a unique material instance. Three.js
+    // compiles a shader PER MATERIAL INSTANCE (it caches by program +
+    // defines, but the material's needsUpdate flag is per-instance and
+    // the scene-walk in renderer.compile uses material identity for
+    // its compile-tracking). Result: prewarming the gltf.scene
+    // originals doesn't help the clones — the clones get their own
+    // first-render compile.
+    //
+    // Fix: walk original + clone in parallel, replace the clone's
+    // material reference with the original's. Now ALL pool entries
+    // share the same material instances as the original gltf.scene,
+    // and prewarming the original prewarms every clone.
+    const origMeshes = [];
+    gltf.scene.traverse(obj => {
+      if (obj.isMesh || obj.isSkinnedMesh) origMeshes.push(obj);
+    });
+    let meshIdx = 0;
+    clone.traverse(obj => {
+      if (obj.isMesh || obj.isSkinnedMesh) {
+        const origObj = origMeshes[meshIdx++];
+        if (origObj && origObj.material) {
+          obj.material = origObj.material;
+        }
+      }
+    });
     // ROBUST HEIGHT MEASUREMENT — same approach as pixlPals. Walk each
     // mesh's geometry.boundingBox (vertex-data-derived, unaffected by
     // skeleton bind-pose quirks) and union them to get the real height.

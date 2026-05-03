@@ -162,14 +162,14 @@ export async function preloadPixlPalGLBs(onProgress, renderer, camera) {
         }
         if (parsed.length > 0) {
           ids = parsed;
-          console.log(`[pixlPal] manifest found (${ids.length} files)`);
+          console.log(`[pixlPal] 1/3 manifest found (${ids.length} files)`);
         }
       }
     } else {
-      console.log('[pixlPal] no manifest, using hardcoded list (' + ids.length + ' files)');
+      console.log('[pixlPal] 1/3 no manifest, using hardcoded list (' + ids.length + ' files)');
     }
   } catch (e) {
-    console.log('[pixlPal] manifest fetch failed, using hardcoded list');
+    console.log('[pixlPal] 1/3 manifest fetch failed, using hardcoded list');
   }
 
   const total = ids.length;
@@ -270,11 +270,12 @@ export async function preloadPixlPalGLBs(onProgress, renderer, camera) {
           delete entry.obj._wasMatrixAutoUpdate;
         }
       }
+      console.log(`[pixlPal] 2/3 prewarmed ${loaded} meshes`);
     }
   } catch (err) {
     console.warn('[pixlPal] warmup failed (non-fatal):', err);
   }
-  console.log(`[pixlPal] ✓ pool ready — ${loaded}/${total} prewarmed`);
+  console.log(`[pixlPal] 3/3 pool ready: ${loaded} clones`);
   return { loaded, total };
 }
 
@@ -937,6 +938,28 @@ function _loadPalMesh(id) {
     // SkeletonUtils.clone is the standard Three.js fix — it rebinds the
     // skeleton to the cloned bones so the mesh renders correctly.
     const clone = skeletonClone(gltf.scene);
+
+    // CRITICAL — rebind clone materials to original's. Same fix as
+    // flingers and herd VRMs: SkeletonUtils.clone deep-copies materials,
+    // which means each pool entry has unique material instances.
+    // Three.js needs to compile a shader for each material the first
+    // time it's drawn, so without rebinding, prewarm only covers the
+    // gltf.scene originals — every pool clone still pays first-render
+    // compile cost. Rebinding to the originals means all clones share
+    // the same materials, and one prewarm covers them all.
+    const origMeshes = [];
+    gltf.scene.traverse(obj => {
+      if (obj.isMesh || obj.isSkinnedMesh) origMeshes.push(obj);
+    });
+    let meshIdx = 0;
+    clone.traverse(obj => {
+      if (obj.isMesh || obj.isSkinnedMesh) {
+        const origObj = origMeshes[meshIdx++];
+        if (origObj && origObj.material) {
+          obj.material = origObj.material;
+        }
+      }
+    });
 
     // Pal avatars import with Z-up or mis-scaled; normalize to ~2.9 units tall
     // so they read close to the player's apparent size (player = PLAYER.scale
