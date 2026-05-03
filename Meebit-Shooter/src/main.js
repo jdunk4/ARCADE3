@@ -686,95 +686,196 @@ function showIncomingCall() {
         background: radial-gradient(ellipse at center, #001a0d 0%, #000 70%);
         display: flex; flex-direction: column; align-items: center; justify-content: center;
         z-index: 9998;
-        font-family: 'Impact', 'Arial Black', sans-serif;
+        font-family: 'Courier New', monospace;
         color: #00ff66;
       }
-      #initiate-protocol .simvoid-launch {
-        display: flex; flex-direction: row; align-items: baseline;
-        gap: 0.18em; line-height: 0.92; margin-bottom: 18px;
-        font-size: clamp(56px, 12vw, 160px); letter-spacing: 4px;
-        cursor: default; position: relative;
-        filter: drop-shadow(-1.5px 0 0 rgba(255,60,80,0.45)) drop-shadow(1.5px 0 0 rgba(60,220,255,0.40));
-        animation: simvoid-launch-pulse 2.4s ease-in-out infinite;
+      #sv-title-wrap {
+        position: relative; cursor: default;
         user-select: none; -webkit-user-select: none;
+        margin-bottom: 18px;
       }
-      #initiate-protocol .simvoid-launch::after {
-        content:""; position:absolute; inset:-8px;
-        background: repeating-linear-gradient(0deg,rgba(0,0,0,0.20) 0px,rgba(0,0,0,0.20) 1px,transparent 1px,transparent 4px);
-        pointer-events:none; z-index:5; mix-blend-mode:multiply;
+      #sv-title-wrap canvas {
+        display: block;
+        filter: drop-shadow(0 0 20px rgba(0,255,102,0.4))
+                drop-shadow(-1.5px 0 0 rgba(255,60,80,0.35))
+                drop-shadow(1.5px 0 0 rgba(60,220,255,0.30));
       }
-      .simvoid-launch-half { display:inline-flex; flex-direction:row; align-items:baseline; }
-      .simvoid-launch-char { display:inline-block; position:relative; min-width:0.62em; text-align:center; transition:color 0.15s ease; }
-      .simvoid-launch-sim .simvoid-launch-char {
-        color:#6dff95;
-        text-shadow:1px 1px 0 #4adb6e,2px 2px 0 #2bbb52,3px 3px 0 #11993d,4px 4px 0 #0a7a30,5px 5px 0 #065d24,6px 6px 0 #033f17,8px 8px 0 #000,0 0 14px rgba(110,255,160,0.85),0 0 32px rgba(0,255,102,0.55);
+      #sv-title-wrap .sv-crt {
+        position: absolute; inset: 0; pointer-events: none;
+        background: repeating-linear-gradient(
+          0deg, rgba(0,0,0,0.18) 0px, rgba(0,0,0,0.18) 1px,
+          transparent 1px, transparent 3px
+        );
+        mix-blend-mode: multiply;
       }
-      .simvoid-launch-void .simvoid-launch-char {
-        color:#11663a;
-        text-shadow:1px 1px 0 #062b16,2px 2px 0 #031808,3px 3px 0 #000,4px 4px 0 #1a8c4a,5px 5px 0 #2bbb52,-1px -1px 0 #001508,0 0 8px rgba(0,80,30,0.6),0 0 24px rgba(0,255,102,0.18);
-        transform:translateY(0.05em);
+      #initiate-protocol .ip-sub {
+        font-size: 14px; letter-spacing: 8px; color: #6effaa;
+        margin-bottom: 60px; opacity: 0.8;
       }
-      #initiate-protocol .simvoid-launch.decoding .simvoid-launch-char {
-        color:#fff; text-shadow:0 0 8px #6dff95,0 0 18px #00ff66,0 0 36px rgba(0,255,102,0.7),2px 2px 0 #000;
+      #initiate-protocol .ip-btn {
+        font-family: 'Impact', 'Arial Black', sans-serif;
+        font-size: 24px; letter-spacing: 6px; padding: 20px 60px;
+        background: transparent; color: #00ff66;
+        border: 2px solid #00ff66; cursor: pointer;
+        box-shadow: 0 0 20px rgba(0,255,102,0.4); transition: all 0.2s;
       }
-      #initiate-protocol .simvoid-launch.decoded .simvoid-launch-char {
-        color:#b0ffcc; text-shadow:0 0 6px #00ff66,0 0 16px rgba(0,255,102,0.5),2px 2px 0 #000;
+      #initiate-protocol .ip-btn:hover {
+        background: #00ff66; color: #000;
+        box-shadow: 0 0 40px rgba(0,255,102,0.8); transform: scale(1.05);
       }
-      @keyframes simvoid-launch-pulse { 0%,100%{opacity:1} 50%{opacity:0.85} }
-      #initiate-protocol .ip-sub { font-size:14px; letter-spacing:8px; color:#6effaa; margin-bottom:60px; opacity:0.8; }
-      #initiate-protocol .ip-btn { font-family:inherit; font-size:24px; letter-spacing:6px; padding:20px 60px; background:transparent; color:#00ff66; border:2px solid #00ff66; cursor:pointer; box-shadow:0 0 20px rgba(0,255,102,0.4); transition:all 0.2s; }
-      #initiate-protocol .ip-btn:hover { background:#00ff66; color:#000; box-shadow:0 0 40px rgba(0,255,102,0.8); transform:scale(1.05); }
       @media (max-width:900px),(pointer:coarse) {
-        #initiate-protocol { justify-content:flex-start; padding-top:12vh; }
-        #initiate-protocol .simvoid-launch { font-size:clamp(40px,14vw,100px); letter-spacing:2px; margin-bottom:12px; }
+        #initiate-protocol { justify-content: flex-start; padding-top: 10vh; }
         #initiate-protocol .ip-sub { font-size:11px; letter-spacing:5px; margin-bottom:24px; }
         #initiate-protocol .ip-btn { font-size:18px; letter-spacing:4px; padding:14px 36px; }
       }
     </style>
-    <h1 class="simvoid-launch" id="simvoid-launch" aria-label="SIMVOID">
-      <span class="simvoid-launch-half simvoid-launch-sim" aria-hidden="true"><span class="simvoid-launch-char" data-orig="S">S</span><span class="simvoid-launch-char" data-orig="I">I</span><span class="simvoid-launch-char" data-orig="M">M</span></span>
-      <span class="simvoid-launch-half simvoid-launch-void" aria-hidden="true"><span class="simvoid-launch-char" data-orig="V">V</span><span class="simvoid-launch-char" data-orig="O">O</span><span class="simvoid-launch-char" data-orig="I">I</span><span class="simvoid-launch-char" data-orig="D">D</span></span>
-    </h1>
+    <div id="sv-title-wrap" aria-label="SIMVOID">
+      <canvas id="sv-canvas"></canvas>
+      <div class="sv-crt"></div>
+    </div>
     <div class="ip-sub">:: AWAITING USER INPUT ::</div>
     <button class="ip-btn" id="ip-begin">&gt;&gt; BEGIN &lt;&lt;</button>
   `;
   document.body.appendChild(initOverlay);
 
-  // Hover-to-decode
-  const _sv = document.getElementById('simvoid-launch');
-  if (_sv) {
-    const SG = '0123456789ABCDEF#@$%&*+=<>{}[]/\\\\|アイウエオカキクケコ';
-    const SD = '0123456789';
-    const _rg = p => p.charAt(Math.floor(Math.random()*p.length));
-    function _ct() {
-      if (_sv._st) { for (const t of _sv._st) clearTimeout(t); _sv._st=null; }
-      if (_sv._si) { clearInterval(_sv._si); _sv._si=null; }
+  // --- SIMVOID digit-particle canvas ---
+  const _svCanvas = document.getElementById('sv-canvas');
+  const _svCtx = _svCanvas.getContext('2d');
+  const _svWrap = document.getElementById('sv-title-wrap');
+  {
+    const WORD = 'SIMVOID';
+    const mobile = window.innerWidth < 700;
+    const CELL = mobile ? 4 : 6;
+    const FSIZE = mobile ? 100 : 180;
+    const PAD = mobile ? 8 : 14;
+    const HGAP = mobile ? 4 : 8;
+    const SIM_C = [109,255,149];
+    const VOID_C = [17,102,58];
+    const DIM_SIM = [20,60,35];
+    const DIM_VOID = [12,40,24];
+
+    function _buildMask(ch) {
+      const off = document.createElement('canvas');
+      const o = off.getContext('2d');
+      off.width = Math.ceil(FSIZE * 0.75);
+      off.height = FSIZE;
+      o.fillStyle = '#fff';
+      o.font = 'bold ' + FSIZE + "px Impact, 'Arial Black', sans-serif";
+      o.textBaseline = 'top'; o.textAlign = 'center';
+      o.fillText(ch, off.width/2, 0);
+      const cols = Math.floor(off.width/CELL);
+      const rows = Math.floor(off.height/CELL);
+      const mask = [];
+      const img = o.getImageData(0,0,off.width,off.height);
+      for (let r=0; r<rows; r++) {
+        mask[r] = [];
+        for (let c=0; c<cols; c++) {
+          const px = Math.floor(c*CELL+CELL/2);
+          const py = Math.floor(r*CELL+CELL/2);
+          mask[r][c] = img.data[(py*off.width+px)*4+3] > 80 ? 1 : 0;
+        }
+      }
+      return { cols, rows, mask, w: cols*CELL, h: rows*CELL };
     }
-    function _ds() {
-      _ct(); const ch=_sv.querySelectorAll('.simvoid-launch-char');
-      _sv.classList.add('decoding'); _sv.classList.remove('decoded');
-      _sv._si=setInterval(()=>{for(const c of ch)if(!c._l)c.textContent=_rg(SG)},50);
-      _sv._st=[];
-      ch.forEach((c,i)=>{c._l=false;_sv._st.push(setTimeout(()=>{c._l=true;c.textContent=_rg(SD)},350+i*60))});
-      _sv._st.push(setTimeout(()=>{if(_sv._si){clearInterval(_sv._si);_sv._si=null}_sv.classList.remove('decoding');_sv.classList.add('decoded')},350+ch.length*60+50));
+
+    const ltrs = WORD.split('').map(ch => {
+      const m = _buildMask(ch);
+      m.digits = [];
+      for (let r=0; r<m.rows; r++) {
+        m.digits[r] = [];
+        for (let c=0; c<m.cols; c++)
+          m.digits[r][c] = Math.floor(Math.random()*10).toString();
+      }
+      m.char = ch;
+      return m;
+    });
+
+    const totalW = ltrs.reduce((s,l) => s+l.w+PAD, 0) + HGAP;
+    const maxH = Math.max(...ltrs.map(l => l.h));
+    _svCanvas.width = totalW;
+    _svCanvas.height = maxH + PAD*2;
+    _svWrap.style.width = totalW + 'px';
+
+    let xo = 0;
+    const lpos = ltrs.map((l,i) => {
+      const x = xo; xo += l.w + PAD;
+      if (i===2) xo += HGAP;
+      return { x, y: PAD + (maxH-l.h)/2 };
+    });
+
+    let hoverT = 0, hovered = false, scramT = 0;
+
+    _svWrap.addEventListener('mouseenter', () => { hovered = true; });
+    _svWrap.addEventListener('mouseleave', () => { hovered = false; });
+    _svWrap.addEventListener('touchstart', ev => {
+      ev.preventDefault(); hovered = true;
+      setTimeout(() => { hovered = false; }, 2000);
+    }, { passive: false });
+
+    let _lastT = 0;
+    let _svRaf = 0;
+
+    function _svRender(now) {
+      _svRaf = requestAnimationFrame(_svRender);
+      const dt = Math.min(0.05, (now - _lastT)/1000);
+      _lastT = now;
+
+      const tgt = hovered ? 1 : 0;
+      hoverT += (tgt - hoverT) * dt * 5;
+
+      scramT += dt * 1000;
+      if (scramT > 75) {
+        scramT = 0;
+        for (const l of ltrs)
+          for (let r=0; r<l.rows; r++)
+            for (let c=0; c<l.cols; c++)
+              if (Math.random() < 0.13)
+                l.digits[r][c] = Math.floor(Math.random()*10).toString();
+      }
+
+      _svCtx.clearRect(0, 0, _svCanvas.width, _svCanvas.height);
+      _svCtx.font = 'bold '+(CELL-1)+"px 'Courier New',monospace";
+      _svCtx.textAlign = 'center';
+      _svCtx.textBaseline = 'middle';
+
+      for (let li=0; li<ltrs.length; li++) {
+        const l = ltrs[li], p = lpos[li];
+        const isSim = li < 3;
+        const fc = isSim ? SIM_C : VOID_C;
+        const dc = isSim ? DIM_SIM : DIM_VOID;
+
+        for (let r=0; r<l.rows; r++) {
+          for (let c=0; c<l.cols; c++) {
+            const cx = p.x + c*CELL + CELL/2;
+            const cy = p.y + r*CELL + CELL/2;
+
+            if (l.mask[r][c]) {
+              const a = 0.35 + hoverT * 0.55;
+              const t = hoverT * 0.4;
+              const cr = Math.round(fc[0]+(255-fc[0])*t);
+              const cg = Math.round(fc[1]+(255-fc[1])*t);
+              const cb = Math.round(fc[2]+(255-fc[2])*t);
+              _svCtx.globalAlpha = a;
+              _svCtx.fillStyle = 'rgb('+cr+','+cg+','+cb+')';
+            } else {
+              _svCtx.globalAlpha = 0.08 + hoverT * 0.04;
+              _svCtx.fillStyle = 'rgb('+dc[0]+','+dc[1]+','+dc[2]+')';
+            }
+            _svCtx.fillText(l.digits[r][c], cx, cy);
+          }
+        }
+      }
+      _svCtx.globalAlpha = 1;
     }
-    function _de() {
-      _ct(); const ch=_sv.querySelectorAll('.simvoid-launch-char');
-      _sv.classList.remove('decoded'); _sv.classList.add('decoding');
-      _sv._si=setInterval(()=>{for(const c of ch)if(!c._l)c.textContent=_rg(SG)},50);
-      _sv._st=[];
-      ch.forEach((c,i)=>{c._l=false;_sv._st.push(setTimeout(()=>{c._l=true;c.textContent=c.dataset.orig||''},200+i*30))});
-      _sv._st.push(setTimeout(()=>{if(_sv._si){clearInterval(_sv._si);_sv._si=null}_sv.classList.remove('decoding')},200+ch.length*30+50));
-    }
-    _sv.addEventListener('mouseenter',_ds);
-    _sv.addEventListener('mouseleave',_de);
-    _sv.addEventListener('touchstart',ev=>{ev.preventDefault();_ds();setTimeout(_de,2000)},{passive:false});
-    _sv._cleanup=_ct;
+    _svRaf = requestAnimationFrame(_svRender);
+
+    // Cleanup function to stop the canvas loop when BEGIN is clicked
+    _svWrap._cleanup = () => { cancelAnimationFrame(_svRaf); };
   }
 
   const beginBtn = document.getElementById('ip-begin');
   beginBtn.addEventListener('click', () => {
-    if (_sv && _sv._cleanup) _sv._cleanup();
+    if (_svWrap && _svWrap._cleanup) _svWrap._cleanup();
     Audio.init();
     Audio.resume();
 
