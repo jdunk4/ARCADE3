@@ -5533,15 +5533,6 @@ const _grenadeMat = new THREE.MeshStandardMaterial({
   color: 0x2b3d1e, emissive: 0x88ff55, emissiveIntensity: 1.4,
   roughness: 0.5, metalness: 0.3,
 });
-// Single persistent PointLight for grenade trail glow. Added to the
-// scene ONCE at first throw and NEVER REMOVED — just repositioned each
-// frame to follow the newest in-flight grenade. When no grenades are
-// in flight, intensity is zeroed so it costs nothing. This avoids the
-// catastrophic performance issue where adding/removing PointLights
-// changes the scene's light count, which invalidates ALL cached shader
-// programs and forces Three.js to recompile every material on the next
-// render frame (~1-5 second freeze PER light count change).
-let _grenadeLight = null;
 
 function tryThrowGrenade() {
   if (!S.running || S.paused) return;
@@ -5643,24 +5634,6 @@ function updateGrenades(dt) {
       _grenades.splice(i, 1);
       continue;
     }
-  }
-
-  // Persistent grenade trail light — follows the newest in-flight
-  // grenade. Lazy-created on first throw so it's in the scene from
-  // that point forward and the light count NEVER changes again.
-  if (_grenades.length > 0) {
-    if (!_grenadeLight) {
-      _grenadeLight = new THREE.PointLight(0x88ff55, 1.4, 4, 2);
-      scene.add(_grenadeLight);
-    }
-    // Track the most recently thrown (last in array)
-    const active = _grenades[_grenades.length - 1];
-    _grenadeLight.position.copy(active.position);
-    _grenadeLight.intensity = 1.4;
-  } else if (_grenadeLight) {
-    // No grenades in flight — zero the light so it has no visual
-    // cost, but do NOT remove it from the scene.
-    _grenadeLight.intensity = 0;
   }
 }
 
