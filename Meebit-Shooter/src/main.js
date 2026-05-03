@@ -984,6 +984,16 @@ function showIncomingCall() {
             requestAnimationFrame(()=>requestAnimationFrame(()=>{df.style.opacity='0';df.style.transition=''}));
           }
         },
+        () => {
+          // FINAL WARMUP RENDER — forces the GPU to compile shaders for
+          // ALL meshes currently in the scene: prewarm enemies/bosses at
+          // y=-500, chapter-0 dormant props (depot, cannon, queen, turrets,
+          // crusher), crowd, gravestones, rain drops, player. The loading
+          // screen / matrix dive canvas is on top so the user never sees
+          // this frame, but the GPU now has every shader compiled. The
+          // first REAL render after startGame returns is instant.
+          try { renderer.render(scene, camera); } catch(e) {}
+        },
       ];
       const phase3Total = phase3Tasks.length;
       let phase3Loaded = 0;
@@ -2585,9 +2595,7 @@ function startGame() {
     if (hyperFlash && hyperFlash.parentNode) hyperFlash.parentNode.removeChild(hyperFlash);
   }, 3700);
   document.querySelectorAll('.hidden-ui').forEach(el => el.style.display = '');
-  console.time('[startGame] resetGame');
   resetGame();
-  console.timeEnd('[startGame] resetGame');
   const rec = Save.load();
   S.username = rec.username;
   S.playerMeebitId = rec.playerMeebitId || S.playerMeebitId;
@@ -2605,13 +2613,8 @@ function startGame() {
     if (S.currentWeapon === 'sniper') S.currentWeapon = 'raygun';
     if (S.previousCombatWeapon === 'sniper') S.previousCombatWeapon = 'raygun';
   }
-  console.time('[sg] resetPlayer');
   resetPlayer();
-  console.timeEnd('[sg] resetPlayer');
-  console.time('[sg] resetWaves');
   resetWaves();
-  console.timeEnd('[sg] resetWaves');
-  console.time('[sg] clearAll');
   clearBullets();
   clearRockets();
   // Clear any stray grenades from a previous run and give the player a
@@ -2642,8 +2645,6 @@ function startGame() {
   clearInfectors();
   clearAllPowerups();
   hideMissileArrow();
-  console.timeEnd('[sg] clearAll');
-  console.time('[sg] initRainEtc');
   initRain(CHAPTERS[0].full.grid1, 1);
   ensureBeamMesh();
   ensureFlameMeshes();
@@ -2655,7 +2656,6 @@ function startGame() {
   spawnGravestones(14, CHAPTERS[0].full.grid1);
   prewarmShaders(renderer);
   try { prewarmBossCinematic(); } catch (e) { console.warn('[prewarm] cinematic', e); }
-  console.timeEnd('[sg] initRainEtc');
   Audio.init();
   Audio.resume();
   // C-drone was playing on the title screen as an ambient bed. Stop it
@@ -2684,9 +2684,7 @@ function startGame() {
     setHeroHexagonsVisible(true);
     updateHeroHexagons(0, CHAPTERS[0].full.grid1);
   } catch (e) { console.warn('[hero-hexagons]', e); }
-  console.time('[sg] startWave');
   startWave(1);
-  console.timeEnd('[sg] startWave');
 }
 
 // ---------------------------------------------------------------------
