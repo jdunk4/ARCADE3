@@ -119,6 +119,17 @@ function tryLoadGLB(url, onProgress, onDone, onError, isSigned = true) {
 }
 
 function attachGLB(gltf) {
+  // Defensive cleanup — remove any existing player avatar from the scene
+  // BEFORE creating the new one. swapAvatarGLB already does this, but the
+  // initial loadPlayer → tryLoadGLB → attachGLB path does NOT, and the
+  // avatar-picker flow can hit a race where the old wrapper is orphaned
+  // in the scene while player.obj has already been nulled. Belt-and-
+  // suspenders: always remove whatever is there.
+  if (player.obj) {
+    scene.remove(player.obj);
+    player.obj = null;
+  }
+
   const meebit = gltf.scene;
   meebit.scale.setScalar(PLAYER.scale);
 
@@ -433,6 +444,12 @@ const PALETTE = {
 
 function buildVoxel(onProgress, onDone, onError) {
   try {
+    // Defensive cleanup — same rationale as attachGLB above.
+    if (player.obj) {
+      scene.remove(player.obj);
+      player.obj = null;
+    }
+
     const root = new THREE.Group();
     root.position.copy(player.pos);
 

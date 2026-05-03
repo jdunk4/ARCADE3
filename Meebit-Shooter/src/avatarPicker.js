@@ -96,7 +96,13 @@ function _placeModel(model, av) {
   model.scale.setScalar(1);
   model.rotation.set(0, 0, 0);
 
-  // Measure raw bounding box
+  // VRMs face -Z in their bind pose — rotate 180° on Y so they face
+  // toward the camera (+Z direction). This matches the pre-rotation
+  // that player.js attachGLB applies for gameplay. Without this the
+  // avatar preview shows the meebit's back on the initial frame.
+  model.rotation.y = Math.PI;
+
+  // Measure raw bounding box (after rotation so extents are correct)
   const box = new THREE.Box3().setFromObject(model);
   const size = box.getSize(new THREE.Vector3());
   const center = box.getCenter(new THREE.Vector3());
@@ -106,6 +112,10 @@ function _placeModel(model, av) {
   const targetH = 2.0;
   const s = targetH / maxDim;
   model.scale.setScalar(s);
+
+  // Wrap in an outer group so the preview spin (rotation.y += 0.008)
+  // applies to the GROUP while the inner model keeps its 180° facing.
+  const wrapper = new THREE.Group();
 
   // Re-measure after scale
   const box2 = new THREE.Box3().setFromObject(model);
@@ -117,8 +127,9 @@ function _placeModel(model, av) {
   model.position.z = -center2.z;
   model.position.y = -min2.y;  // lift so bottom of model is at y=0
 
-  _pvScene.add(model);
-  _pvModel = model;
+  wrapper.add(model);
+  _pvScene.add(wrapper);
+  _pvModel = wrapper;
   _updateUI('');
 }
 
