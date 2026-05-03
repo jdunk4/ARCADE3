@@ -62,11 +62,14 @@ import { PLAYER, WEAPONS, CHAPTERS, ARENA, GOO_CONFIG, MINING_CONFIG, BLOCK_CONF
 import { Audio } from './audio.js';
 import { UI } from './ui.js';
 import { loadPlayer, animatePlayer, player, recolorGun, resetPlayer, swapAvatarGLB } from './player.js';
-import { enemies, enemyProjectiles, spawnEnemyProjectile, makeEnemy, updateVesselZeroAnim, clearAllEnemies, applyKnockback } from './enemies.js';
-// (Removed: import { loadAntMesh } from './antMesh.js' + the
-// loadAntMesh() startup call. The chapter-1 ant always uses the
-// procedural box-ant builder now — see enemies.js dispatch comment
-// for context.)
+import { enemies, enemyProjectiles, spawnEnemyProjectile, makeEnemy, updateVesselZeroAnim } from './enemies.js';
+import { loadAntMesh } from './antMesh.js';
+
+// Kick off the chapter-1 ant GLB load as soon as the module graph
+// resolves. Async load — by the time the player starts a real run
+// the mesh should be ready. If it isn't (slow network, etc) the
+// makeEnemy dispatch falls back to the procedural box ant.
+loadAntMesh();
 import {
   bullets, spawnBullet, clearBullets,
   rockets, spawnRocket, clearRockets,
@@ -76,7 +79,7 @@ import {
   gooSplats, spawnGooSplat, updateGooSplats, clearGooSplats,
   bossCubes, clearBossCubes,
 } from './effects.js';
-import { startWave, updateWaves, onEnemyKilled, resetWaves, isInCaptureZone, onBlockMined, getWaveDef_current, prewarmBossCinematic, isBossCinematicActive, silentlyEndCurrentWave } from './waves.js';
+import { startWave, updateWaves, onEnemyKilled, resetWaves, isInCaptureZone, onBlockMined, getWaveDef_current, prewarmBossCinematic, isBossCinematicActive } from './waves.js';
 import {
   damageHerdAt, updateSavedPigs, prepareAllPools,
   getHealingProjectiles, consumeHealingProjectile,
@@ -119,7 +122,6 @@ import {
   tickPilotedMech, damagePilotedMech, updateMechPrompts, clearMechs,
 } from './mech.js';
 import { deployMineField, updateMines, clearAllMines } from './mineField.js';
-import { spawnMushroomCloud } from './mushroomCloud.js';
 import {
   spawnTurret, updateTurrets as updateStratagemTurrets,
   clearStratagemTurrets,
@@ -173,10 +175,6 @@ import { spawnPellets, despawnPellets, updatePellets } from './pacmanPellets.js'
 import { buildCrowd, updateCrowd, recolorCrowd } from './crowd.js';
 import { spawnGravestones, recolorGravestones, clearGravestones } from './gravestones.js';
 import { playMatrixRain } from './matrixRain.js';
-import { play3DMatrixRain, update3DMatrixRain, clearMatrixRain3D } from './matrixRain3D.js';
-import {
-  updateBlueprints, clearBlueprints, isOverlayUp, dismissOverlay,
-} from './ch7Blueprints.js';
 import { prefetchMeebits, pickRandomMeebitId } from './meebitsPublicApi.js';
 import {
   spawnPickup, updatePickups as updateNewPickups, clearAllPickups,
@@ -235,9 +233,13 @@ import { updateLaunch } from './empLaunch.js';
 import { updateShockwaves } from './shockwave.js';
 import { updateMissileArrow, hideMissileArrow } from './missileArrow.js';
 import { initGamepad, updateGamepad, setTitleMode, rumble } from './gamepad.js';
-import { startEndlessGlyphs, updateEndlessGlyphs, exitEndlessGlyphs } from './endlessGlyphs.js';
-import { resolveWallCollision, clearWalls as clearEndlessWalls, segmentBlockedByWall } from './endlessWalls.js';
-import { getEnemyMoveTarget as _endlessPathTarget, resetReplanBudget as _endlessResetReplans } from './endlessPathing.js';
+// Performance instrumentation (REMOVE-ME after diagnosing first-spawn freezes)
+import { probe, installLongTaskObserver, getLastSlowTag } from './perfProbe.js';
+
+// Watch for long main-thread tasks. Catches anything blocking ≥50ms,
+// regardless of whether our explicit probe() wrappers cover it.
+// Browser support: Chrome/Edge (yes), Firefox (yes recent), Safari (no).
+installLongTaskObserver(50);
 
 // =====================================================================
 // STRATAGEM SYSTEM HOOKS
@@ -247,106 +249,15 @@ import { getEnemyMoveTarget as _endlessPathTarget, resetReplanBudget as _endless
 // (keeps the dep graph cleaner — those modules become much more
 // portable). The hooks are wired here ONCE at module load.
 
-// Generic enemy-kill bridge. Stratagem damage paths (mech bullets,
-// turret fire, mine detonations) need to actually FINISH the kill —
-// otherwise enemies keep walking around at -3000 hp because nothing
-// ever runs the score / loot / drops / removal pipeline. The standard
-// player-bullet path does `e.hp -= dmg; if (e.hp <= 0) killEnemy(j);`
-// — we expose killEnemy via this hook so external modules can do the
-// same without an import (would create cycles for mech.js → main.js).
-//
-// Callers MUST pass an enemy reference (NOT a stale array index).
-// killEnemy splices the enemies array internally, so any caller
-// iterating with a numeric index would race the splice and either
-// double-kill or skip an enemy. Looking up the index fresh inside the
-// hook eliminates that whole class of bug.
-window.__killEnemyAtIdx = function(enemyOrIdx) {
-  // Resolve to a fresh index against the live enemies array. Accepts
-  // either an enemy reference (preferred) or a number index (legacy).
-  let idx;
-  if (typeof enemyOrIdx === 'number') {
-    idx = enemyOrIdx;
-  } else {
-    idx = enemies.indexOf(enemyOrIdx);
-  }
-  if (idx < 0 || idx >= enemies.length) return;
-  killEnemy(idx);
-};
-
-// =====================================================================
-// SHIELD ABSORB — JUMPER + LEGACY SHIELDED BOSSES
-// =====================================================================
-// Centralized routing for damage hitting a shielded enemy. Two cases:
-//
-//   (a) Jumper (e.isJumper && e.shielded): drains e.shieldHp by `dmg`.
-//       If shieldHp drops to 0, plays a break burst, removes the
-//       shield mesh, flips e.shielded = false. Body hp is UNCHANGED
-//       this hit. Returns false (no body damage was dealt).
-//
-//   (b) Legacy shielded boss (e.shielded but no shieldHp): blocks
-//       damage entirely (existing NIGHT_HERALD behavior). Returns
-//       false so the caller skips its kill check.
-//
-//   (c) Not shielded: returns true so the caller proceeds with
-//       e.hp -= dmg + knockback + kill check.
-//
-// Hit visuals (body flash, hitBurst at hitPos) are still the caller's
-// responsibility — this only mediates the HP arithmetic + shield state.
-// hitPos is used for the shield-break burst position.
-window.__shieldAbsorbOrPass = function(e, dmg, hitPos) {
-  if (!e || !e.shielded) return true;          // no shield → pass through
-  if (e.isJumper) {
-    e.shieldHp -= dmg;
-    e.shieldHitFlashT = 0.18;                  // glow on hit
-    if (e.shieldHp <= 0) {
-      e.shielded = false;
-      e.shieldHp = 0;
-      // Break burst — bigger than a hit flash, white-cyan to read
-      // as the shield collapsing. Two layered bursts at the enemy's
-      // position so the effect feels significant. Audio cue too.
-      const bp = e.pos ? e.pos.clone() : (hitPos ? hitPos.clone() : null);
-      if (bp) {
-        bp.y = 1.6;
-        hitBurst(bp, 0xffffff, 22);
-        hitBurst(bp, 0x66ccff, 18);
-      }
-      try { Audio.shieldHit && Audio.shieldHit(); } catch (_) {}
-      // Remove the outline mesh so the body becomes the rendered
-      // silhouette. Material is held by the mesh; both disposed
-      // in clearAllEnemies on wave end too.
-      if (e.shieldMesh) {
-        if (e.shieldMesh.parent) e.shieldMesh.parent.remove(e.shieldMesh);
-        if (e.shieldMat) e.shieldMat.dispose();
-        e.shieldMesh = null;
-        e.shieldMat = null;
-      }
-    }
-    return false;                              // body hp not touched this hit
-  }
-  // Legacy shielded boss — block entirely (NIGHT_HERALD pattern).
-  return false;
-};
-
 // THERMONUCLEAR payload — massive AoE detonation. Bigger radius and
 // more layered FX than a stratagem rocket; signals "you summoned
 // something terrible" and is balanced as a wave-clear panic button.
 window.__stratagemFireNuke = function(pos, tint) {
-  // Radius bumped from 20 → 120 to match the user's spec: "the nuke
-  // [should] clear the screen of enemies." Arena half-extent is 50,
-  // so 120 covers corner-to-corner with margin and any enemy visible
-  // on screen (even at zoomed-out perspectives) is in the kill zone.
-  // Falloff still applies so the FX read as a centered detonation —
-  // enemies near the epicenter take ~6000 dmg, enemies near the rim
-  // take a fraction. Even bosses with hp in the thousands die at
-  // mid-range with this scale. Damage is intentionally massive; the
-  // gating mechanic is the artifact cost, not survival math.
-  const RADIUS = 120;
+  const RADIUS = 20;
   const r2 = RADIUS * RADIUS;
-  const DAMAGE = 8000;
-  // Iterate backwards so killEnemy splices don't shift indices we
-  // haven't visited yet. Damage every enemy in radius, then call
-  // killEnemy on anything that hit zero HP.
-  for (let i = enemies.length - 1; i >= 0; i--) {
+  const DAMAGE = 6000;
+  // Damage every enemy in radius.
+  for (let i = 0; i < enemies.length; i++) {
     const e = enemies[i];
     if (!e || !e.pos || e.dying) continue;
     const dx = e.pos.x - pos.x;
@@ -356,24 +267,11 @@ window.__stratagemFireNuke = function(pos, tint) {
       const falloff = 1 - Math.sqrt(d2) / RADIUS;
       e.hp -= DAMAGE * falloff;
       e.hitFlash = 0.40;
-      // Universal knockback — radial from blast epicenter, scaled by
-      // falloff so close enemies get shoved harder than fringe ones.
-      // Even with the global 0.3u baseline, the explosion's 1-falloff
-      // scale (up to 4× for point-blank) gives a visible blast wave.
-      applyKnockback(e, pos, 0.3 * (0.5 + 4 * falloff));
-      // Without this, enemies ended up with hp < 0 but never died —
-      // they kept running around as ghosts because the nuke path
-      // skipped the kill pipeline entirely.
-      if (e.hp <= 0) killEnemy(i);
     }
   }
   // Splash damage to the player — thermonuclear hits hard if you're
-  // anywhere near the epicenter. The ENEMY kill RADIUS is huge (120)
-  // since the user wants the nuke to clear the screen, but the player
-  // damage zone is independently scoped to a much smaller fixed radius
-  // so the player isn't insta-killed by their own panic button. With a
-  // 120u kill radius and an 18u player danger zone, the player can
-  // safely call a nuke from anywhere outside the immediate beacon spot.
+  // anywhere near the epicenter. Half radius for damage falloff so
+  // the outer ring is survivable; near the core it's lethal.
   // Skipped if piloting (mech absorbs).
   {
     const pp = player && player.pos;
@@ -381,7 +279,7 @@ window.__stratagemFireNuke = function(pos, tint) {
       const dx = pp.x - pos.x;
       const dz = pp.z - pos.z;
       const d = Math.sqrt(dx * dx + dz * dz);
-      const dmgRadius = 18;       // fixed; decoupled from RADIUS
+      const dmgRadius = RADIUS * 0.85;
       if (d < dmgRadius) {
         const falloff = 1 - d / dmgRadius;
         const dmg = 220 * falloff;     // up to 220 at epicenter
@@ -401,55 +299,6 @@ window.__stratagemFireNuke = function(pos, tint) {
   setTimeout(() => hitBurst(epi, 0xff5520, 50), 140);
   setTimeout(() => hitBurst(epi, 0xff3cac, 40), 240);
   setTimeout(() => hitBurst(epi, 0xffffff, 30), 360);
-
-  // ---- 4 mushroom clouds clustered at the detonation site ----
-  // Per playtester request: "can we add 4 of the ufo Mushroom clouds
-  // all together at the place of detonation." Reuses the existing
-  // mushroomCloud module (already wired into spawners.js's update
-  // tick via updateMushroomClouds). Four offsets in a tight diamond
-  // around the epicenter give the visual mass of a thermonuclear
-  // detonation without overlapping into a single mega-cloud. Each
-  // cloud picks up the chapter tint so the cluster reads as one
-  // synchronized event.
-  {
-    const offs = [
-      [ -3.0,  0.0],
-      [  3.0,  0.0],
-      [  0.0, -3.0],
-      [  0.0,  3.0],
-    ];
-    for (const [dx, dz] of offs) {
-      try {
-        spawnMushroomCloud(
-          new THREE.Vector3(pos.x + dx, 0, pos.z + dz),
-          tint || 0xffaa00,
-        );
-      } catch (e) { console.warn('[nuke cloud]', e); }
-    }
-  }
-
-  // ---- Roach kill zone ----
-  // Per playtester request: "destroy any roaches that spawn from
-  // enemies shortly after." Roaches spawn from infector kills + boss
-  // patterns (see infector.js — they're enemies with type='roach').
-  // The instant nuke damage above kills enemies present AT detonation,
-  // but roaches spawning a fraction of a second later (e.g. from an
-  // infector that died this exact tick) wouldn't be in the array yet.
-  // The linger zone fixes this: for LINGER_DUR seconds we keep
-  // applying very high DPS in a generous radius around the beacon, so
-  // anything that spawns into the area dies immediately. Tracked as a
-  // module-level array; ticked from the existing animate loop below.
-  const LINGER_DUR    = 5.0;       // seconds
-  const LINGER_RADIUS = 30;        // generous so spawns at the rim still get cleansed
-  const LINGER_DPS    = 2000;      // high enough to one-shot any roach (~50hp)
-  _nukeLingerZones.push({
-    pos: pos.clone(),
-    radius: LINGER_RADIUS,
-    ttl: LINGER_DUR,
-    age: 0,
-    dps: LINGER_DPS,
-  });
-
   // Heavy camera shake.
   shake(3.0, 1.4);
   // Audio — thunderous low-end blast layered with rolling boom.
@@ -460,37 +309,6 @@ window.__stratagemFireNuke = function(pos, tint) {
   }
 };
 
-// Active nuke linger zones — one entry per detonation, stays for
-// LINGER_DUR seconds after spawn. _tickNukeLingerZones() below is
-// called once per frame from the main animate loop. Keeping this at
-// module scope means it survives across nuke calls and is naturally
-// drained by the per-frame tick.
-const _nukeLingerZones = [];
-function _tickNukeLingerZones(dt) {
-  for (let i = _nukeLingerZones.length - 1; i >= 0; i--) {
-    const z = _nukeLingerZones[i];
-    z.age += dt;
-    if (z.age >= z.ttl) {
-      _nukeLingerZones.splice(i, 1);
-      continue;
-    }
-    // Backwards-iterate enemies — killEnemy splices the array, so a
-    // forward loop would skip an enemy each kill. Same pattern used
-    // throughout the stratagem damage paths.
-    const r2 = z.radius * z.radius;
-    for (let j = enemies.length - 1; j >= 0; j--) {
-      const e = enemies[j];
-      if (!e || !e.pos || e.dying) continue;
-      const dx = e.pos.x - z.pos.x;
-      const dz = e.pos.z - z.pos.z;
-      if (dx * dx + dz * dz < r2) {
-        e.hp -= z.dps * dt;
-        if (e.hp <= 0) killEnemy(j);
-      }
-    }
-  }
-}
-
 // Mine field payload — delegate to mineField.js. The kind argument
 // chooses between 'explosion' / 'fire' / 'poison'; the catalog has
 // three separate stratagem codes that route here with different kinds.
@@ -498,13 +316,11 @@ window.__stratagemDeployMines = function(pos, tint, kind) {
   deployMineField(pos, tint, kind || 'explosion');
 };
 
-// Turret payload — delegate to stratagemTurret.js.
-// Bridge: stratagems.js calls this when a turret beacon detonates.
-// Per playtester redesign, turrets now deploy as a "pending" frame —
-// the player picks the variant (MG / FIRE / POISON / TESLA) via a
-// floating picker UI in stratagemTurret.js. No variant arg needed.
-window.__stratagemDeployTurret = function(pos, tint) {
-  spawnTurret(pos, tint);
+// Turret payload — delegate to stratagemTurret.js. The variant
+// argument chooses between 'mg' / 'tesla' / 'flame' / 'antitank',
+// driven by the in-menu 1/2/3/4 cycle key.
+window.__stratagemDeployTurret = function(pos, tint, variant) {
+  spawnTurret(pos, tint, variant || 'mg');
 };
 
 // No-artifact feedback toast.
@@ -512,30 +328,11 @@ window.__stratagemNoArtifact = function(stratagem) {
   if (UI && UI.toast) UI.toast('NO ' + stratagem.label + ' ARTIFACT', '#ff5520', 1800);
 };
 
-// Cooldown feedback toast — fired by stratagems.js when the player
-// tries to open the menu while the global call-in cooldown is ticking.
-// Per playtester request the cooldown is 30s; the seconds-remaining
-// reading lets the player time their next call rather than mashing
-// the button. Wrapped in try/catch on the stratagems side so a missing
-// hook degrades to silence rather than throwing.
-window.__stratagemCoolingDown = function(secsRemaining) {
-  if (UI && UI.toast) {
-    UI.toast('STRATAGEMS COOLING DOWN · ' + secsRemaining + 's', '#ff5520', 1400);
-  }
-};
-
 // Mech ejection — when the mech is destroyed, restore the player
 // avatar at the mech's last position. Called by mech.js _destroyMech.
 window.__mechEjected = function(mechPos) {
   player.pos.x = mechPos.x;
   player.pos.z = mechPos.z;
-  // Defense in depth — _destroyMech in mech.js already clears
-  // S.pilotingMech, but we re-clear here in case any other code path
-  // ever ejects the player without going through _destroyMech (e.g.
-  // a future "manual eject + delete mech" feature). player.js's
-  // visibility tick reads this flag every frame, so leaving it true
-  // would re-hide the avatar even though we just set visible=true.
-  S.pilotingMech = false;
   if (player.obj) player.obj.visible = true;
   if (UI && UI.toast) UI.toast('EJECTED', '#ff5520', 1500);
 };
@@ -900,133 +697,13 @@ function showIncomingCall() {
         font-family: 'Impact', 'Arial Black', sans-serif;
         color: #00ff66;
       }
-      /* SIMVOID title — replaces the previous "INITIATE PROTOCOL"
-         text. Per playtester: "Instead of Initiate Protocol on the
-         screen with begin can we put SIM VOID in a really cool
-         unforgettable style? Maybe the mouse hovers over it and it
-         becomes numbers."
-         
-         Composition mirrors the main title screen's #simvoid-title
-         (SIM bright + extruded, VOID darker + recessed, chromatic
-         aberration on the whole word) but scaled larger to fill the
-         pre-game splash. Each character is wrapped in a span so JS
-         can swap its content on hover for the decode-to-numbers
-         effect. The original letter is preserved in data-orig so we
-         can restore on hover-out. */
-      #initiate-protocol .simvoid-launch {
-        display: flex;
-        flex-direction: row;
-        align-items: baseline;
-        gap: 0.18em;
-        line-height: 0.92;
-        margin-bottom: 18px;
-        font-size: clamp(56px, 12vw, 160px);
-        letter-spacing: 4px;
-        cursor: default;        /* not clickable, just decorative */
-        position: relative;
-        /* Subtle red+cyan chromatic-aberration fringe via filter. */
-        filter:
-          drop-shadow(-1.5px 0 0 rgba(255, 60, 80, 0.45))
-          drop-shadow(1.5px 0 0 rgba(60, 220, 255, 0.40));
-        /* Slow gentle pulse — replaces the old ip-pulse on the two
-           lines, applied here at the whole-word level so SIM and
-           VOID breathe together. */
-        animation: simvoid-launch-pulse 2.4s ease-in-out infinite;
-        /* user-select: none so the rapid glyph swaps don't trigger
-           accidental text-selection while the user hovers. */
-        user-select: none;
-        -webkit-user-select: none;
+      #initiate-protocol .ip-title {
+        font-size: clamp(48px, 10vw, 120px);
+        letter-spacing: 8px;
+        text-shadow: 0 0 20px #00ff66, 0 0 40px rgba(0,255,102,0.5);
+        animation: ip-pulse 2s ease-in-out infinite;
+        margin-bottom: 16px;
       }
-      #initiate-protocol .simvoid-launch::after {
-        /* CRT scan-line overlay — same approach as the main-title
-           SIMVOID treatment. Multiplies subtle horizontal stripes
-           across the text. */
-        content: "";
-        position: absolute;
-        inset: -8px -8px;
-        background: repeating-linear-gradient(
-          0deg,
-          rgba(0, 0, 0, 0.20) 0px,
-          rgba(0, 0, 0, 0.20) 1px,
-          transparent 1px,
-          transparent 4px
-        );
-        pointer-events: none;
-        z-index: 5;
-        mix-blend-mode: multiply;
-      }
-      .simvoid-launch-half {
-        display: inline-flex;
-        flex-direction: row;
-        align-items: baseline;
-      }
-      .simvoid-launch-char {
-        display: inline-block;
-        position: relative;
-        /* Use a fixed-width box per char so glyph swaps don't reflow
-           the title (numbers/letters have different metric widths
-           in Impact; without min-width the title would jiggle as it
-           scrambles). */
-        min-width: 0.62em;
-        text-align: center;
-        transition: color 0.15s ease;
-      }
-      /* SIM half — bright synthetic green, 3D extruded. */
-      .simvoid-launch-sim .simvoid-launch-char {
-        color: #6dff95;
-        text-shadow:
-          1px 1px 0 #4adb6e,
-          2px 2px 0 #2bbb52,
-          3px 3px 0 #11993d,
-          4px 4px 0 #0a7a30,
-          5px 5px 0 #065d24,
-          6px 6px 0 #033f17,
-          8px 8px 0 #000,
-          0 0 14px rgba(110, 255, 160, 0.85),
-          0 0 32px rgba(0, 255, 102, 0.55);
-      }
-      /* VOID half — dark recessed, sits a hair lower. */
-      .simvoid-launch-void .simvoid-launch-char {
-        color: #11663a;
-        text-shadow:
-          1px 1px 0 #062b16,
-          2px 2px 0 #031808,
-          3px 3px 0 #000,
-          4px 4px 0 #1a8c4a,
-          5px 5px 0 #2bbb52,
-          -1px -1px 0 #001508,
-          0 0 8px rgba(0, 80, 30, 0.6),
-          0 0 24px rgba(0, 255, 102, 0.18);
-        transform: translateY(0.05em);
-      }
-      /* DECODING state — applied via JS to .simvoid-launch when the
-         user hovers. Letters get a brighter "scanning" treatment so
-         the decode effect reads as "the simulation is being pierced".
-         The actual text content swap is done in JS; the CSS just
-         retints. */
-      #initiate-protocol .simvoid-launch.decoding .simvoid-launch-char {
-        color: #ffffff;          /* hot-white during scramble */
-        text-shadow:
-          0 0 8px #6dff95,
-          0 0 18px #00ff66,
-          0 0 36px rgba(0, 255, 102, 0.7),
-          2px 2px 0 #000;
-      }
-      /* SETTLED state — after the scramble locks on its number, the
-         text is all-numeric. Slightly less hot than during-scramble
-         so the eye reads "this is the decoded value, holding". */
-      #initiate-protocol .simvoid-launch.decoded .simvoid-launch-char {
-        color: #b0ffcc;
-        text-shadow:
-          0 0 6px #00ff66,
-          0 0 16px rgba(0, 255, 102, 0.5),
-          2px 2px 0 #000;
-      }
-      @keyframes simvoid-launch-pulse {
-        0%, 100% { opacity: 1; }
-        50%      { opacity: 0.85; }
-      }
-
       #initiate-protocol .ip-sub {
         font-size: 14px;
         letter-spacing: 8px;
@@ -1052,21 +729,25 @@ function showIncomingCall() {
         box-shadow: 0 0 40px rgba(0,255,102,0.8);
         transform: scale(1.05);
       }
+      @keyframes ip-pulse {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.7; }
+      }
       /* Mobile — push the title block UP by switching from center
          flex alignment to a top-anchored layout. Without this, the
-         large pulsing title gets centered on the viewport and the
-         BEGIN button sits low on the screen. Per playtester: "On the
-         main screen before we BEGIN simulation can we move BEGIN
-         up?" */
+         large pulsing INITIATE PROTOCOL title gets centered on the
+         viewport and the BEGIN button sits low on the screen. Per
+         playtester: "On the main screen before we BEGIN simulation
+         can we move BEGIN up?" */
       @media (max-width: 900px), (pointer: coarse) {
         #initiate-protocol {
           justify-content: flex-start;
           padding-top: 12vh;
         }
-        #initiate-protocol .simvoid-launch {
-          font-size: clamp(40px, 14vw, 100px);
-          letter-spacing: 2px;
-          margin-bottom: 12px;
+        #initiate-protocol .ip-title {
+          font-size: clamp(36px, 12vw, 80px);
+          letter-spacing: 6px;
+          margin-bottom: 8px;
         }
         #initiate-protocol .ip-sub {
           font-size: 11px;
@@ -1080,150 +761,15 @@ function showIncomingCall() {
         }
       }
     </style>
-    <h1 class="simvoid-launch" id="simvoid-launch" aria-label="SIMVOID">
-      <span class="simvoid-launch-half simvoid-launch-sim" aria-hidden="true">
-        <span class="simvoid-launch-char" data-orig="S">S</span><span class="simvoid-launch-char" data-orig="I">I</span><span class="simvoid-launch-char" data-orig="M">M</span>
-      </span>
-      <span class="simvoid-launch-half simvoid-launch-void" aria-hidden="true">
-        <span class="simvoid-launch-char" data-orig="V">V</span><span class="simvoid-launch-char" data-orig="O">O</span><span class="simvoid-launch-char" data-orig="I">I</span><span class="simvoid-launch-char" data-orig="D">D</span>
-      </span>
-    </h1>
+    <div class="ip-title">INITIATE</div>
+    <div class="ip-title">PROTOCOL</div>
     <div class="ip-sub">:: AWAITING USER INPUT ::</div>
     <button class="ip-btn" id="ip-begin">&gt;&gt; BEGIN &lt;&lt;</button>
   `;
   document.body.appendChild(initOverlay);
 
-  // Hover-to-decode wiring on the SIMVOID title.
-  // Per playtester: "Maybe the mouse hovers over it and it becomes
-  // numbers." On mouseenter (or first touch on mobile): each letter
-  // rapid-scrambles through random matrix glyphs for ~500ms, then
-  // settles on a random digit (0-9). On mouseleave (or 1.5s after
-  // touch on mobile): scramble briefly back to the original letter.
-  // The whole effect reads as "you've pierced through the simulation
-  // and are seeing the raw data underneath SIM VOID".
-  //
-  // Implementation:
-  //   - Each character's original letter is stored in data-orig (set
-  //     in the markup above).
-  //   - SCRAMBLE_GLYPHS is a pool of matrix-style chars used during
-  //     the rapid swap.
-  //   - SETTLED_DIGITS is the pool we lock on after scramble.
-  //   - decodeStart() runs the scramble interval + settles each
-  //     letter to a random digit at staggered times.
-  //   - decodeEnd() runs the reverse — brief scramble, then restore
-  //     the original letter from data-orig.
-  // Cleanup: the interval handles are stored on the title node so
-  // they can be cancelled when the overlay is removed (BEGIN click).
-  const _simvoidTitle = document.getElementById('simvoid-launch');
-  if (_simvoidTitle) {
-    const SCRAMBLE_GLYPHS = '0123456789ABCDEF#@$%&*+=<>{}[]/\\|アイウエオカキクケコサシスセソタチツテト';
-    const SETTLED_DIGITS = '0123456789';
-
-    function _randGlyph(pool) {
-      return pool.charAt(Math.floor(Math.random() * pool.length));
-    }
-
-    function _clearTitleTimers() {
-      if (_simvoidTitle._scrambleTimers) {
-        for (const t of _simvoidTitle._scrambleTimers) clearTimeout(t);
-        _simvoidTitle._scrambleTimers = null;
-      }
-      if (_simvoidTitle._scrambleInterval) {
-        clearInterval(_simvoidTitle._scrambleInterval);
-        _simvoidTitle._scrambleInterval = null;
-      }
-    }
-
-    function _decodeStart() {
-      _clearTitleTimers();
-      const chars = _simvoidTitle.querySelectorAll('.simvoid-launch-char');
-      _simvoidTitle.classList.add('decoding');
-      _simvoidTitle.classList.remove('decoded');
-      // Rapid scramble — every 50ms, each letter swaps to a new
-      // random glyph from the broader pool. Runs for ~500ms before
-      // each letter individually locks to a digit (staggered so the
-      // word doesn't lock all at once).
-      _simvoidTitle._scrambleInterval = setInterval(() => {
-        for (const c of chars) {
-          if (!c._locked) c.textContent = _randGlyph(SCRAMBLE_GLYPHS);
-        }
-      }, 50);
-      // Stagger settle times — each letter locks at a slightly
-      // different moment so the lock cascades left-to-right, like
-      // a decryption progress bar.
-      _simvoidTitle._scrambleTimers = [];
-      chars.forEach((c, i) => {
-        c._locked = false;
-        const settleAt = 350 + i * 60;       // 350ms, 410ms, 470ms, ...
-        _simvoidTitle._scrambleTimers.push(setTimeout(() => {
-          c._locked = true;
-          c.textContent = _randGlyph(SETTLED_DIGITS);
-        }, settleAt));
-      });
-      // After all letters settle, switch the visual state from
-      // 'decoding' (hot white) to 'decoded' (calmer green) and stop
-      // the scramble interval so the locked digits stay still.
-      const finalSettle = 350 + chars.length * 60 + 50;
-      _simvoidTitle._scrambleTimers.push(setTimeout(() => {
-        if (_simvoidTitle._scrambleInterval) {
-          clearInterval(_simvoidTitle._scrambleInterval);
-          _simvoidTitle._scrambleInterval = null;
-        }
-        _simvoidTitle.classList.remove('decoding');
-        _simvoidTitle.classList.add('decoded');
-      }, finalSettle));
-    }
-
-    function _decodeEnd() {
-      _clearTitleTimers();
-      const chars = _simvoidTitle.querySelectorAll('.simvoid-launch-char');
-      _simvoidTitle.classList.remove('decoded');
-      _simvoidTitle.classList.add('decoding');
-      // Quick reverse scramble — letters spin briefly then snap
-      // back to their original character from data-orig.
-      _simvoidTitle._scrambleInterval = setInterval(() => {
-        for (const c of chars) {
-          if (!c._locked) c.textContent = _randGlyph(SCRAMBLE_GLYPHS);
-        }
-      }, 50);
-      _simvoidTitle._scrambleTimers = [];
-      chars.forEach((c, i) => {
-        c._locked = false;
-        const settleAt = 200 + i * 30;
-        _simvoidTitle._scrambleTimers.push(setTimeout(() => {
-          c._locked = true;
-          c.textContent = c.dataset.orig || '';
-        }, settleAt));
-      });
-      const finalSettle = 200 + chars.length * 30 + 50;
-      _simvoidTitle._scrambleTimers.push(setTimeout(() => {
-        if (_simvoidTitle._scrambleInterval) {
-          clearInterval(_simvoidTitle._scrambleInterval);
-          _simvoidTitle._scrambleInterval = null;
-        }
-        _simvoidTitle.classList.remove('decoding');
-      }, finalSettle));
-    }
-
-    _simvoidTitle.addEventListener('mouseenter', _decodeStart);
-    _simvoidTitle.addEventListener('mouseleave', _decodeEnd);
-    // Touch — on mobile/coarse pointers there's no hover. Tap to
-    // decode; auto-restore after 2 seconds. Prevents the title from
-    // staying scrambled forever if the user taps and walks away.
-    _simvoidTitle.addEventListener('touchstart', (ev) => {
-      ev.preventDefault();        // don't propagate to the page
-      _decodeStart();
-      setTimeout(_decodeEnd, 2000);
-    }, { passive: false });
-    // Stash the cleanup for the BEGIN click below.
-    _simvoidTitle._cleanup = _clearTitleTimers;
-  }
-
   const beginBtn = document.getElementById('ip-begin');
   beginBtn.addEventListener('click', () => {
-    // Cancel any in-flight scramble timers so they don't fire after
-    // the overlay is gone (would no-op safely but cleaner this way).
-    if (_simvoidTitle && _simvoidTitle._cleanup) _simvoidTitle._cleanup();
     // Critical: this click is the user gesture that unlocks audio for the session
     Audio.init();
     Audio.resume();
@@ -2105,17 +1651,6 @@ function _syncWeaponCursor() {
 _syncWeaponCursor();
 
 window.addEventListener('keydown', e => {
-  // Chapter 7 blueprint overlay — when "THEY'RE COMING... PREPARE"
-  // is up, ANY key dismisses it (and starts the 30s prep timer).
-  // Bail out before touching keys[] state so the dismissal doesn't
-  // also fire weapon-swap / movement / pause toggle.
-  try {
-    if (isOverlayUp()) {
-      dismissOverlay();
-      e.preventDefault();
-      return;
-    }
-  } catch (err) {}
   keys[e.key.toLowerCase()] = true;
   if (e.code === 'Space') { e.preventDefault(); tryDash(); }
   if (e.key === 'Escape' && S.running) {
@@ -2137,9 +1672,10 @@ window.addEventListener('keydown', e => {
         return;
       }
     }
-    // (legacy: chapter 7 used to lock the player into the lifedrainer.
-    // After the ch7 fresh-slate redesign, the player keeps their
-    // current weapon throughout — no special-casing here.)
+    // Chapter 7 locks the player into the lifedrainer — no other weapons
+    // are available, no swapping. The rainbow charge port replaces the
+    // revolver wheel UI and weapon-swap keys are inert.
+    if (S.chapter === PARADISE_FALLEN_CHAPTER_IDX) return;
     const map = { '1': 'pistol', '2': 'shotgun', '3': 'smg', '4': 'rocket', '5': 'raygun', '6': 'flamethrower' };
     const w = map[e.key];
     if (S.ownedWeapons.has(w)) {
@@ -2163,10 +1699,8 @@ window.addEventListener('keydown', e => {
     }
   }
   if (e.key.toLowerCase() === 'q') {
-    // (legacy: pickaxe toggle was disabled in chapter 7 because of
-    // the lifedrainer lock. After the fresh-slate redesign, pickaxe
-    // is fine in ch7 — there's just nothing to mine since the chapter
-    // has no mining waves.)
+    // Pickaxe toggle disabled in chapter 7 — only lifedrainer.
+    if (S.chapter === PARADISE_FALLEN_CHAPTER_IDX) return;
     cancelReload();
     if (S.currentWeapon === 'pickaxe') {
       S.currentWeapon = S.previousCombatWeapon || 'pistol';
@@ -2304,10 +1838,11 @@ document.addEventListener('visibilitychange', () => {
 // custom event when the user taps (or clicks) a weapon slot. Mirrors
 // the keyboard 1-6 path so wheel taps and number-key presses run the
 // exact same weapon-switch sequence (state update, gun recolor,
-// cursor sync, toast). Pickaxe state is respected by the
-// `S.ownedWeapons.has(w)` check.
+// cursor sync, toast). Chapter-7 lifedrainer-only mode and pickaxe
+// state are respected by the same guards as the key handler.
 window.addEventListener('mw:select-weapon', (e) => {
   const w = e.detail;
+  if (S.chapter === PARADISE_FALLEN_CHAPTER_IDX) return;
   if (!w || !S.ownedWeapons.has(w)) return;
   S.currentWeapon = w;
   S.previousCombatWeapon = w;
@@ -2345,16 +1880,6 @@ window.addEventListener('mousemove', e => {
   if (hit) { mouse.worldX = hit.x; mouse.worldZ = hit.z; }
 });
 window.addEventListener('mousedown', e => {
-  // Chapter 7 blueprint overlay — clicking anywhere also dismisses
-  // (covers the case where the player tries to fire instead of
-  // pressing a key).
-  try {
-    if (isOverlayUp()) {
-      dismissOverlay();
-      e.preventDefault();
-      return;
-    }
-  } catch (err) {}
   if (e.button === 0) { mouse.down = true; Audio.resume(); }
   if (e.button === 2) {
     // Right mouse button — open stratagem menu (Helldivers-style).
@@ -2655,14 +2180,6 @@ initGamepad({
 
 // ---- GAME LIFECYCLE ----
 function startGame() {
-  // Make sure ENDLESS GLYPHS isn't still active from a previous run.
-  // The endless mode owns a locker mesh + tutorial-tile floor + own
-  // wave runner; if its flag stays set when startGame() runs, the
-  // endless tick continues on top of the chapter run, the locker
-  // visibly appears mid-arena, and the tutorial-tile floor doesn't
-  // get restored. Per playtester: "when I select main game attack
-  // the AI it plays endless glyphs on top of main game."
-  _exitEndlessIfActive();
   // Make sure the phone ring + C-drone aren't still playing if we got here
   // via the incoming-call accept path (or any other unusual entry).
   Audio.stopPhoneRing && Audio.stopPhoneRing();
@@ -3018,9 +2535,6 @@ function startGame() {
   resetWaves();
   clearBullets();
   clearRockets();
-  // Clear any in-flight death animations from a previous run so the
-  // new run doesn't start with shriveling corpses lingering.
-  _clearDyingEnemies();
   // Clear any stray grenades from a previous run and give the player a
   // fresh 3-pack on game start. refillGrenades() also syncs the HUD slot.
   for (const g of _grenades) scene.remove(g);
@@ -3123,11 +2637,6 @@ function startGame() {
 // systems boot identically.
 // ---------------------------------------------------------------------
 function startTutorial() {
-  // Make sure ENDLESS GLYPHS isn't still active. Without this, the
-  // endless locker mesh stays in the scene and a "glyphstone" appears
-  // in the tutorial. Per playtester: "When I select the tutorial a
-  // glyphstone appears and it should not be there."
-  _exitEndlessIfActive();
   Audio.stopPhoneRing && Audio.stopPhoneRing();
   Audio.stopCDrone && Audio.stopCDrone();
   // Stop the death-screen song (Beyond.mp3) if a prior run's SIGNAL
@@ -3215,7 +2724,6 @@ function startTutorial() {
   resetWaves();
   clearBullets();
   clearRockets();
-  _clearDyingEnemies();
   for (const g of _grenades) scene.remove(g);
   _grenades.length = 0;
   refillGrenades();
@@ -3421,12 +2929,6 @@ function _grantTutorialArmoryXP() {
 }
 
 function _showTutorialCompleteModal() {
-  // Unlock the soft tutorial gate — reaching this modal means the
-  // player finished wave 11 of the tutorial. Sets the device-wide
-  // localStorage flag and live-removes .locked from the title's
-  // ATTACK THE AI card (so when the modal closes and the title
-  // re-appears, the card is already enabled).
-  try { _markTutorialCompleted(); } catch (e) { console.warn('[tutorial-gate] mark', e); }
   if (!_tutCompleteModal) {
     const m = document.createElement('div');
     m.id = 'tutorial-complete-modal';
@@ -3501,10 +3003,6 @@ function _showTutorialCompleteModal() {
       document.getElementById('gameover').classList.add('hidden');
       const _t = document.getElementById('title');
       if (_t) _t.classList.remove('hidden');
-      // The tutorial-complete modal already called _markTutorialCompleted
-      // above, but explicitly re-apply the gate here so the visual
-      // unlock is guaranteed when the player lands back on the title.
-      _applyTutorialGate();
     });
     _tutCompleteModal = m;
   }
@@ -3613,17 +3111,7 @@ function gameOver() {
   // title and runs the tutorial (startTutorial also stops it).
   // Audio.startDeathMusic also stops the chapter playlist and the
   // tutorial loop on entry so the death track plays alone.
-  //
-  // EXCEPTION — per playtester: "If the player dies [in endless
-  // glyphs] can we use CDrone?" Endless death uses the same drone
-  // that plays on the title screen. Subtler than Beyond.mp3, fits
-  // the procedural / cold mode aesthetic.
-  if (S.endlessGlyphs) {
-    try { Audio.stopMusic(); } catch (_) {}
-    try { Audio.startCDrone && Audio.startCDrone(); } catch (_) {}
-  } else {
-    try { Audio.startDeathMusic && Audio.startDeathMusic(); } catch (_) {}
-  }
+  try { Audio.startDeathMusic && Audio.startDeathMusic(); } catch (_) {}
   clearObjectiveArrows();
   Save.onGameOver({
     score: S.score, wave: S.wave, chapter: S.chapter, rescuedIds: S.rescuedIds,
@@ -3703,14 +3191,6 @@ function _exitTutorialIfActive() {
   try { clearAllMines(); } catch (e) {}
   try { clearStratagemTurrets(); } catch (e) {}
   try { disarmSecretListener(); } catch (e) {}
-  // 3D matrix rain — kill any in-flight transition cascade so a
-  // restart-mid-transition doesn't leave sprites floating in the
-  // new level.
-  try { clearMatrixRain3D(); } catch (e) {}
-  // Chapter 7 blueprint hunt — tear down any active blueprint /
-  // glyphstone meshes + clear the "THEY'RE COMING" overlay if it's
-  // up. Idempotent — no-op when no blueprint is active.
-  try { clearBlueprints(); } catch (e) {}
   // Re-show the player avatar in case the player was piloting a
   // mech when they bailed.
   if (player && player.obj) player.obj.visible = true;
@@ -3730,168 +3210,6 @@ function _exitTutorialIfActive() {
   }
   S.tutorialRequestOverdrive = false;
 }
-
-// Endless Glyphs cleanup mirror of _exitTutorialIfActive. Called by
-// every other mode-entry point (startGame, startTutorial) to make
-// SURE the endless mode is fully torn down before another mode
-// starts. Without this, S.endlessGlyphs stays true after a player
-// quits the mode, and the endless tick keeps running on top of the
-// next selected mode — the symptom is "I selected ATTACK THE AI but
-// the locker keeps appearing" or "tutorial has a glyphstone in it."
-// exitEndlessGlyphs() is itself idempotent (no-op when not active).
-function _exitEndlessIfActive() {
-  if (!S.endlessGlyphs) return;
-  try { exitEndlessGlyphs(); } catch (e) { console.warn('[glyphs] exit', e); }
-}
-
-// =====================================================================
-// TITLE-SCREEN AMBIENT AUDIO
-// =====================================================================
-// Per playtester: "When a player selects quit or return to main menu
-// from tutorial, the main game, or endless glyphs we need to play
-// the CDrone music on loop until they choose a game mode of course."
-//
-// CDrone is a sustained low drone — fits the title screen's
-// "AWAITING USER INPUT" mood. Starting a mode (startGame /
-// startTutorial / startEndlessGlyphs) stops it. The death-music
-// flow on game-over plays Beyond.mp3 first; the CDrone only kicks
-// in once the player clicks MAIN MENU and returns to the title.
-function _startTitleAmbient() {
-  try {
-    Audio.stopMusic();
-    Audio.stopDeathMusic && Audio.stopDeathMusic();
-    Audio.stopPhoneRing && Audio.stopPhoneRing();
-    Audio.startCDrone();
-  } catch (e) {}
-}
-function _stopTitleAmbient() {
-  try { Audio.stopCDrone && Audio.stopCDrone(); } catch (e) {}
-}
-
-// =====================================================================
-// ENDLESS GLYPHS — CLEAN LOBBY ARENA
-// =====================================================================
-// Per playtester: "for endless glyphs we need to clear all enemies fog
-// waveprops / hives shields etc. It needs to look like the tutorial
-// but with no obstacles. The player navigates to a locker selects a
-// weapon and then boom."
-//
-// Mirrors the cleanup section of startTutorial() — clears every
-// chapter-prop type, hazards, pickups, weather effects, etc — but
-// does NOT touch tutorialMode flags. Called by endlessGlyphs.js
-// when entering the lobby; intentionally NEW code that doesn't
-// modify the existing tutorial or main-game setup paths.
-//
-// Wraps every call in try/catch because some of these clears assume
-// the chapter system has been initialized (matrix rain, blueprints,
-// etc.); if endless glyphs is launched directly from a fresh page
-// load, several of those modules may be in an empty state and would
-// throw on a cold call.
-function _setupEndlessCleanArena() {
-  // -- Active wave systems --
-  try { resetWaves(); } catch (e) {}
-  try { clearAllEnemies(); } catch (e) {}
-  // Wipe any in-flight death animations from a previous run so
-  // the lobby doesn't have shriveling corpses lingering.
-  try { _clearDyingEnemies(); } catch (e) {}
-  // Defensive: zero the per-wave activity flags. resetGame() clears
-  // most of them, but resetWaves() may set a few back as a side
-  // effect of clearing intermission state.
-  S.waveActive = false;
-  S.miningActive = false;
-  S.spawnerWaveActive = false;
-  S.bonusWaveActive = false;
-  S.hyperdriveActive = false;
-  S.bossRef = null;
-  S.objectiveZone = null;
-
-  // -- Chapter-scoped dormant props (each chapter spawns these on
-  //    its first wave; we kill them all so the lobby is empty) --
-  try { clearCannon(); } catch (e) {}
-  try { clearQueenHive(); } catch (e) {}
-  try { clearCrusher(); } catch (e) {}
-  try { clearChargeCubes(); } catch (e) {}
-  try { clearEscortTruck(); } catch (e) {}
-  try { clearServerWarehouse(); } catch (e) {}
-  try { clearSafetyPod(); } catch (e) {}
-  try { clearCockroachBoss(); } catch (e) {}
-  try { clearAllPortals(); } catch (e) {}                  // hives/spawners + their shields
-  try { clearBlueprints(); } catch (e) {}                  // ch7 blueprint/glyphstone
-
-  // -- Per-wave scenery --
-  try { clearAllBlocks(); } catch (e) {}                   // mining blocks
-  try { clearAllEggs(); } catch (e) {}
-  try { clearGooSplats(); } catch (e) {}
-  try { clearHazards(); } catch (e) {}                     // weather / floor hazards
-  try { clearAllPickups(); } catch (e) {}                  // potions / grenades / loot
-  try { clearAllPowerups(); } catch (e) {}
-  try { clearInfectors(); } catch (e) {}                   // ch7 parasites
-  try { clearAllPixlPals(); } catch (e) {}
-  try { clearAllFlingers(); } catch (e) {}
-
-  // -- Special-event entities (tutorial / chapter-specific minis) --
-  try { despawnGalagaShip(); } catch (e) {}
-  try { despawnPacman(); } catch (e) {}
-  try { despawnPellets(); } catch (e) {}
-
-  // -- Player-deployed stuff (carries over from a previous run) --
-  try { resetStratagems(); } catch (e) {}                  // beacons + active mech
-  try { clearAllMines(); } catch (e) {}
-  try { clearStratagemTurrets(); } catch (e) {}
-
-  // -- Bullets + projectiles --
-  try { clearBullets(); } catch (e) {}
-  try { clearRockets(); } catch (e) {}
-  try { hideMissileArrow(); } catch (e) {}
-
-  // -- Weather + atmosphere — flat, calm look like the tutorial --
-  // Per playtester: "It needs to look like the tutorial but with no
-  // obstacles." Tutorial disposes rain + disables fog + boosts
-  // lighting — same here.
-  try { disposeRain(); } catch (e) {}
-  try { disableShadows(renderer); } catch (e) {}
-  try { disableFog(); } catch (e) {}
-  try { setFogVisible(false); } catch (e) {}
-  try { boostTutorialLighting(); } catch (e) {}
-  // Chapter 7 has its own dim-purple atmosphere override; force it
-  // off in case the player came from a ch7 run.
-  try { exitChapter7Atmosphere(); } catch (e) {}
-  S.chapter7Atmosphere = false;
-
-  // -- 3D matrix rain (chapter intro effect) --
-  try { clearMatrixRain3D(); } catch (e) {}
-
-  // -- Hide HUD chrome that doesn't apply to endless mode --
-  // chapter / wave / kills counter is meaningless in lobby; the
-  // wave runner (Phase 3b) will re-show its own indicator.
-  const _hudTop = document.getElementById('hud-top');
-  if (_hudTop) _hudTop.style.display = 'none';
-  // Hero hexagons are chapter-themed; hide them.
-  try { setHeroHexagonsVisible(false); } catch (e) {}
-  // Endless Glyphs procedural walls — defensive clear in case a
-  // previous run left some in the scene. Idempotent when no walls
-  // are active.
-  try { clearEndlessWalls(); } catch (e) {}
-}
-// Expose so endlessGlyphs.js can call without touching the rest of
-// main.js's surface area. NEW symbol — doesn't change any existing
-// tutorial or main-game code path.
-window.__setupEndlessCleanArena = _setupEndlessCleanArena;
-
-// Inverse of _setupEndlessCleanArena — restores fog / shadows /
-// lighting / hero hexagons so that the NEXT mode the player picks
-// (tutorial, main game, restart) doesn't inherit the lobby's flat
-// no-fog, no-shadow look. Called by endlessGlyphs.exitEndlessGlyphs()
-// via window.__teardownEndlessCleanArena.
-function _teardownEndlessCleanArena() {
-  try { restoreShadows(renderer); } catch (e) {}
-  try { restoreFog(); } catch (e) {}
-  try { restoreTutorialLighting(); } catch (e) {}
-  try { setFogVisible(true); } catch (e) {}
-  // Don't force hero hexagons back on here — the next mode's
-  // setup (startGame, startTutorial) will manage their visibility.
-}
-window.__teardownEndlessCleanArena = _teardownEndlessCleanArena;
 
 // Tutorial-only — highlights the rainbow grid cell the player is
 // CURRENTLY STANDING ON. Two layers:
@@ -4051,306 +3369,23 @@ function _updateTutorialFloorGlow(dt) {
   if (_tutMeebitLight) _tutMeebitLight.color.lerp(_tutCellTargetColor, 0.25);
 }
 
-// =====================================================================
-// SOFT TUTORIAL GATE
-// =====================================================================
-// First-time visitors on a device must complete the tutorial before they
-// can launch ATTACK THE AI. Returning players (anyone with the unlock
-// flag set, OR any prior armory XP, OR any recorded chapter/wave
-// progress) bypass the gate. Per playtester request:
-// "We want the tutorial always accessible and visible, but I think we
-//  lock game for first time ever users. Let's do soft gate so if they
-//  return on the same device they don't have to do the tutorial to
-//  unlock main game."
-//
-// The lock is purely device-local — one localStorage key. No
-// per-username storage; if a player switches usernames they don't
-// have to re-do the tutorial. The TUTORIAL card itself is always
-// available (the gate only applies to the ATTACK THE AI card).
-const _TUTORIAL_GATE_KEY = 'mbs_tutorial_completed_v1';
-function _hasCompletedTutorial() {
-  try {
-    if (localStorage.getItem(_TUTORIAL_GATE_KEY) === '1') return true;
-    // Permissive fallbacks — if the player has ANY prior progress
-    // markers on this device (from before this gate existed, or
-    // because they played the game directly via a dev/test path),
-    // they count as a returning player. Any of:
-    //   - armory XP > 0  (earned on any prior run)
-    //   - highestWave > 1 (they got past wave 1 on something)
-    //   - highestChapter > 0
-    const p = (Save && Save.load) ? Save.load() : null;
-    if (p) {
-      if ((p.armory && (p.armory.xp || 0) > 0)) return true;
-      if ((p.highestWave || 0) > 1) return true;
-      if ((p.highestChapter || 0) > 0) return true;
-    }
-  } catch (e) { /* localStorage disabled — fail open, don't lock */ return true; }
-  return false;
-}
-function _markTutorialCompleted() {
-  try { localStorage.setItem(_TUTORIAL_GATE_KEY, '1'); } catch (e) {}
-  // Live-unlock the title card if it's currently in the DOM, so a
-  // player who finishes the tutorial and returns to the title sees
-  // the ATTACK THE AI card unlocked without a page refresh.
-  const card = document.getElementById('mode-card-game');
-  if (card) card.classList.remove('locked');
-}
-// Apply the gate to the title card. Call this every time the title
-// screen is shown so a state change (e.g. localStorage cleared in
-// devtools, or another tab completed the tutorial) is reflected.
-function _applyTutorialGate() {
-  const card = document.getElementById('mode-card-game');
-  if (!card) return;
-  if (_hasCompletedTutorial()) {
-    card.classList.remove('locked');
-  } else {
-    card.classList.add('locked');
-    // Default-select the TUTORIAL card so first-time players see the
-    // intended path highlighted. The index.html click forwarder
-    // selects mode-card-game on init; we override that here on
-    // first-visit. Re-running select() requires accessing the
-    // index.html IIFE's closure, which we don't have — instead we
-    // simulate it: remove .selected from the game card and add it
-    // to the tutorial card. The DESCRIPTIONS panel update is small
-    // collateral damage (it'll still show the game-card description
-    // until the player hovers), but the visual highlight reads
-    // correctly.
-    const tutorialCard = document.getElementById('mode-card-tutorial');
-    if (tutorialCard) {
-      card.classList.remove('selected');
-      tutorialCard.classList.add('selected');
-    }
-  }
-}
-// Run once on module load — the title screen exists in the DOM at
-// page load time, even though it might be visually hidden behind the
-// boot/loading overlay.
-_applyTutorialGate();
-// Expose for re-application from any other title-show site (the
-// title is shown from several code paths — game over → main menu,
-// tutorial complete → return, etc.). Cheap to call repeatedly.
-window.__applyTutorialGate = _applyTutorialGate;
-
-document.getElementById('start-btn').addEventListener('click', (e) => {
-  // SOFT GATE — block the launch if the player hasn't yet completed
-  // the tutorial on this device. Don't show an alert(); instead flash
-  // the locked card so the visual gating mechanism is reinforced.
-  if (!_hasCompletedTutorial()) {
-    e.stopImmediatePropagation();
-    const card = document.getElementById('mode-card-game');
-    if (card) {
-      card.classList.add('hint-flash');
-      // CSS animation is 0.6s; remove the class after so the next
-      // click can re-trigger it. Safe even if the player rage-clicks
-      // — the class is idempotent.
-      setTimeout(() => card.classList.remove('hint-flash'), 700);
-    }
-    // Audio cue so the gate is felt, not just seen. Audio.damage()
-    // is a descending square-wave tone — reads as "denied / blocked"
-    // in this UI context. Wrapped in try/catch in case Audio isn't
-    // initialized yet (player clicked before init() fired).
-    try { Audio.damage && Audio.damage(); } catch (_) {}
-    return;
-  }
+document.getElementById('start-btn').addEventListener('click', () => {
   // If we somehow got here from a tutorial run, make sure the rainbow
   // floor + tutorial state are gone before the real game starts.
   _exitTutorialIfActive();
   Audio.init();
   startGame();
 });
-// Bridge for the title-screen player-count picker modal in
-// index.html. Wraps startEndlessGlyphs so the modal can fire it
-// without holding a direct module reference.
-window.__startEndlessGlyphs = function(playerCount) {
-  startEndlessGlyphs(playerCount || 1);
-};
-// Bridge to exit the mode (used by run-end / quit flows).
-window.__exitEndlessGlyphs = function() {
-  exitEndlessGlyphs();
-};
-
-// Bridge for the endless-glyphs locker UI to equip a weapon. The
-// locker UI lives in endlessGlyphs.js (an HTML panel that pops up
-// when the player walks within radius of the locker mesh). When a
-// weapon tile is clicked, the locker calls this bridge to actually
-// swap the active weapon — same operations the in-run mech-exit /
-// tutorial-pickup flows use, but accessible from outside main.js
-// without exporting recolorGun + S directly.
-window.__equipWeapon = function(weaponId) {
-  if (!weaponId || !WEAPONS[weaponId]) return false;
-  S.currentWeapon = weaponId;
-  S.previousCombatWeapon = weaponId;
-  try { recolorGun(WEAPONS[weaponId].color); } catch (e) {}
-  try { UI.toast(WEAPONS[weaponId].name + ' EQUIPPED', '#' + WEAPONS[weaponId].color.toString(16).padStart(6, '0'), 1200); } catch (e) {}
-  try { Audio.pickup && Audio.pickup(); } catch (e) {}
-  // Re-sync HUD weapon cursor + reticle. The existing _syncWeaponCursor
-  // helper handles both — calling it directly bypasses the keyboard
-  // shortcut path but produces the same visual update.
-  try { _syncWeaponCursor && _syncWeaponCursor(); } catch (e) {}
-  return true;
-};
-
 document.getElementById('tutorial-btn').addEventListener('click', () => {
   Audio.init();
   startTutorial();
 });
-
-// =====================================================================
-// ENDLESS GLYPHS GATE
-// =====================================================================
-// Mirrors the tutorial-gate pattern. The ENDLESS GLYPHS card on the
-// title screen is gated behind completion of ATTACK THE AI (= chapter
-// 6 wave 5). Per playtester: "This game mode unlocks when the player
-// completes the main game."
-//
-// Like the tutorial gate, this is purely device-local — one
-// localStorage key. No per-username tracking. Permissive fallback:
-// if the player has any progress past chapter 6, treat as completed.
-const _ATTACK_GATE_KEY = 'mbs_attack_completed_v1';
-function _hasCompletedAttack() {
-  try {
-    if (localStorage.getItem(_ATTACK_GATE_KEY) === '1') return true;
-    // Permissive fallback — if save data shows they cleared chapter 6,
-    // count them as having completed even if the gate flag wasn't
-    // set (e.g. they completed it before this gate existed).
-    const p = (Save && Save.load) ? Save.load() : null;
-    if (p && (p.highestChapter || 0) >= 6 && (p.highestWave || 0) >= 5) return true;
-  } catch (e) { /* localStorage disabled — fail open, don't lock */ return true; }
-  return false;
-}
-function _markAttackCompleted() {
-  try { localStorage.setItem(_ATTACK_GATE_KEY, '1'); } catch (e) {}
-  // Live-unlock the glyphs card if it's currently in the DOM, so a
-  // player who finishes ch6 and returns to the title sees the card
-  // unlocked without a page refresh.
-  const card = document.getElementById('mode-card-glyphs');
-  if (card) card.classList.remove('locked');
-}
-function _applyGlyphsGate() {
-  const card = document.getElementById('mode-card-glyphs');
-  if (!card) return;
-  if (_hasCompletedAttack()) {
-    card.classList.remove('locked');
-  } else {
-    card.classList.add('locked');
-  }
-}
-_applyGlyphsGate();
-window.__applyGlyphsGate = _applyGlyphsGate;
-// Expose markAttackCompleted globally so the chapter-end pipeline
-// (waves.js → onWaveEnd) can fire it when the player beats ch6 wave 5.
-window.__markAttackCompleted = _markAttackCompleted;
-
-// =====================================================================
-// ENDLESS GLYPHS CTA — opens the player-count picker modal.
-// =====================================================================
-// The CTA itself is hidden in DOM (display:none); the title-card click
-// forwarder simulates a click on it when the player picks the ENDLESS
-// GLYPHS card. We use the same soft-gate pattern as the start-btn.
-document.getElementById('glyphs-btn').addEventListener('click', (e) => {
-  if (!_hasCompletedAttack()) {
-    e.stopImmediatePropagation();
-    const card = document.getElementById('mode-card-glyphs');
-    if (card) {
-      card.classList.add('hint-flash');
-      setTimeout(() => card.classList.remove('hint-flash'), 700);
-    }
-    try { Audio.damage && Audio.damage(); } catch (_) {}
-    return;
-  }
-  // Audio.init can throw on rare browser configurations; never let
-  // that block the modal from opening — the modal is the entire
-  // entry-point UX. Wrap defensively. Per playtester: "Endless
-  // glyphs is not selectable" — most likely a downstream call
-  // throwing synchronously and short-circuiting the modal display.
-  try { Audio.init(); } catch (_) {}
-  // Show the player-count picker. Per playtester: "Hot-seat /
-  // matchmaking room UI but actually solo for now — the UI shows the
-  // 1-3 players choice, but only solo actually works." Modal markup
-  // is in index.html with 2P/3P pre-disabled.
-  const modal = document.getElementById('glyphs-player-modal');
-  if (modal) modal.style.display = 'flex';
-});
-
-// Modal button wiring — SOLO starts a glyphs run; 2P/3P are disabled
-// (the disabled attribute prevents the click event firing on most
-// browsers, but we add a defensive guard anyway). CANCEL closes.
-(function _wireGlyphsModal() {
-  const modal = document.getElementById('glyphs-player-modal');
-  if (!modal) return;
-  const cancel = document.getElementById('glyphs-modal-cancel');
-  if (cancel) {
-    cancel.addEventListener('click', () => { modal.style.display = 'none'; });
-  }
-  const buttons = modal.querySelectorAll('.glyphs-pcount-btn');
-  buttons.forEach(btn => {
-    btn.addEventListener('click', () => {
-      if (btn.disabled) return;          // belt-and-suspenders against 2P/3P
-      const count = parseInt(btn.dataset.count || '1', 10);
-      modal.style.display = 'none';
-      // TODO (Phase 3): wire to startEndlessGlyphs(count). For now,
-      // the run-start function doesn't exist yet — log and return so
-      // this turn's UX still works for testing the entry flow.
-      if (typeof window.__startEndlessGlyphs === 'function') {
-        window.__startEndlessGlyphs(count);
-      } else {
-        console.log('[glyphs] start placeholder — squad size:', count);
-      }
-    });
-    // Hover affordance for the enabled SOLO button only.
-    if (!btn.disabled) {
-      btn.addEventListener('mouseenter', () => {
-        btn.style.background = 'rgba(40, 80, 140, 0.9)';
-        btn.style.borderColor = '#88c0ff';
-      });
-      btn.addEventListener('mouseleave', () => {
-        btn.style.background = 'rgba(20, 30, 60, 0.8)';
-        btn.style.borderColor = '#4aa8ff';
-      });
-    }
-  });
-})();
 document.getElementById('restart-btn').addEventListener('click', () => {
   // Restart always returns to the real game flow — drop the tutorial
   // floor + state if it's currently up.
   _exitTutorialIfActive();
   startGame();
 });
-
-// MAIN MENU button on the game over screen. Returns the player to
-// the title screen so they can access the tutorial, connect their
-// wallet, pick a different mode, etc., without being forced to
-// restart-into-game first. The tear-down sequence mirrors the
-// PauseMenu onQuit flow so we re-use the same proven path: stop
-// the music, drop tutorial floor if active, hide the in-game HUD,
-// hide the gameover overlay, show the title.
-//
-// One subtle thing: the player is already dead here (not paused),
-// so we don't need a confirmation dialog like onQuit uses for an
-// in-progress run. Going to the menu IS the polite "exit run" path.
-{
-  const mainMenuBtn = document.getElementById('gameover-mainmenu-btn');
-  if (mainMenuBtn) {
-    mainMenuBtn.addEventListener('click', () => {
-      S.paused = false;
-      S.running = false;
-      Audio.stopMusic();
-      _exitTutorialIfActive();
-      _exitEndlessIfActive();
-      // Hide all the in-game HUD bits (joystick, fire button, score,
-      // pause button, etc.). The .hidden-ui class is applied to all
-      // such elements so a single querySelectorAll handles the lot.
-      document.querySelectorAll('.hidden-ui').forEach(el => el.style.display = 'none');
-      document.getElementById('gameover').classList.add('hidden');
-      document.getElementById('title').classList.remove('hidden');
-      // Re-apply the soft tutorial gate so a player who just finished
-      // the tutorial sees the ATTACK THE AI card unlocked.
-      _applyTutorialGate();
-      _applyGlyphsGate();
-      _startTitleAmbient();
-    });
-  }
-}
 
 // ---- ARMORY UI ----
 // Wires the title-screen ⚙ ARMORY button + close handlers. The
@@ -4371,16 +3406,9 @@ PauseMenu.setHandlers({
     // If quitting a tutorial run, drop the rainbow floor so the title
     // screen + any subsequent normal run look right.
     _exitTutorialIfActive();
-    // Same for endless glyphs — drop the locker + tutorial-tile floor.
-    _exitEndlessIfActive();
     document.querySelectorAll('.hidden-ui').forEach(el => el.style.display = 'none');
     document.getElementById('gameover').classList.add('hidden');
     document.getElementById('title').classList.remove('hidden');
-    // Re-apply soft tutorial gate so the title's ATTACK THE AI card
-    // reflects current completion state on every return-to-title.
-    _applyTutorialGate();
-    _applyGlyphsGate();
-    _startTitleAmbient();
   },
 });
 
@@ -4474,32 +3502,61 @@ initFlingerHUD();
 // cleansing all infectors. See triggerSuperNuke in infector.js.
 // --------------------------------------------------------------------------
 function _syncSuperNukeHUD() {
-  // Super nuke mechanic was removed in the chapter 7 fresh-slate
-  // redesign. Stratagems replaced it (granted on chapter-7 entry).
-  // Function preserved as a stub so existing call sites (window
-  // hooks, _maybeGrantSuperNuke) don't break — it just keeps the
-  // indicator hidden. The element itself is never built unless this
-  // function runs first, so the simplest implementation is just to
-  // hide-if-present and return.
-  const el = document.getElementById('super-nuke-indicator');
-  if (el) el.style.display = 'none';
+  let el = document.getElementById('super-nuke-indicator');
+  const charges = S.superNukeCharges || 0;
+  const inCh7 = S.chapter === PARADISE_FALLEN_CHAPTER_IDX;
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'super-nuke-indicator';
+    el.style.cssText = [
+      'position:fixed',
+      'top:160px',
+      'right:16px',
+      'z-index:15',
+      'padding:8px 12px',
+      'border:2px solid #ffffff',
+      'border-radius:6px',
+      'background:rgba(0,0,0,0.8)',
+      'color:#ffffff',
+      "font-family:'Impact',monospace",
+      'font-size:14px',
+      'letter-spacing:2px',
+      'box-shadow:0 0 14px rgba(255,255,255,0.5)',
+      'pointer-events:none',
+      'user-select:none',
+      'transition:opacity 0.2s',
+    ].join(';');
+    document.body.appendChild(el);
+  }
+  if (!inCh7) {
+    el.style.display = 'none';
+    return;
+  }
+  el.style.display = '';
+  if (charges <= 0) {
+    el.style.opacity = '0.35';
+    el.innerHTML = 'SUPER NUKE [N] · <b>0</b>';
+  } else {
+    el.style.opacity = '1';
+    el.innerHTML = 'SUPER NUKE [N] · <b>' + charges + '</b>';
+  }
 }
 
 // Grant a super nuke on every chapter-7 wave transition. Hooked into the
 // same _lastSeenWave delta tracking in animate().
 let _ch7LastGrantedWave = 0;
 function _maybeGrantSuperNuke(waveNum) {
-  // DISABLED — chapter 7 redesign replaced the super-nuke mechanic
-  // with stratagems. The chapter-7 entry block in main.js now grants
-  // a starter loadout of stratagem artifacts (mech, mineField,
-  // stratagemTurret, thermonuclear) on chapter entry. Per playtester
-  // direction: "We're going to replace super nuke by activating
-  // strategems."
-  //
-  // Function kept as a stub so call sites elsewhere (the wave-change
-  // detector at line 4293, window.__maybeGrantSuperNuke) don't error
-  // — they just no-op.
-  return;
+  if (S.chapter !== PARADISE_FALLEN_CHAPTER_IDX) return;
+  if (waveNum <= _ch7LastGrantedWave) return;
+  _ch7LastGrantedWave = waveNum;
+  S.superNukeCharges = (S.superNukeCharges || 0) + 1;
+  const ch7Wave = ((waveNum - 1) % 3) + 1;
+  if (ch7Wave === 3) {
+    // Finale — grant an extra one so the player can double-cleanse.
+    S.superNukeCharges += 1;
+  }
+  _syncSuperNukeHUD();
+  UI.toast('SUPER NUKE READY [N]', '#ffffff', 2500);
 }
 
 // Expose to window so waves.js (or anything else that detects chapter
@@ -4738,34 +3795,9 @@ function animate() {
   // controller is plugged in.
   updateGamepad(dt);
 
-  // Chapter 7 blueprint overlay — controller dismissal. After the
-  // poll, scan all buttons; if any is pressed while the overlay is
-  // up, dismiss. Works with any controller layout (A, B, X, Y,
-  // shoulder, trigger, d-pad — anything counts as "any key").
-  try {
-    if (isOverlayUp()) {
-      const pads = navigator.getGamepads ? navigator.getGamepads() : [];
-      for (const pad of pads) {
-        if (!pad) continue;
-        for (let i = 0; i < (pad.buttons || []).length; i++) {
-          const b = pad.buttons[i];
-          if (b && (b.pressed || (b.value && b.value > 0.5))) {
-            dismissOverlay();
-            break;
-          }
-        }
-      }
-    }
-  } catch (err) {}
-
   if (S.running && !S.paused) {
     updatePlayer(dt);
     updateEnemies(worldDt);
-    // Death animations — ants shrivel + fade after they die. Ticked
-    // here regardless of paused state? No — only when running, since
-    // a paused game shouldn't progress death animations. The corpses
-    // stay frozen until the player resumes.
-    _tickDyingEnemies(worldDt);
     updateBullets(worldDt);
     updateTurrets(worldDt);
     updatePixlPals(worldDt, player.pos);
@@ -4799,18 +3831,6 @@ function animate() {
     }
     updateStratagems(dt);
     updateMines(dt);
-    // Chapter 7 blueprint hunt — ticks the wave-1 (and eventually
-    // wave-2/3) state machine: proximity capture progress, slow
-    // trickle / 30s prep / 90s flood timing, overlay state. No-op
-    // on chapters/waves without a configured blueprint.
-    try { updateBlueprints(dt, player.pos); } catch (e) {
-      console.warn('[main] updateBlueprints failed:', e);
-    }
-    // Nuke linger zones — high-DPS bubbles left over after each
-    // thermonuclear call. Tick after updateStratagems so any beacon
-    // detonation that happens THIS frame has already pushed its zone
-    // before we drain. See _tickNukeLingerZones above the nuke handler.
-    _tickNukeLingerZones(dt);
     // Stratagem turrets — separate from the existing turrets.js
     // module (which handles enemy compound turrets in waveProps).
     // Aliased on import as updateStratagemTurrets to avoid the
@@ -4903,13 +3923,12 @@ function animate() {
     updateSafetyPod(dt);
     updateHiveLasers(worldDt);
     updateCockroach(worldDt);
-    // Skip the fog-ring update in tutorial mode AND endless glyphs
-    // mode. updateFogRing() re-writes scene.fog.near/far/color every
-    // frame to override theme transitions; without this guard it
-    // would clobber the disableFog() snapshot and the perimeter
-    // darkness would come back. Per playtester: "Can we remove the
-    // fog in endless glyphs."
-    if (!S.tutorialMode && !S.endlessGlyphs) updateFogRing(player.pos);
+    // Skip the fog-ring update in tutorial mode. updateFogRing()
+    // re-writes scene.fog.near/far/color every frame to override
+    // theme transitions; without this guard it would clobber the
+    // disableFog() snapshot and the perimeter darkness would
+    // come back. Tutorial gets bare-bones lighting on purpose.
+    if (!S.tutorialMode) updateFogRing(player.pos);
     updateBossCubes(worldDt);
     updateCivilians(worldDt, enemies, player, onCivilianKilled, onCivilianRescued);
     // In tutorial mode the lesson controller drives spawns and props
@@ -4971,15 +3990,6 @@ function animate() {
         try { clearHazards(); } catch (e) {}
       }
     }
-    // Endless Glyphs mode tick. Drives the run's phase state machine
-    // (lobby → tile transition → wave → intermission → repeat → victory).
-    // Runs alongside the regular wave system; the wave runner inside
-    // endlessGlyphs.js will gate its own enemy spawns so the two
-    // systems don't fight for state. updateWaves() below early-returns
-    // on S.endlessGlyphs (see waves.js).
-    if (S.endlessGlyphs) {
-      try { updateEndlessGlyphs(worldDt); } catch (e) { console.warn('[glyphs] tick', e); }
-    }
     updateWaves(worldDt);
     // Notify the pixl-pal system of new waves so it can award charges
     // every 3rd wave. Cheap: one int comparison per frame.
@@ -5026,10 +4036,15 @@ function animate() {
           }
         }
       }
-      // (legacy: chapter 7 cinematicSpawnHold flag was removed when
-      // ch7 was redesigned to a fresh slate — no cinematic, no hold
-      // gate. Spawn pacing in chapter 7 is controlled entirely by
-      // the wave def's spawnRate.)
+      // Release the chapter 7 entry spawn hold when the player advances
+      // to wave 2. The hold is set true on chapter 7 entry and gates
+      // ALL trickle/hive enemy spawns during wave 1 — only mega_brutes
+      // from mining blocks appear. From wave 2 onward, normal spawn
+      // pacing resumes.
+      if (S.chapter === PARADISE_FALLEN_CHAPTER_IDX && localWave === 2 && S.cinematicSpawnHold) {
+        S.cinematicSpawnHold = false;
+        console.log('[chapter-7] spawn hold released — wave 2 begins');
+      }
     }
     // Detect chapter change and re-apply the chapter-specific hazard
     // style + ally setup. S.chapter is derived from S.wave (5 waves per
@@ -5077,69 +4092,95 @@ function animate() {
           try {
             playMatrixRain(CHAPTERS[S.chapter % CHAPTERS.length].full.grid1);
           } catch (e) { console.warn('[matrixRain] play', e); }
-          // 3D matrix rain in the arena — falls onto/around objects so
-          // the chapter handover feels like a world transformation, not
-          // just a screen flash. Anchored to the player so the rain
-          // covers wherever the camera is looking. Tints to the
-          // incoming chapter's grid1 color, same source as the 2D rain.
-          try {
-            const tint = CHAPTERS[S.chapter % CHAPTERS.length].full.grid1;
-            play3DMatrixRain(tint, 1800, player && player.pos);
-          } catch (e) { console.warn('[matrixRain3D] play', e); }
         }
         // Confirm the ally was applied (or wasn't because chapter doesn't have one).
         if (S.chapter === 1) console.log(`[chapter-change] galaga ship active=${isGalagaShipActive()}`);
         if (S.chapter === 3) console.log(`[chapter-change] pacman active=${isPacmanActive()}`);
 
-        // -------- CHAPTER 7 ENTRY (PARADISE FALLEN) — FRESH SLATE --------
-        // Per playtester redesign: chapter 7 is now an EMPTY ARENA.
-        // The cinematic, civilian dismissal, lifedrainer auto-equip,
-        // and super-nuke grant are all gone. The entry only does:
-        //   1. Monochrome atmosphere (dim lighting + flashlight) —
-        //      preserves the visual identity of "post-collapse"
-        //   2. Drained-color corpses scattered as environmental
-        //      storytelling — also part of the monochrome aesthetic
-        //   3. Music section switch to the chapter-7 playlist
-        //   4. Grant stratagem artifacts (replaces the old super-nuke
-        //      mechanic; gives the player tools to handle the
-        //      infestation without a single overpowered button)
-        //
-        // No cinematicSpawnHold. No lifedrainer. No civilian dismissal
-        // (civilians are already gone by chapter 7 in normal play, and
-        // suppressing spawns isn't needed without the cinematic).
+        // -------- CHAPTER 7 ENTRY (PARADISE FALLEN) --------
+        // Triggered when the player crosses from chapter 6 (PARADISE)
+        // into chapter 7 (PARADISE FALLEN). Three things happen:
+        //   1. Atmosphere goes DARK — scene lights crash, flashlight
+        //      activates as primary illumination.
+        //   2. Drained-color corpses scatter across the arena as
+        //      environmental storytelling.
+        //   3. Enemy spawns are HELD for 5 seconds (cinematicSpawnHold)
+        //      so the player has a moment to take in the new setting
+        //      before the mining/mega_brute combat begins.
         if (S.chapter === PARADISE_FALLEN_CHAPTER_IDX
             && prevChapter !== PARADISE_FALLEN_CHAPTER_IDX) {
-          console.log('[chapter-7-entry] BEGIN (fresh-slate redesign)');
-          // STEP 1: Monochrome atmosphere — dim lights + flashlight on.
+          console.log('[chapter-7-entry] BEGIN — running setup steps with isolated catches');
+          // STEP 1: Atmosphere darken (lights crash to ~12%, flashlight on)
           try {
             enterChapter7Atmosphere();
-            S.chapter7Atmosphere = true;
             console.log('[chapter-7-entry] OK 1: atmosphere darkened');
           } catch (e) {
             console.error('[chapter-7-entry] FAIL 1: enterChapter7Atmosphere —', e);
           }
-          // STEP 2: Scatter drained-color corpses across the arena.
-          // These contribute to the monochrome aesthetic — visual
-          // storytelling that the world has fallen.
+          // STEP 2: Civilian dismissal + spawn suppression
+          try {
+            if (typeof setCivilianSpawnSuppressed === 'function') {
+              setCivilianSpawnSuppressed(true);
+            }
+            if (typeof clearAllCivilians === 'function') clearAllCivilians();
+            console.log('[chapter-7-entry] OK 2: civilians cleared + suppression on');
+          } catch (e) {
+            console.error('[chapter-7-entry] FAIL 2: civilian clear —', e);
+          }
+          // STEP 3: Scatter corpses (environmental storytelling)
           try {
             scatterCorpses(35);
-            console.log('[chapter-7-entry] OK 2: corpses scattered');
+            console.log('[chapter-7-entry] OK 3: corpses scattered');
           } catch (e) {
-            console.error('[chapter-7-entry] FAIL 2: scatterCorpses —', e);
+            console.error('[chapter-7-entry] FAIL 3: scatterCorpses —', e);
           }
-          // STEP 3: Music section switch — TheOtherSide + Underworld
-          // are reserved for chapter 7. The audio engine crossfades.
+          // STEP 4: Set state flags (atmosphere active, spawn hold for entire wave 1)
+          try {
+            S.chapter7Atmosphere = true;
+            S.cinematicSpawnHold = true;
+            console.log('[chapter-7-entry] OK 4: flags set');
+          } catch (e) {
+            console.error('[chapter-7-entry] FAIL 4: state flags —', e);
+          }
+          // STEP 5: Equip lifedrainer signature weapon
+          try {
+            S._preCh7Weapon = S.currentWeapon;
+            S.currentWeapon = 'lifedrainer';
+            S.lifedrainCharge = 0;
+            recolorGun(WEAPONS.lifedrainer.color);
+            _syncWeaponCursor();
+            UI.toast('LIFEDRAINER', '#00ff66');
+            console.log('[chapter-7-entry] OK 5: lifedrainer equipped');
+          } catch (e) {
+            console.error('[chapter-7-entry] FAIL 5: lifedrainer equip —', e);
+          }
+          // STEP 6: Refresh the weapon UI so the rainbow charge port
+          // appears immediately. The port is created lazily on the
+          // first updateWeaponSlots() call inside chapter 7. Without
+          // an explicit call here it might not render until the next
+          // HUD tick, which can be deferred during the chapter
+          // transition.
+          try {
+            UI.updateWeaponSlots();
+            UI.updateHUD();
+            console.log('[chapter-7-entry] OK 6: weapon UI refreshed');
+          } catch (e) {
+            console.error('[chapter-7-entry] FAIL 6: UI refresh —', e);
+          }
+          // STEP 7: Switch the music playlist to the chapter-7 section.
+          // TheOtherSide + Underworld have been gated out of the
+          // chapter-1-6 rotation specifically so this moment plays
+          // the player a fresh sound palette they haven't heard yet
+          // — the audio engine crossfades into TheOtherSide here.
+          // The reverse switch (back to 'main') is wired into the
+          // chapter-7-exit branch a little further below.
           try {
             Audio.setMusicSection && Audio.setMusicSection('paradise_fallen');
-            console.log('[chapter-7-entry] OK 3: music section → paradise_fallen');
+            console.log('[chapter-7-entry] OK 7: music section → paradise_fallen');
           } catch (e) {
-            console.error('[chapter-7-entry] FAIL 3: music section switch —', e);
+            console.error('[chapter-7-entry] FAIL 7: music section switch —', e);
           }
-          // (Stratagem grant removed — chapter 7 now uses the blueprint
-          // system. Per playtester: "Player only gets stratagems by
-          // unlocking blueprints with glyphstones." See ch7Blueprints.js
-          // for the per-wave blueprint configs and the unlock flow.)
-          console.log('[chapter-7-entry] END');
+          console.log('[chapter-7-entry] END — all steps attempted');
         }
         // -------- CHAPTER 7 EXIT (e.g. game reset to ch 0) --------
         // Restore lighting + clear corpses if the player leaves chapter
@@ -5200,13 +4241,7 @@ function animate() {
       const dx = (mouse.worldX != null) ? mouse.worldX - player.pos.x : 0;
       const dz = (mouse.worldZ != null) ? mouse.worldZ - player.pos.z : -1;
       const len = Math.sqrt(dx * dx + dz * dz) || 1;
-      const ux = dx / len, uz = dz / len;
-      updateFlashlight(player.pos, ux, uz);
-      // Cache aim direction on S so the per-frame enemy update can
-      // determine whether each enemy is "in the flashlight cone" for
-      // the ch7 green-glow reveal mechanic. See enemy update loop.
-      S._ch7FlashAimX = ux;
-      S._ch7FlashAimZ = uz;
+      updateFlashlight(player.pos, dx / len, dz / len);
     }
     // Tick the saved-pig trophy wall every frame regardless of wave type —
     // the pigs stand on the arena perimeter across all subsequent chapters
@@ -5214,12 +4249,6 @@ function animate() {
     updateSavedPigs(dt);
     updateParticles(worldDt);
     updateRain(dt, player.pos);
-    // 3D matrix rain — tick the in-arena chapter-transition cascade.
-    // No-op when no transition is active (cheap null check inside).
-    // Use plain `dt` (not worldDt) so the rain still flows during
-    // pause / cutscene moments — it's an out-of-game UI effect, not
-    // a gameplay animation.
-    update3DMatrixRain(dt);
     updateGooSplats(worldDt);
     updateHazards(worldDt, S.timeElapsed);
     updateNewPickups(worldDt, player.pos);
@@ -5268,16 +4297,28 @@ function animate() {
 
   // Long-frame probe (see top of animate). If this frame took longer
   // than 80ms — well above 16ms target — log a single line with
-  // the elapsed time and any breadcrumb (e.g. a damage event) that
-  // could explain it. Defensive guards: skip during boss cinematic
-  // (cutscenes intentionally stall some systems), skip if probe was
-  // disabled via window.__noLongFrameWarn.
+  // the elapsed time and the most recently observed slow probe()
+  // tag (e.g. flinger:applyHighlight, grenade:buildMesh) which
+  // tells us what likely caused the spike. Falls back to the older
+  // damage breadcrumb if no probe tag is recent. Defensive guards:
+  // skip during boss cinematic (cutscenes intentionally stall some
+  // systems), skip if probe was disabled via window.__noLongFrameWarn.
   if (!window.__noLongFrameWarn) {
     const _frameElapsed = performance.now() - _frameStart;
     if (_frameElapsed > 80 && !isBossCinematicActive()) {
-      const _crumb = S._damageVfxFiredAt
-        ? `damage at ${Math.round(performance.now() - S._damageVfxFiredAt)}ms ago`
-        : 'no damage breadcrumb';
+      const _slowTag = getLastSlowTag && getLastSlowTag();
+      let _crumb;
+      if (_slowTag && _slowTag.agoMs < 200) {
+        // Recent slow probe tag — the long-frame is likely caused by
+        // whatever this tag wraps. 200ms window catches probe events
+        // from the same frame plus a small buffer for animation
+        // mixer / post-process paint that runs after the probe.
+        _crumb = `${_slowTag.tag} took ${Math.round(_slowTag.ms)}ms ${Math.round(_slowTag.agoMs)}ms ago`;
+      } else if (S._damageVfxFiredAt && performance.now() - S._damageVfxFiredAt < 500) {
+        _crumb = `damage at ${Math.round(performance.now() - S._damageVfxFiredAt)}ms ago`;
+      } else {
+        _crumb = 'no probe breadcrumb (cause unknown)';
+      }
       console.warn(`[long-frame] ${Math.round(_frameElapsed)}ms — ${_crumb}`);
     }
   }
@@ -5410,13 +4451,6 @@ function updatePlayer(dt) {
   // Silo + turrets act as solid obstacles — push the player out if they'd
   // overlap either. No-ops when the compound isn't built or has retracted.
   resolveCompoundCollision(player.pos, 0.8);
-  // Endless Glyphs procedural floorplan walls. Gated on S.endlessGlyphs
-  // so the regular game / tutorial don't pay the per-frame cost. Walls
-  // are short AABBs scattered around the arena; the resolver pushes
-  // the player out along the closest axis. See endlessWalls.js.
-  if (S.endlessGlyphs) {
-    resolveWallCollision(player.pos, 0.8);
-  }
   // Turn 9: pod lock-in. While S._dcPlayerInPod is true, clamp the
   // player's position to within pod radius. Active during chapter 2
   // wave 2 from the moment the player first enters the pod through
@@ -6290,12 +5324,6 @@ function updateRockets(dt) {
     // Wall/edge/block/prop hit
     if (segmentBlocked(prevX, prevZ, r.position.x, r.position.z) ||
         segmentBlockedByProp(prevX, prevZ, r.position.x, r.position.z) ||
-        // Endless Glyphs floorplan walls — rockets detonate on the
-        // wall surface rather than punching through. The explodeRocket
-        // call below handles AoE so enemies on the far side of a
-        // narrow wall can still take splash damage.
-        (S.endlessGlyphs &&
-         segmentBlockedByWall(prevX, prevZ, r.position.x, r.position.z)) ||
         ud.life <= 0 ||
         Math.abs(r.position.x) > ARENA || Math.abs(r.position.z) > ARENA) {
       explodeRocket(r);
@@ -6407,8 +5435,6 @@ function updateRockets(dt) {
         } else {
           e.hp -= ud.damage;
           e.hitFlash = 0.18;
-          // Universal knockback — push the enemy away from the rocket.
-          applyKnockback(e, r.position);
         }
         explodeRocket(r);
         scene.remove(r);
@@ -6445,10 +5471,6 @@ function explodeRocket(r) {
       } else {
         e.hp -= ud.explosionDamage * (1 - Math.sqrt(d2) / radius);
         e.hitFlash = 0.15;
-        // Universal knockback — radial from explosion center, scaled
-        // by falloff so close enemies get shoved harder.
-        const falloff = 1 - Math.sqrt(d2) / radius;
-        applyKnockback(e, pos, 0.3 * (0.5 + 2 * falloff));
       }
       if (e.hp <= 0) killEnemy(j);
     }
@@ -6511,165 +5533,6 @@ function explodeRocket(r) {
 // thing that differs is the physics and visuals: a grenade is a tumbling
 // sphere on a gravity arc, a rocket is a guided missile on a flat path.
 
-// =====================================================================
-// DYING ENEMY MESHES — death animations
-// =====================================================================
-// Some enemies get a death animation (shrivel + fade) instead of
-// vanishing instantly. The enemy is spliced from the active enemies
-// array as usual (so AI / damage / collision treat it as gone), but
-// its mesh is handed to this list and animated to a graceful exit.
-// Per playtester: "Can we add a death animation for the ants when
-// they die. Maybe they just shrivel up? After a few seconds they
-// disappear?"
-//
-// Each entry: { obj, life, maxLife, type, materials }
-//   obj       — THREE.Group of the dead enemy (still in scene)
-//   life      — elapsed seconds since death
-//   maxLife   — total lifetime in seconds
-//   type      — animation style ('shrivel')
-//   materials — flat array of every material in the mesh tree, so
-//               opacity can be faded uniformly. Walks the tree once
-//               at hand-off time and caches refs.
-//
-// On expiry: scene.remove + dispose. Idempotent if called twice.
-const _dyingEnemies = [];
-
-/**
- * Hand off a dying enemy mesh to the death-animation system.
- * Called by killEnemy when the enemy is one we want to animate
- * (currently: ants).
- *
- * @param {THREE.Group} obj   enemy mesh root (already detached from
- *                             the active enemies array)
- * @param {string} animType   'shrivel' currently the only kind
- */
-function _addDyingEnemy(obj, animType) {
-  if (!obj) return;
-  // Cache material refs so opacity fade in the tick is one loop, not
-  // a fresh tree-walk every frame.
-  const materials = [];
-  obj.traverse((node) => {
-    if (!node.material) return;
-    if (Array.isArray(node.material)) {
-      for (const m of node.material) {
-        // Force transparent flag on so opacity changes actually render.
-        // depthWrite off so the dying mesh fades smoothly without
-        // writing depth (otherwise the mostly-transparent corpse
-        // can occlude things behind it during fade).
-        m.transparent = true;
-        m.depthWrite = false;
-        m.needsUpdate = true;
-        materials.push(m);
-      }
-    } else {
-      node.material.transparent = true;
-      node.material.depthWrite = false;
-      node.material.needsUpdate = true;
-      materials.push(node.material);
-    }
-  });
-  _dyingEnemies.push({
-    obj,
-    life: 0,
-    maxLife: 2.4,            // seconds — "after a few seconds they disappear"
-    type: animType || 'shrivel',
-    materials,
-    initialY: obj.position.y,
-    // Capture the enemy's INITIAL world scale. Different enemy meshes
-    // bake their own scale on group.scale (e.g. ant uses 0.55) — if
-    // the shrivel anim sets scale.set(1.0) it would visually DOUBLE
-    // the ant first then shrink. We multiply through this base scale
-    // so the corpse starts at its actual rendered size.
-    initialScale: obj.scale.clone(),
-  });
-}
-
-/**
- * Per-frame tick. Called from the animate loop. Animates each dying
- * enemy through its shrivel + fade and disposes when done.
- */
-function _tickDyingEnemies(dt) {
-  for (let i = _dyingEnemies.length - 1; i >= 0; i--) {
-    const d = _dyingEnemies[i];
-    d.life += dt;
-    const t = Math.min(1, d.life / d.maxLife);
-
-    if (d.type === 'shrivel') {
-      // Shrivel curve: collapse fast in the first 60% of life
-      // (legs buckle, body flattens), then a slower fade-and-sink
-      // dissolve in the last 40% as the corpse evaporates.
-      //
-      // Scale multipliers: lateral 1.0 → 0.45, vertical 1.0 → 0.15
-      // (faster vertical so the corpse flattens to the ground).
-      // Multiplied THROUGH the captured initialScale so meshes that
-      // bake their own group.scale (ant = 0.55) start at the right
-      // visual size instead of suddenly inflating to 1×.
-      const collapse = Math.min(1, t / 0.6);
-      const sxz = 1 - collapse * 0.55;
-      const sy  = 1 - collapse * 0.85;
-      d.obj.scale.set(
-        d.initialScale.x * sxz,
-        d.initialScale.y * sy,
-        d.initialScale.z * sxz,
-      );
-      // Sink slightly into the ground so the bottom edge doesn't
-      // float when Y collapses (the body shrinks toward its origin
-      // point, which is at the feet). Without sink it can float
-      // awkwardly above the floor for the last frames.
-      d.obj.position.y = d.initialY - collapse * 0.15;
-      // Slight wobble tilt for character — corpse leans before
-      // collapsing, like the legs gave out.
-      d.obj.rotation.z = collapse * 0.4;
-      // Opacity: hold at 1 until 60% through, then fade to 0.
-      const fadeT = Math.max(0, (t - 0.6) / 0.4);
-      const alpha = 1 - fadeT;
-      for (const m of d.materials) {
-        // Some materials (basic, additive) ignore the fade — we set
-        // opacity unconditionally, letting the GPU handle it.
-        m.opacity = alpha;
-      }
-    }
-
-    if (t >= 1) {
-      // Done — remove from scene + dispose.
-      if (d.obj.parent) d.obj.parent.remove(d.obj);
-      d.obj.traverse((node) => {
-        if (node.geometry) node.geometry.dispose();
-        if (node.material) {
-          if (Array.isArray(node.material)) {
-            for (const m of node.material) m.dispose();
-          } else {
-            node.material.dispose();
-          }
-        }
-      });
-      _dyingEnemies.splice(i, 1);
-    }
-  }
-}
-
-/**
- * Wipe all dying enemies immediately. Called on chapter teardown
- * + tutorial enter + endless-mode enter so corpses from a prior
- * run don't appear in the new arena.
- */
-function _clearDyingEnemies() {
-  for (const d of _dyingEnemies) {
-    if (d.obj.parent) d.obj.parent.remove(d.obj);
-    d.obj.traverse((node) => {
-      if (node.geometry) node.geometry.dispose();
-      if (node.material) {
-        if (Array.isArray(node.material)) {
-          for (const m of node.material) m.dispose();
-        } else {
-          node.material.dispose();
-        }
-      }
-    });
-  }
-  _dyingEnemies.length = 0;
-}
-
 const GRENADE_GRAVITY = 22;    // m/s^2 — snappy feel
 const _grenades = [];
 
@@ -6682,47 +5545,55 @@ function tryThrowGrenade() {
     UI.toast('NO GRENADES', '#ff2e4d', 900);
     return;
   }
-  const w = WEAPONS.grenade;
-  S.grenadeCharges -= 1;
-  S.grenadeCooldown = w.fireRate;
-  if (S.tutorialMode) tutorialOnGrenadeThrown();
-  _syncGrenadeHUD();
+  // probe('grenade:throw') wraps the entire throw construction so we
+  // can see if the FIRST throw of a run hitches (suspected: shader
+  // compile for the unique IcosahedronGeometry + emissive standard
+  // material + attached PointLight combo). REMOVE-ME after diagnosis.
+  probe('grenade:throw', () => {
+    const w = WEAPONS.grenade;
+    S.grenadeCharges -= 1;
+    S.grenadeCooldown = w.fireRate;
+    if (S.tutorialMode) tutorialOnGrenadeThrown();
+    _syncGrenadeHUD();
 
-  const origin = new THREE.Vector3(
-    player.pos.x + Math.sin(player.facing) * 0.8,
-    1.5,
-    player.pos.z + Math.cos(player.facing) * 0.8,
-  );
-  const geo = new THREE.IcosahedronGeometry(0.22, 0);
-  const mat = new THREE.MeshStandardMaterial({
-    color: 0x2b3d1e, emissive: w.color, emissiveIntensity: 1.4,
-    roughness: 0.5, metalness: 0.3,
+    const origin = new THREE.Vector3(
+      player.pos.x + Math.sin(player.facing) * 0.8,
+      1.5,
+      player.pos.z + Math.cos(player.facing) * 0.8,
+    );
+    probe('grenade:buildMesh', () => {
+      const geo = new THREE.IcosahedronGeometry(0.22, 0);
+      const mat = new THREE.MeshStandardMaterial({
+        color: 0x2b3d1e, emissive: w.color, emissiveIntensity: 1.4,
+        roughness: 0.5, metalness: 0.3,
+      });
+      const mesh = new THREE.Mesh(geo, mat);
+      mesh.castShadow = true;
+      mesh.position.copy(origin);
+      const trailLight = new THREE.PointLight(w.color, 1.4, 4, 2);
+      mesh.add(trailLight);
+
+      const vx = Math.sin(player.facing) * w.speed;
+      const vz = Math.cos(player.facing) * w.speed;
+      const vy = w.arc;
+      mesh.userData = {
+        vel: new THREE.Vector3(vx, vy, vz),
+        life: w.fuse,
+        bounces: 0,
+        color: w.color,
+        explosionRadius: w.explosionRadius,
+        explosionDamage: w.explosionDamage,
+        spin: new THREE.Vector3(
+          Math.random() * 6 - 3,
+          Math.random() * 6 - 3,
+          Math.random() * 6 - 3,
+        ),
+      };
+      probe('grenade:sceneAdd', () => scene.add(mesh));
+      _grenades.push(mesh);
+    });
+    Audio.shot && Audio.shot('shotgun');   // throwing thump — reuses shotgun sfx
   });
-  const mesh = new THREE.Mesh(geo, mat);
-  mesh.castShadow = true;
-  mesh.position.copy(origin);
-  const trailLight = new THREE.PointLight(w.color, 1.4, 4, 2);
-  mesh.add(trailLight);
-
-  const vx = Math.sin(player.facing) * w.speed;
-  const vz = Math.cos(player.facing) * w.speed;
-  const vy = w.arc;
-  mesh.userData = {
-    vel: new THREE.Vector3(vx, vy, vz),
-    life: w.fuse,
-    bounces: 0,
-    color: w.color,
-    explosionRadius: w.explosionRadius,
-    explosionDamage: w.explosionDamage,
-    spin: new THREE.Vector3(
-      Math.random() * 6 - 3,
-      Math.random() * 6 - 3,
-      Math.random() * 6 - 3,
-    ),
-  };
-  scene.add(mesh);
-  _grenades.push(mesh);
-  Audio.shot && Audio.shot('shotgun');   // throwing thump — reuses shotgun sfx
 }
 
 function updateGrenades(dt) {
@@ -6834,13 +5705,6 @@ function updateCamera(dt) {
 // ENEMIES -- includes vampire blink, wizard triangle proj, goo spitter etc.
 // ============================================================================
 function updateEnemies(dt) {
-  // Endless Glyphs A* pathfinding budget reset. Capped at
-  // MAX_REPLANS_PER_FRAME (8) replans per frame across all enemies
-  // — without this, all 60 enemies could replan on the same tick
-  // and stutter the frame. When endless mode isn't active this is a
-  // ~1ns no-op.
-  if (S.endlessGlyphs) _endlessResetReplans();
-
   for (let i = enemies.length - 1; i >= 0; i--) {
     const e = enemies[i];
     const dx = player.pos.x - e.pos.x;
@@ -6909,95 +5773,6 @@ function updateEnemies(dt) {
       e.antWings[1].rotation.z = -flap;
     }
 
-    // ---- JUMPER ----
-    // Two visual systems: shield outline pulse/flash + jump-attack
-    // animation. Shield mesh is parented to e.obj so its world
-    // position tracks the body automatically — only the local
-    // material state needs updating here.
-    if (e.isJumper) {
-      // Shield visual update — only when shield is still up.
-      if (e.shielded && e.shieldMat) {
-        // Decay the hit-flash timer; bright pulse fades back to base.
-        if (e.shieldHitFlashT > 0) {
-          e.shieldHitFlashT -= dt;
-          if (e.shieldHitFlashT < 0) e.shieldHitFlashT = 0;
-        }
-        // Base opacity scales with REMAINING shield % so a near-broken
-        // shield reads as visibly weakening. 0.22 baseline → 0.12 at
-        // 0% (just before break). Plus a hit-flash boost on top.
-        const shieldFrac = Math.max(0, e.shieldHp / Math.max(1, e.shieldHpMax));
-        const baseOpacity = 0.12 + shieldFrac * 0.10;
-        const flashBoost = e.shieldHitFlashT * 1.8;     // big punch on hit
-        e.shieldMat.opacity = Math.min(0.85, baseOpacity + flashBoost);
-        // Color flash — base cyan, lerps to white-hot on hit.
-        if (e.shieldHitFlashT > 0) {
-          const t = Math.min(1, e.shieldHitFlashT / 0.18);
-          const r = 0.4 + t * 0.6;
-          const g = 0.8 + t * 0.2;
-          const b = 1.0;
-          e.shieldMat.color.setRGB(r, g, b);
-        } else {
-          e.shieldMat.color.setHex(0x66ccff);
-        }
-        // Subtle idle pulse — slow breath when no hit is active.
-        const breath = 1 + Math.sin((e.walkPhase || 0) + performance.now() * 0.0015) * 0.04;
-        if (e.shieldMesh) {
-          e.shieldMesh.scale.set(0.85 * breath, 1.85 * breath, 0.85 * breath);
-        }
-      }
-
-      // Jump-attack cadence. Only triggers if player is within
-      // jumpRange and the timer is up. State machine:
-      //   idle → crouch (0.4s) → leap (0.8s up + 0.6s fall) → land
-      //
-      // Velocity in Y is faked by directly setting e.obj.position.y;
-      // movement in XZ is suspended during crouch/leap so the jumper
-      // commits to a fixed landing point (telegraphed).
-      e.jumpTimer -= dt;
-      if (e.jumpState === 'idle' && e.jumpTimer <= 0 && dist < e.jumpRange) {
-        e.jumpState = 'crouch';
-        e.jumpStateT = 0;
-        e.jumpFromY = 0;
-      }
-      if (e.jumpState !== 'idle') {
-        e.jumpStateT += dt;
-        if (e.jumpState === 'crouch') {
-          // Crouch dip — body sinks 0.3u while preparing.
-          if (e.obj) e.obj.position.y = -0.3 * Math.min(1, e.jumpStateT / 0.4);
-          if (e.jumpStateT >= 0.4) {
-            e.jumpState = 'leap';
-            e.jumpStateT = 0;
-          }
-        } else if (e.jumpState === 'leap') {
-          // Parabolic arc — peaks at 4u over 1.4s.
-          const t01 = Math.min(1, e.jumpStateT / 1.4);
-          const archY = Math.sin(t01 * Math.PI) * 4.0;
-          if (e.obj) e.obj.position.y = archY;
-          // Sword swing — rotate the sword group during the descent.
-          if (e.swordGroup && t01 > 0.5) {
-            const swingT = (t01 - 0.5) / 0.5;
-            e.swordGroup.rotation.x = -swingT * 1.4;
-          }
-          if (e.jumpStateT >= 1.4) {
-            e.jumpState = 'land';
-            e.jumpStateT = 0;
-            // Landing burst — dust kick + audio cue.
-            const lp = new THREE.Vector3(e.pos.x, 0.1, e.pos.z);
-            hitBurst(lp, 0x8a6a44, 14);
-            try { Audio.bigBoom && Audio.bigBoom(); } catch (_) {}
-          }
-        } else if (e.jumpState === 'land') {
-          // Brief recovery — body returns to neutral, sword resets.
-          if (e.obj) e.obj.position.y = 0;
-          if (e.swordGroup) e.swordGroup.rotation.x = 0;
-          if (e.jumpStateT >= 0.5) {
-            e.jumpState = 'idle';
-            e.jumpTimer = e.jumpInterval * (0.85 + Math.random() * 0.3);
-          }
-        }
-      }
-    }
-
     let moveTargetX = player.pos.x, moveTargetZ = player.pos.z;
     if (S.rescueMeebit && !S.rescueMeebit.freed && !S.rescueMeebit.killed) {
       const cx = S.rescueMeebit.pos.x, cz = S.rescueMeebit.pos.z;
@@ -7033,19 +5808,6 @@ function updateEnemies(dt) {
         }
       }
     }
-    // ENDLESS GLYPHS — A* pathfinding around procedural walls. Asks
-    // the pathing module for the next waypoint toward the current
-    // moveTarget. If line-of-sight is clear (most of the time given
-    // sparse layouts), the module returns null and the enemy
-    // direct-chases as before. Bosses and stationary enemies skip
-    // pathfinding — they have scripted movement / fixed positions.
-    if (S.endlessGlyphs && !e.isBoss && !e.stationary) {
-      const wp = _endlessPathTarget(e, moveTargetX, moveTargetZ, dt);
-      if (wp) {
-        moveTargetX = wp.x;
-        moveTargetZ = wp.z;
-      }
-    }
     const mdx = moveTargetX - e.pos.x;
     const mdz = moveTargetZ - e.pos.z;
     const mdist = Math.sqrt(mdx * mdx + mdz * mdz) || 0.01;
@@ -7066,13 +5828,6 @@ function updateEnemies(dt) {
       // Enemies also can't walk through the silo or turrets. Bosses skip
       // this — they have their own scripted movement / patterns.
       resolveCompoundCollision(e.pos, 0.5, /*isEnemy*/ true);
-      // Endless Glyphs floorplan walls. Same AABB pushout as the
-      // player's collision above. Without Ship 2 pathfinding,
-      // enemies will get briefly stuck against walls — the sparse
-      // layout limits how often this happens.
-      if (S.endlessGlyphs) {
-        resolveWallCollision(e.pos, 0.5);
-      }
     }
     // Push the enemy out of any floor-hazard it overlaps. Bosses are
     // too big to path around them, so they take the lava (narratively
@@ -7102,68 +5857,7 @@ function updateEnemies(dt) {
         e.bodyMat.emissiveIntensity = e.hitFlash * peakMult;
       }
     } else if (e.bodyMat) {
-      // FLASHLIGHT REVEAL — chapter 7 ("forbidden species" green
-      // glow) AND endless glyphs (chapter-tinted glow). When the
-      // enemy is inside the player's flashlight cone, body emissive
-      // amps to a bright "glow-in-the-dark" intensity. Outside the
-      // cone, the emissive falls back to the resting baseline.
-      //
-      // Endless variant per playtester: "Would love to create a
-      // glow on flashlight shine where the enemies color amplifies
-      // when under the light - kind of like glow in the dark."
-      // The reveal color is the wave's chapter tint (orange for
-      // waves 1-5, red for 6-10, etc.) so the chapter identity
-      // bleeds into the visible color cue. In chapter 7 we keep
-      // the existing fixed bioluminescent green.
-      let revealed = false;
-      const _flashlightActive =
-        S.chapter7Atmosphere &&
-        (S.chapter === PARADISE_FALLEN_CHAPTER_IDX || S.endlessGlyphs);
-      if (_flashlightActive) {
-        // Flashlight cone test — dot product of (enemy_relative_to_player)
-        // against the flashlight aim vector. Cone half-angle 45° (90°
-        // total) → dot >= cos(45°) ≈ 0.707, with max range 30u.
-        const ax = S._ch7FlashAimX || 0;
-        const az = S._ch7FlashAimZ || -1;
-        const dx = e.pos.x - player.pos.x;
-        const dz = e.pos.z - player.pos.z;
-        const dist = Math.hypot(dx, dz);
-        if (dist > 0 && dist <= 30) {
-          const ndx = dx / dist, ndz = dz / dist;
-          const dotP = ndx * ax + ndz * az;
-          if (dotP >= 0.707) revealed = true;     // inside ~90° cone
-        }
-        // Glyphstone reveal dome — only active during the balloon
-        // ascend phase. ch7Blueprints exposes the position+radius
-        // via window.__ch7GlyphReveal which is set/cleared as the
-        // phase enters/exits. Cheap fallback: skip when undefined.
-        // (Endless mode never sets this; check is a no-op there.)
-        if (!revealed && window.__ch7GlyphReveal) {
-          const g = window.__ch7GlyphReveal;
-          const gdx = e.pos.x - g.x;
-          const gdz = e.pos.z - g.z;
-          if (gdx * gdx + gdz * gdz < g.radius * g.radius) revealed = true;
-        }
-      }
-      if (revealed) {
-        // Reveal color: ch7 = bioluminescent green; endless = the
-        // active wave's chapter tint (read from CHAPTERS via the
-        // current endless wave). Falls back to green if endless wave
-        // somehow can't be mapped.
-        let revealColor = 0x33ff44;
-        if (S.endlessGlyphs && typeof S.endlessWave === 'number') {
-          const chIdx = Math.max(0, Math.min(5, Math.floor((S.endlessWave - 1) / 5)));
-          revealColor = CHAPTERS[chIdx].full.enemyTint;
-        }
-        e.bodyMat.emissive && e.bodyMat.emissive.setHex(revealColor);
-        e.bodyMat.emissiveIntensity = 1.4;
-      } else {
-        // Default — restore the body's resting emissive.
-        e.bodyMat.emissive && e.bodyMat.emissive.setHex(
-          e.bodyMat.userData?.baseEmissiveHex ?? 0xffffff
-        );
-        e.bodyMat.emissiveIntensity = e.isBoss ? 0.15 : (e.bodyMat.userData?.baseEmissive || 0);
-      }
+      e.bodyMat.emissiveIntensity = e.isBoss ? 0.15 : (e.bodyMat.userData?.baseEmissive || 0);
     }
 
     // Ranged attacks — per-chapter throttle multiplier slows down
@@ -7263,17 +5957,6 @@ function updateBullets(dt) {
       hitBurst(b.position, 0xffffff, 3);
       scene.remove(b); bullets.splice(i, 1); continue;
     }
-    // ENDLESS GLYPHS — bullets are blocked by procedural floorplan
-    // walls. Per playtester: "Can we make it to where the walls
-    // that appear in endless glyphs do not allow bullets to go
-    // through?" Walls are treated as full-height for clarity even
-    // though the meshes are 1.5u tall. Gated on S.endlessGlyphs
-    // so the regular game path pays nothing extra.
-    if (S.endlessGlyphs &&
-        segmentBlockedByWall(prevX, prevZ, b.position.x, b.position.z)) {
-      hitBurst(b.position, 0xffffff, 3);
-      scene.remove(b); bullets.splice(i, 1); continue;
-    }
     if (b.userData.life <= 0 || Math.abs(b.position.x) > ARENA || Math.abs(b.position.z) > ARENA) {
       scene.remove(b); bullets.splice(i, 1); continue;
     }
@@ -7369,9 +6052,9 @@ function updateBullets(dt) {
       const dx = e.pos.x - b.position.x;
       const dz = e.pos.z - b.position.z;
       if (dx*dx + dz*dz < hitRange) {
-        // Shield absorb — jumper drains shieldHp, NIGHT_HERALD blocks
-        // entirely. Returns true if damage should pass through to hp.
-        if (!window.__shieldAbsorbOrPass(e, b.userData.damage, b.position)) {
+        // Shield guard — bullet detonates on shield (consumed) but
+        // does no damage. shieldHit visual + audio.
+        if (e.shielded) {
           e.hitFlash = 0.15;
           hitBurst(b.position, 0xffffff, 4);
           try { Audio.shieldHit && Audio.shieldHit(); } catch (err) {}
@@ -7382,10 +6065,6 @@ function updateBullets(dt) {
         }
         e.hp -= b.userData.damage;
         e.hitFlash = 0.15;
-        // Universal knockback — pistol/shotgun/SMG/rocket-shrapnel/etc.
-        // all push the enemy away from the bullet's last position.
-        // Bosses are immune (handled inside applyKnockback).
-        applyKnockback(e, b.position);
         hitBurst(b.position, 0xffffff, 4);
         Audio.hit();
         scene.remove(b);
@@ -7692,9 +6371,14 @@ function _takePlayerDamageVfx(shakeAmt, shakeDur) {
   if (S._damageVfxThisFrame) return;
   S._damageVfxThisFrame = true;
   S._damageVfxFiredAt = performance.now();
-  UI.damageFlash();
-  Audio.damage();
-  shake(shakeAmt, shakeDur);
+  // probe('damage:vfx') — first-time hitch suspected to be the
+  // damage-flash compositor layer + heart HUD updates triggering
+  // first paint. REMOVE-ME after diagnosis.
+  probe('damage:vfx', () => {
+    probe('damage:flash', () => UI.damageFlash());
+    probe('damage:audio', () => Audio.damage());
+    probe('damage:shake', () => shake(shakeAmt, shakeDur));
+  });
 }
 
 // ============================================================================
@@ -7799,18 +6483,6 @@ function killEnemy(idx) {
 
   scene.remove(e.obj);
   enemies.splice(idx, 1);
-  // Death animation routing — most enemies vanish on kill; ants get
-  // the shrivel-and-fade animation. Per playtester: "Maybe they just
-  // shrivel up? After a few seconds they disappear?"
-  // The visual mesh check is `e.isAnt`, NOT `e.type === 'ant'`. The
-  // chapter-1 "ants" are zomeeb/sprinter under the hood (so AI/spawn
-  // pacing reads from those types) — the ant MESH is a chapter-1
-  // visual override applied in enemies.js makeEnemy. The isAnt flag
-  // is the truth of "was the ant mesh used."
-  if (e.isAnt) {
-    scene.add(e.obj);                 // re-attach for the animation
-    _addDyingEnemy(e.obj, 'shrivel');
-  }
   S.kills++;
   S.score += e.scoreVal;
   bumpKillstreak();
@@ -8094,470 +6766,4 @@ animate();
 
   // Initial print on module load.
   printBootBanner();
-})();
-
-// =====================================================================
-// MOBILE STRATAGEM CALL-IN — touch d-pad replacement for RMB+arrows
-// =====================================================================
-// Desktop: hold RMB → tap arrow keys → release RMB. Phones have neither
-// a right mouse button nor arrow keys, so we add:
-//   1. A small green-matrix STRATAGEM button on the left side of the
-//      screen (above the joystick), only visible on mobile when the
-//      player has at least one stratagem artifact.
-//   2. A 4-direction d-pad that slides in above the button when it's
-//      tapped. Each arrow tap calls pushStratagemArrow(dir), exactly
-//      what the desktop keydown handler does. A second tap on the
-//      STRATAGEM button (or matching the code) confirms — same call
-//      path as releasing RMB on desktop.
-//
-// Wiring lives in a single self-contained IIFE so adding/removing
-// this feature is one block edit.
-(function setupMobileStratagemDpad() {
-  // Only run in a browser context; some build tools import main.js for
-  // static analysis without a real DOM.
-  if (typeof document === 'undefined') return;
-
-  // Mobile-only feature. The CSS .mobile-only class already hides the
-  // button on desktop via the existing media query, but per playtester
-  // request we belt-and-suspenders the gate with a JS matchMedia check
-  // — same conditions the rest of the project uses for "this is a
-  // touch surface." If we're on a desktop with a normal viewport,
-  // bail BEFORE building DOM nodes so nothing is even available to
-  // accidentally show.
-  const _isMobile = (
-    window.matchMedia &&
-    (window.matchMedia('(pointer: coarse)').matches ||
-     window.matchMedia('(any-pointer: coarse)').matches ||
-     window.matchMedia('(hover: none)').matches ||
-     window.matchMedia('(max-width: 1024px)').matches ||
-     window.matchMedia('(max-height: 600px)').matches)
-  );
-  if (!_isMobile) return;
-
-  // ---- Build the call button (always present in DOM; CSS .mobile-only
-  // controls visibility on the right kind of device). ----
-  let callBtn = document.getElementById('stratagem-call-btn');
-  if (!callBtn) {
-    callBtn = document.createElement('div');
-    callBtn.id = 'stratagem-call-btn';
-    callBtn.className = 'mobile-only';
-    callBtn.innerHTML = '<div style="font-size:22px;line-height:1;margin-bottom:2px;">⚙</div>STRAT';
-    document.body.appendChild(callBtn);
-  }
-
-  // ---- Build the floating d-pad (4 buttons in a + cross). ----
-  let dpad = document.getElementById('stratagem-dpad-ingame');
-  if (!dpad) {
-    dpad = document.createElement('div');
-    dpad.id = 'stratagem-dpad-ingame';
-    dpad.className = 'stratagem-dpad';
-    const DIRS = [
-      { dir: 'up',    cls: 'stratagem-dpad-up',    glyph: '↑' },
-      { dir: 'right', cls: 'stratagem-dpad-right', glyph: '→' },
-      { dir: 'down',  cls: 'stratagem-dpad-down',  glyph: '↓' },
-      { dir: 'left',  cls: 'stratagem-dpad-left',  glyph: '←' },
-    ];
-    for (const { dir, cls, glyph } of DIRS) {
-      const btn = document.createElement('div');
-      btn.className = 'stratagem-dpad-btn ' + cls;
-      btn.textContent = glyph;
-      const onPress = (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        btn.classList.add('pressed');
-        // The stratagem menu is opened by the call button tap below.
-        // pushStratagemArrow is a no-op when the menu isn't open, so
-        // a stray tap with the d-pad visible-but-menu-closed is safe.
-        try { pushStratagemArrow(dir); } catch (err) { console.warn('[stratagem dpad]', err); }
-      };
-      const onRelease = (e) => {
-        btn.classList.remove('pressed');
-        if (e) e.stopPropagation();
-      };
-      btn.addEventListener('touchstart', onPress, { passive: false });
-      btn.addEventListener('touchend', onRelease);
-      btn.addEventListener('touchcancel', onRelease);
-      btn.addEventListener('mousedown', onPress);
-      btn.addEventListener('mouseup', onRelease);
-      btn.addEventListener('mouseleave', onRelease);
-      dpad.appendChild(btn);
-    }
-    document.body.appendChild(dpad);
-  }
-
-  // ---- Tap the call button to ARM the stratagem menu. Tap again to
-  // CONFIRM (release the menu — fires whichever code is matched, same
-  // as the desktop RMB-release path). ----
-  function _toggleStratagemMenu() {
-    if (isStratagemMenuOpen()) {
-      // Already open — confirm. endStratagemInput fires the matched
-      // stratagem (if any) and clears menu state.
-      try { endStratagemInput(); } catch (err) { console.warn('[stratagem]', err); }
-      dpad.classList.remove('visible');
-      callBtn.classList.remove('armed');
-      return;
-    }
-    // Not open — only open if the player has at least one artifact,
-    // mirroring the RMB-down guard around line 1882.
-    const arts = (typeof S !== 'undefined' && S.stratagemArtifacts) || {};
-    let any = false;
-    for (const k in arts) { if (arts[k] > 0) { any = true; break; } }
-    if (!any) return;
-    try { beginStratagemInput(); } catch (err) { console.warn('[stratagem]', err); return; }
-    dpad.classList.add('visible');
-    callBtn.classList.add('armed');
-  }
-  const onCallPress = (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    _toggleStratagemMenu();
-  };
-  callBtn.addEventListener('touchstart', onCallPress, { passive: false });
-  callBtn.addEventListener('mousedown', onCallPress);
-
-  // ---- Per-frame visibility sync. The button should hide itself when
-  // the player has zero artifacts (so we don't tease an empty menu),
-  // and the d-pad should hide whenever the menu closes for any reason
-  // (e.g., the matched stratagem fired, or main code cleared menu
-  // state on game restart). Cheap — runs at requestAnimationFrame
-  // rate but only writes when state changes. ----
-  let _lastVisible = false;
-  let _lastDpadVisible = false;
-  function _syncFrame() {
-    const arts = (typeof S !== 'undefined' && S.stratagemArtifacts) || {};
-    let any = false;
-    for (const k in arts) { if (arts[k] > 0) { any = true; break; } }
-    if (any !== _lastVisible) {
-      _lastVisible = any;
-      // .mobile-only handles visibility on the right kind of viewport
-      // already; we toggle a dataset flag the CSS can read for the
-      // "no-artifacts" case so the element is fully removed from
-      // layout when there's nothing to call.
-      callBtn.style.display = any ? '' : 'none';
-    }
-    const menuOpen = (typeof isStratagemMenuOpen === 'function') && isStratagemMenuOpen();
-    if (menuOpen !== _lastDpadVisible) {
-      _lastDpadVisible = menuOpen;
-      if (menuOpen) {
-        dpad.classList.add('visible');
-        callBtn.classList.add('armed');
-      } else {
-        dpad.classList.remove('visible');
-        callBtn.classList.remove('armed');
-      }
-    }
-    requestAnimationFrame(_syncFrame);
-  }
-  // Default-hidden until first sync confirms artifacts.
-  callBtn.style.display = 'none';
-  requestAnimationFrame(_syncFrame);
-})();
-
-// =====================================================================
-// DEV CHEAT — chapter / wave jump console
-// =====================================================================
-// Keyboard activation: tap the backtick key (`) THREE TIMES within
-// 1.5s to open a small floating dev console. The console has chapter
-// (1-7) and wave (1-5) inputs plus a JUMP button. Closing is via
-// the X button or the ESC key.
-//
-// This is a build-time tool only — there's no obfuscation / IP gate
-// because the JS is shipped to the client anyway. If you want to
-// disable it for a public build, set window.__DEV_CHEATS_OFF = true
-// before main.js loads (or comment out the IIFE call).
-//
-// Also exposes power-user globals on window so anyone can drive from
-// devtools without finding the activation key:
-//   window.__devJumpToWave(n)         — n in 1..35
-//   window.__devJumpToChapter(c, w)   — c in 1..7, optional w in 1..5
-(function setupDevCheatConsole() {
-  if (typeof document === 'undefined') return;
-  if (window.__DEV_CHEATS_OFF) return;
-
-  const WAVES_PER_CH = 5;
-  const TOTAL_CHAPTERS = 7;
-
-  // ----- Core jump function -----
-  // Chains through every wave from the player's current position to
-  // the target — calling startWave then silentlyEndCurrentWave for
-  // each — so the target wave begins with all prior-wave residue
-  // cleaned up exactly as if those waves had been played to
-  // completion. Per playtester: "in wave 1 we destroy blocks and
-  // collect ores - at the end of wave 1 the eggs no longer appear
-  // and the crusher disappears. so loading into wave 2 wouldn't have
-  // that. When I go to wave 4 all elements from waves 1-3 should be
-  // clear. Same for wave 5."
-  //
-  // We also clean live entities (enemies, projectiles, pickups,
-  // mines, turrets) up front so the new wave spawns into an empty
-  // arena. Score / kills / XP are preserved — devs want to keep
-  // their run when teleporting around for testing.
-  function _devJumpToWaveNum(waveNum) {
-    waveNum = Math.max(1, Math.min(TOTAL_CHAPTERS * WAVES_PER_CH, Math.floor(waveNum)));
-    if (!S.running) {
-      if (UI && UI.toast) UI.toast('DEV: START A RUN FIRST', '#ff5520', 1500);
-      return;
-    }
-    // Wipe live entities so the new chapter spawns into a clean arena.
-    try { clearAllEnemies(); } catch (e) {}
-    try { _clearDyingEnemies(); } catch (e) {}
-    try { clearAllPickups(); } catch (e) {}
-    try { clearAllMines(); } catch (e) {}
-    try { clearStratagemTurrets(); } catch (e) {}
-    try { if (Array.isArray(enemyProjectiles)) enemyProjectiles.length = 0; } catch (e) {}
-
-    // ONE-SHOT cleanup. silentlyEndCurrentWave is now an unconditional
-    // kitchen-sink sweep — clears every wave-scoped prop in the world
-    // (boss bar, blocks, ores, egg shower, escort truck, EMP launcher,
-    // charge cubes, server warehouse, safety pod, hive lasers, turrets,
-    // hive shields, boss cubes, capture zones, rescue NPCs, objective
-    // HUD). Each clear*() is a no-op if its target isn't on the field,
-    // so calling them all unconditionally is safe + fast.
-    //
-    // Per playtester scope: this cleanup is dev-skip only. Normal
-    // wave-end transitions still use endWave() which gates its
-    // teardown on the wave type that just finished.
-    try {
-      silentlyEndCurrentWave();
-      // Land on the target wave. startWave does the full setup
-      // (theme, dormant props, hazard hooks, hud) just like a normal
-      // "wave N starts" flow.
-      startWave(waveNum);
-    } catch (e) {
-      console.warn('[dev-cheat] startWave chain failed', e);
-      if (UI && UI.toast) UI.toast('DEV: JUMP FAILED · ' + e.message, '#ff2020', 2200);
-      return;
-    }
-    const chap = Math.floor((waveNum - 1) / WAVES_PER_CH) + 1;
-    const lw = ((waveNum - 1) % WAVES_PER_CH) + 1;
-    const chName = (CHAPTERS[chap - 1] && CHAPTERS[chap - 1].name) || '?';
-    if (UI && UI.toast) {
-      UI.toast(`DEV: JUMP → CH ${chap} (${chName}) · WAVE ${lw}`, '#00ff66', 1800);
-    }
-    console.log(`[dev-cheat] jumped to wave ${waveNum} (chapter ${chap}, local wave ${lw})`);
-  }
-
-  // Public power-user globals for devtools console use.
-  window.__devJumpToWave = _devJumpToWaveNum;
-  window.__devJumpToChapter = function(chap, localWave) {
-    chap = Math.max(1, Math.min(TOTAL_CHAPTERS, Math.floor(chap)));
-    localWave = Math.max(1, Math.min(WAVES_PER_CH, Math.floor(localWave || 1)));
-    _devJumpToWaveNum((chap - 1) * WAVES_PER_CH + localWave);
-  };
-
-  // ----- Activation: hold right mouse button + enter arrow code -----
-  //
-  //     CODE: ↑ → ↓ ↓ ↓ ← ← ←
-  //
-  // Hold RMB, tap the arrows in sequence within the activation window.
-  // Mirrors Helldivers' stratagem-call input pattern, which the player
-  // already learned for in-game stratagems — same muscle memory, same
-  // physical interaction.
-  //
-  // This listener is INDEPENDENT of the in-game stratagem menu. It
-  // watches RMB state and arrow keydowns directly. Side effect: while
-  // entering the dev code, the stratagem menu (which uses the same
-  // RMB+arrow inputs) will ALSO see the keystrokes — meaning the
-  // first 5 arrows of this code (↑→↓↓↓) match the THERMONUCLEAR
-  // stratagem code. If the player has a thermo artifact AND they
-  // happen to release RMB at the 5-arrow mark, a nuke would fire.
-  // In practice the dev intends to hold through all 8 arrows so this
-  // doesn't happen. To eliminate the risk entirely, clear your
-  // artifact pool in devtools first: `S.stratagemArtifacts = {}`.
-  const _DEV_CODE = ['up', 'right', 'down', 'down', 'down', 'left', 'left', 'left'];
-  const _DEV_CODE_WINDOW_MS = 4000;
-  let _devRmbDown = false;
-  let _devEntered = [];
-  let _devEnteredFirstT = 0;
-
-  function _resetDevBuffer() {
-    _devEntered = [];
-    _devEnteredFirstT = 0;
-  }
-
-  // Right mouse button — track down/up. capture phase so we see this
-  // before any other RMB handler in the codebase.
-  window.addEventListener('mousedown', (e) => {
-    if (e.button === 2) {
-      _devRmbDown = true;
-      _resetDevBuffer();
-    }
-  }, true);
-  window.addEventListener('mouseup', (e) => {
-    if (e.button === 2) {
-      _devRmbDown = false;
-      _resetDevBuffer();
-    }
-  }, true);
-
-  // Arrow keys — only buffered while RMB is held.
-  window.addEventListener('keydown', (e) => {
-    if (!_devRmbDown) return;
-    let dir = null;
-    if (e.key === 'ArrowUp')         dir = 'up';
-    else if (e.key === 'ArrowDown')  dir = 'down';
-    else if (e.key === 'ArrowLeft')  dir = 'left';
-    else if (e.key === 'ArrowRight') dir = 'right';
-    if (!dir) return;
-
-    // Skip when typing in an input.
-    const t = e.target;
-    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
-
-    const now = performance.now();
-    if (_devEntered.length === 0) _devEnteredFirstT = now;
-
-    // If too much time has elapsed since the FIRST arrow, reset and
-    // treat this keystroke as the new first entry. Window protects
-    // against incidental RMB-held arrow taps during normal play.
-    if (now - _devEnteredFirstT > _DEV_CODE_WINDOW_MS) {
-      _devEntered = [];
-      _devEnteredFirstT = now;
-    }
-
-    _devEntered.push(dir);
-
-    // Match check — does the current buffer equal the dev code so far?
-    // Bail (and reset) if the buffer diverges from the expected prefix
-    // so a wrong arrow doesn't keep extending stale state.
-    let prefixOk = true;
-    for (let i = 0; i < _devEntered.length; i++) {
-      if (_devEntered[i] !== _DEV_CODE[i]) { prefixOk = false; break; }
-    }
-    if (!prefixOk) {
-      _resetDevBuffer();
-      return;
-    }
-    if (_devEntered.length >= _DEV_CODE.length) {
-      // Full code entered — open the dev console.
-      _resetDevBuffer();
-      _toggleDevConsole();
-      // Don't preventDefault — we want the stratagem listener to also
-      // see the final keystroke if it cares. The dev console is
-      // additive; the player's existing inputs continue normally.
-    }
-  }, true);
-
-  // ----- Console UI (lazy build) -----
-  let _consoleEl = null;
-  function _ensureConsole() {
-    if (_consoleEl) return _consoleEl;
-    const root = document.createElement('div');
-    root.id = 'dev-cheat-console';
-    root.style.cssText = [
-      'position: fixed',
-      'top: 80px',
-      'right: 16px',
-      'z-index: 99999',
-      'min-width: 240px',
-      'padding: 12px 14px',
-      'background: rgba(2, 12, 6, 0.96)',
-      'border: 2px solid #00ff66',
-      'box-shadow: 0 0 22px rgba(0, 255, 102, 0.55), inset 0 0 18px rgba(0, 255, 102, 0.10)',
-      'color: #ccffd9',
-      'font-family: "Courier New", monospace',
-      'font-size: 12px',
-      'letter-spacing: 1px',
-      'pointer-events: auto',
-      'user-select: none',
-      '-webkit-user-select: none',
-    ].join(';');
-
-    // Build the chapter dropdown options dynamically from CHAPTERS so
-    // names stay in sync if the catalog changes.
-    let chapterOptions = '';
-    for (let i = 0; i < TOTAL_CHAPTERS; i++) {
-      const nm = (CHAPTERS[i] && CHAPTERS[i].name) || ('CH ' + (i + 1));
-      chapterOptions += `<option value="${i + 1}">${i + 1} · ${nm}</option>`;
-    }
-    let waveOptions = '';
-    for (let i = 1; i <= WAVES_PER_CH; i++) {
-      waveOptions += `<option value="${i}">${i}</option>`;
-    }
-
-    root.innerHTML = `
-      <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:10px;">
-        <div style="color:#00ff66; font-weight:bold; letter-spacing:2px;">⚙ DEV · JUMP</div>
-        <div id="dev-cheat-close" style="cursor:pointer; color:#888; padding:2px 6px;" title="Close (ESC)">✕</div>
-      </div>
-      <label style="display:block; margin-bottom:8px;">
-        <span style="color:#888; display:inline-block; width:64px;">CHAPTER</span>
-        <select id="dev-cheat-chapter" style="background:#020807; color:#ccffd9; border:1px solid #00ff66; padding:3px 6px; font-family:inherit;">
-          ${chapterOptions}
-        </select>
-      </label>
-      <label style="display:block; margin-bottom:10px;">
-        <span style="color:#888; display:inline-block; width:64px;">WAVE</span>
-        <select id="dev-cheat-wave" style="background:#020807; color:#ccffd9; border:1px solid #00ff66; padding:3px 6px; font-family:inherit;">
-          ${waveOptions}
-        </select>
-      </label>
-      <button id="dev-cheat-jump" style="
-        width:100%; padding:8px;
-        background:transparent; color:#00ff66;
-        border:2px solid #00ff66; cursor:pointer;
-        font-family:inherit; font-size:13px; letter-spacing:2px; font-weight:bold;
-      ">JUMP →</button>
-      <div style="margin-top:10px; padding-top:8px; border-top:1px solid rgba(0,255,102,0.18); font-size:10px; color:#666;">
-        RMB + <code style="color:#00ff66;">↑→↓↓↓←←←</code> to toggle · ESC closes<br>
-        Console: <code style="color:#00ff66;">__devJumpToChapter(c, w)</code>
-      </div>
-    `;
-    document.body.appendChild(root);
-    _consoleEl = root;
-
-    // Pre-select the player's current chapter/wave so the inputs
-    // reflect where they are now.
-    try {
-      const curChap = Math.floor((S.wave - 1) / WAVES_PER_CH) + 1;
-      const curLW = ((S.wave - 1) % WAVES_PER_CH) + 1;
-      root.querySelector('#dev-cheat-chapter').value = String(Math.max(1, Math.min(TOTAL_CHAPTERS, curChap)));
-      root.querySelector('#dev-cheat-wave').value = String(Math.max(1, Math.min(WAVES_PER_CH, curLW)));
-    } catch (e) {}
-
-    // Wire buttons.
-    root.querySelector('#dev-cheat-close').addEventListener('click', _hideConsole);
-    root.querySelector('#dev-cheat-jump').addEventListener('click', () => {
-      const chap = parseInt(root.querySelector('#dev-cheat-chapter').value, 10) || 1;
-      const lw = parseInt(root.querySelector('#dev-cheat-wave').value, 10) || 1;
-      _devJumpToWaveNum((chap - 1) * WAVES_PER_CH + lw);
-      // Keep console open — devs often jump multiple times per session.
-    });
-
-    return root;
-  }
-
-  function _toggleDevConsole() {
-    if (_consoleEl && _consoleEl.style.display !== 'none') {
-      _hideConsole();
-    } else {
-      _showConsole();
-    }
-  }
-  function _showConsole() {
-    const el = _ensureConsole();
-    el.style.display = '';
-    // Refresh selected values to current wave each time we open.
-    try {
-      const curChap = Math.floor((S.wave - 1) / WAVES_PER_CH) + 1;
-      const curLW = ((S.wave - 1) % WAVES_PER_CH) + 1;
-      el.querySelector('#dev-cheat-chapter').value = String(Math.max(1, Math.min(TOTAL_CHAPTERS, curChap)));
-      el.querySelector('#dev-cheat-wave').value = String(Math.max(1, Math.min(WAVES_PER_CH, curLW)));
-    } catch (e) {}
-  }
-  function _hideConsole() {
-    if (_consoleEl) _consoleEl.style.display = 'none';
-  }
-
-  // ESC closes the console (without ending the run / opening pause menu).
-  // capture phase + check that the console is open + stopPropagation so
-  // ESC doesn't bubble to the pause-menu handler when our console
-  // claimed the keystroke.
-  window.addEventListener('keydown', (e) => {
-    if (e.key !== 'Escape') return;
-    if (!_consoleEl || _consoleEl.style.display === 'none') return;
-    _hideConsole();
-    e.stopPropagation();
-    e.preventDefault();
-  }, true);
 })();

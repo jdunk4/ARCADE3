@@ -3,51 +3,51 @@
 // first grenade, first damage, etc.)
 //
 // USAGE:
-//   import { probe, probeAsync, installLongTaskObserver } from './perfProbe.js';
+//   import { probe, probeAsync, installLongTaskObserver, getLastSlowTag } from './perfProbe.js';
 //
 //   probe('flinger:summon', () => { ... synchronous block ... });
 //   const result = await probeAsync('flinger:loadGLB', async () => { ... });
 //
 // On the first call to any tag, the result prints with a 🐢 SLOW / 🟢 OK
-// flag (>50ms = SLOW). The result also stays in performance.measure
-// records so the DevTools Performance panel can visualize them on the
-// timeline alongside frame data.
+// flag (>16ms = SLOW). Output uses console.warn so the messages appear
+// alongside the existing [long-frame] warnings rather than being
+// filtered out by a noisy default-level console.
 //
-// Set ENABLED = false to disable all probes with zero runtime cost
-// (the wrappers still execute the inner function but skip timing).
+// Set ENABLED = false to disable all probes with zero runtime cost.
 //
 // REMOVE-ME: when the source of the freeze has been identified and
 // fixed, this module + every probe() call site can be deleted in one
 // pass. Search for "perfProbe" or "probe(".
 
-// Master switch — flip to false to silence all probes.
 const ENABLED = true;
-
-// Threshold in milliseconds for the SLOW flag. Anything above this
-// blocks the main thread visibly (>1 frame at 60fps).
 const SLOW_MS = 16;
 
-// Tags we've seen — first-time-only flag means we can highlight the
-// initial run of each tag (which is when the freeze happens).
 const _firstSeen = new Set();
 
-/**
- * Wrap a synchronous block in a high-resolution timer. Logs duration,
- * marks first-time tags, flags slow runs.
- *
- * Returns the wrapped function's return value so it can be inlined:
- *   const x = probe('foo', () => doFoo());
- */
+// The most-recent tag that exceeded SLOW_MS. The long-frame logger
+// in main.js reads this as a "what was the last expensive thing?"
+// breadcrumb, replacing the previous logger that always blamed
+// damage events even when the freeze happened during something else.
+let _lastSlowTag = null;
+let _lastSlowMs = 0;
+let _lastSlowAt = 0;
+export function getLastSlowTag() {
+  if (!_lastSlowTag) return null;
+  return {
+    tag: _lastSlowTag,
+    ms: _lastSlowMs,
+    agoMs: performance.now() - _lastSlowAt,
+  };
+}
+
 export function probe(tag, fn) {
   if (!ENABLED) return fn();
   const t0 = performance.now();
-  let ok = true;
   let result;
   try {
     result = fn();
   } catch (e) {
-    ok = false;
-    _logProbe(tag, performance.now() - t0, /*first*/ false, /*err*/ true);
+    _logProbe(tag, performance.now() - t0, false, true);
     throw e;
   }
   const dt = performance.now() - t0;
@@ -57,10 +57,6 @@ export function probe(tag, fn) {
   return result;
 }
 
-/**
- * Async variant — awaits the inner promise and times the full async
- * span (including any awaits inside).
- */
 export async function probeAsync(tag, fn) {
   if (!ENABLED) return await fn();
   const t0 = performance.now();
@@ -68,7 +64,7 @@ export async function probeAsync(tag, fn) {
   try {
     result = await fn();
   } catch (e) {
-    _logProbe(tag, performance.now() - t0, /*first*/ false, /*err*/ true);
+    _logProbe(tag, performance.now() - t0, false, true);
     throw e;
   }
   const dt = performance.now() - t0;
@@ -80,29 +76,26 @@ export async function probeAsync(tag, fn) {
 
 function _logProbe(tag, dt, first, err) {
   const slow = dt >= SLOW_MS;
+  if (slow) {
+    _lastSlowTag = tag;
+    _lastSlowMs = dt;
+    _lastSlowAt = performance.now();
+  }
+  // Skip log entirely if not slow and not first — keeps the console
+  // quiet when everything is healthy. Anything noteworthy
+  // (first-time call, slow run, error) does log.
+  if (!slow && !first && !err) return;
   const firstFlag = first ? '🆕FIRST ' : '';
   const slowFlag = slow ? '🐢SLOW ' : '🟢OK    ';
   const errFlag = err ? '❌ERR ' : '';
   const dtStr = dt.toFixed(1).padStart(7, ' ');
-  // Bright styling so the freezes stand out in a noisy console
-  const style = slow
-    ? 'color:#ff5555;font-weight:bold;'
-    : (first ? 'color:#44ddff;' : 'color:#888;');
-  // eslint-disable-next-line no-console
-  console.log(
-    `%c[perf] ${firstFlag}${slowFlag}${errFlag}${dtStr}ms  ${tag}`,
-    style,
+  // console.warn so the entry sits in the same level/visibility as
+  // the [long-frame] warnings the user is already seeing.
+  console.warn(
+    `[perf] ${firstFlag}${slowFlag}${errFlag}${dtStr}ms  ${tag}`,
   );
 }
 
-/**
- * Install a PerformanceObserver that flags any task on the main thread
- * taking longer than `thresholdMs` (default 50). Captures things our
- * explicit probe() calls miss — e.g. shader compiles in renderer.compile,
- * GC pauses, hidden async work, browser layout/paint hitches.
- *
- * Call once at startup. Safe no-op on browsers without the API.
- */
 export function installLongTaskObserver(thresholdMs = 50) {
   if (!ENABLED) return;
   if (typeof PerformanceObserver === 'undefined') {
@@ -113,18 +106,16 @@ export function installLongTaskObserver(thresholdMs = 50) {
     const obs = new PerformanceObserver((list) => {
       for (const entry of list.getEntries()) {
         if (entry.duration < thresholdMs) continue;
-        // eslint-disable-next-line no-console
-        console.log(
-          `%c[perf-longtask] 🚨 ${entry.duration.toFixed(0)}ms  ${entry.name}` +
+        console.warn(
+          `[perf-longtask] 🚨 ${entry.duration.toFixed(0)}ms  ${entry.name}` +
           (entry.attribution && entry.attribution.length
             ? ` (${entry.attribution.map(a => a.name || a.containerType).join(',')})`
             : ''),
-          'color:#ff8800;font-weight:bold;background:#220;padding:2px 4px;',
         );
       }
     });
     obs.observe({ entryTypes: ['longtask'] });
-    console.log('%c[perf] long-task observer installed (threshold ' + thresholdMs + 'ms)', 'color:#888;');
+    console.warn('[perf] long-task observer installed (threshold ' + thresholdMs + 'ms)');
   } catch (e) {
     console.warn('[perf] longtask observer failed:', e.message);
   }

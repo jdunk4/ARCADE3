@@ -41,6 +41,8 @@ import { Audio } from './audio.js';
 import { S, shake } from './state.js';
 import { UI } from './ui.js';
 import { attachMixer, animationsReady, applyGunHoldPose, GUN_HOLD_EXCLUDE_BONES, IDLE_HIP_EXCLUDE_BONES } from './animation.js';
+// Performance instrumentation (REMOVE-ME after diagnosing first-spawn freezes)
+import { probe } from './perfProbe.js';
 
 // -----------------------------------------------------------------------------
 // ASSETS / CONSTANTS
@@ -327,19 +329,18 @@ function _releaseFlingerPoolMesh(mesh, mixer) {
  */
 export function onWaveStartedForFlingers(waveNum) {
   if (waveNum <= lastWaveAwarded) return;
-  // CHAPTER 7 — flingers are removed entirely. The chapter is a
-  // fresh-slate empty arena driven by blueprints + stratagems. Per
-  // playtester: "Can we get rid of the flinger and pixl pal in
-  // chapter 7?"
-  if (S.chapter === PARADISE_FALLEN_CHAPTER_IDX) {
-    lastWaveAwarded = waveNum;   // still mark to keep the dedupe gate honest
-    return;
-  }
   if (FLINGER_WAVE_SCHEDULE.has(waveNum)) {
     S.flingerCharges = Math.min(MAX_CHARGES, (S.flingerCharges || 0) + 1);
-    _pendingDeploy = true;
-    _pendingDeployWave = waveNum;
-    UI.toast && UI.toast('FLINGER STANDING BY · POWER THE PLANT', '#ff8800', 2600);
+    const ch7Wave = (S.chapter === PARADISE_FALLEN_CHAPTER_IDX);
+    if (ch7Wave) {
+      // Ch 7 — skip the power-plant gate; deploy right away.
+      UI.toast && UI.toast('FLINGER DEPLOYED', '#ff8800', 2200);
+      _tryAutoSummon();
+    } else {
+      _pendingDeploy = true;
+      _pendingDeployWave = waveNum;
+      UI.toast && UI.toast('FLINGER STANDING BY · POWER THE PLANT', '#ff8800', 2600);
+    }
     _syncHUD();
   }
   lastWaveAwarded = waveNum;
@@ -413,11 +414,10 @@ export function updateFlingers(dt, playerPos) {
 
     f.life += dt;
 
-    // Standard despawn conditions — lifetime expired or kill cap reached.
-    // (Legacy ch7 persistence flag was removed when flingers were
-    // disabled entirely in chapter 7; any flinger still alive in ch7
-    // is a leftover from an earlier chapter and should despawn.)
-    if (!f.despawning && (
+    // Despawn conditions — skipped in chapter 7 (PARADISE FALLEN) where
+    // flingers + pals are summoned together and stay to the end of the run.
+    const isCh7 = S.chapter === PARADISE_FALLEN_CHAPTER_IDX;
+    if (!f.despawning && !isCh7 && (
         f.life >= f.maxLife ||
         f.killsSinceSummon >= KILLS_TO_DESPAWN
     )) {
@@ -627,12 +627,45 @@ function _tryAutoSummon() {
     FLINGER_GLB_NAMES[Math.floor(Math.random() * FLINGER_GLB_NAMES.length)];
   const tint = FLINGER_TINTS[glbName] || 0xff8800;
 
-  // Spawn offset just beside the player, within arena bounds.
-  const ang = Math.random() * Math.PI * 2;
+  // Spawn offset just beside the player, within arena bounds. Per
+  // playtester: "It would be nice if the flinger did not spawn on top
+  // of the cannon or turrets." Cannons/silos sit at the arena center.
+  // Strategy: try 8 candidate angles, prefer the one whose resulting
+  // position is FARTHEST from origin (arena center), so as long as
+  // the player isn't dead-center the flinger lands on the player's
+  // outer side rather than wedging between them and the central
+  // structure. Falls back to the first try if all are out of bounds.
   const px = (S.playerPos && S.playerPos.x) || 0;
   const pz = (S.playerPos && S.playerPos.z) || 0;
-  const spawnX = px + Math.cos(ang) * FLINGER_SPAWN_OFFSET;
-  const spawnZ = pz + Math.sin(ang) * FLINGER_SPAWN_OFFSET;
+  let spawnX = 0, spawnZ = 0;
+  {
+    const halfArena = (typeof ARENA !== 'undefined' ? ARENA / 2 : 50) - 2;
+    let bestScore = -Infinity;
+    let bestX = px + FLINGER_SPAWN_OFFSET, bestZ = pz;
+    for (let i = 0; i < 8; i++) {
+      const ang = (Math.PI * 2 * i) / 8 + Math.random() * 0.3;
+      const cx = px + Math.cos(ang) * FLINGER_SPAWN_OFFSET;
+      const cz = pz + Math.sin(ang) * FLINGER_SPAWN_OFFSET;
+      // Reject if outside arena bounds.
+      if (Math.abs(cx) > halfArena || Math.abs(cz) > halfArena) continue;
+      // Score = distance from arena origin (preferring outer positions
+      // away from cannons/silos which cluster at center). Penalize
+      // proximity to other already-summoned flingers so they don't
+      // pile up.
+      let score = Math.sqrt(cx * cx + cz * cz);
+      for (const other of flingers) {
+        if (!other.pos) continue;
+        const dx = cx - other.pos.x, dz = cz - other.pos.z;
+        const d = Math.sqrt(dx * dx + dz * dz);
+        if (d < 3) score -= (3 - d) * 4;     // strong penalty for piling up
+      }
+      if (score > bestScore) {
+        bestScore = score;
+        bestX = cx; bestZ = cz;
+      }
+    }
+    spawnX = bestX; spawnZ = bestZ;
+  }
 
   const placeholder = new THREE.Group();
   placeholder.position.set(spawnX, 0, spawnZ);
@@ -668,15 +701,18 @@ function _tryAutoSummon() {
   // Pool was built during the matrix dive by preloadFlingerGLBs(). All
   // six color variants are pre-cloned + PSO-warmed, so first-arrival is
   // zero-jank.
-  const pooledMesh = _acquireFlingerPoolMesh(glbName);
+  const pooledMesh = probe('flinger:acquirePool',
+    () => _acquireFlingerPoolMesh(glbName));
   if (pooledMesh) {
     scene.remove(f.obj);
     pooledMesh.visible = true;
     pooledMesh.matrixAutoUpdate = true;
     pooledMesh.position.copy(f.pos);
     pooledMesh.rotation.y = Math.random() * Math.PI * 2;
-    _resetFlingerHighlight(pooledMesh);
-    _applyFlingerHighlight(pooledMesh, tint);
+    probe('flinger:resetHighlight',
+      () => _resetFlingerHighlight(pooledMesh));
+    probe('flinger:applyHighlight',
+      () => _applyFlingerHighlight(pooledMesh, tint));
     f.obj = pooledMesh;
     f.pos = pooledMesh.position;
     f.ready = true;
@@ -686,8 +722,9 @@ function _tryAutoSummon() {
         // No excludeBones — flingers are on an Unreal rig, so the VRM-named
         // gun-hold pose never took effect anyway. Let the walk clip drive
         // every bone (pelvis, legs, arms, head) for a clean natural cycle.
-        f.mixer = attachMixer(pooledMesh, {});
-        f.mixer.playWalk();
+        f.mixer = probe('flinger:attachMixer',
+          () => attachMixer(pooledMesh, {}));
+        probe('flinger:playWalk', () => f.mixer.playWalk());
       } catch (e) {
         console.warn('[Flinger] attachMixer failed', e);
       }
@@ -953,75 +990,27 @@ function _loadGLBWithRetry(url, maxAttempts = 3) {
 }
 
 function _applyFlingerHighlight(mesh, tint) {
-  const tintColor = new THREE.Color(tint);
-  mesh.traverse(obj => {
-    if (obj.isMesh && obj.material) {
-      const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
-      for (const m of mats) {
-        if (m.emissive) {
-          if (!m.userData) m.userData = {};
-          if (!m.userData.__flingerOrigEmissive) {
-            m.userData.__flingerOrigEmissive = m.emissive.clone();
-            m.userData.__flingerOrigIntensity = m.emissiveIntensity || 0;
-          }
-          m.emissive = m.userData.__flingerOrigEmissive.clone()
-            .add(tintColor.clone().multiplyScalar(0.25));
-          m.emissiveIntensity = Math.max(0.3, m.userData.__flingerOrigIntensity);
-          m.needsUpdate = true;
-        }
-      }
-    }
-  });
-  // Outer aura ring at the feet
-  const auraGeo = new THREE.RingGeometry(1.1, 1.7, 28);
-  const auraMat = new THREE.MeshBasicMaterial({
-    color: tint,
-    side: THREE.DoubleSide,
-    transparent: true,
-    opacity: 0.6,
-  });
-  const aura = new THREE.Mesh(auraGeo, auraMat);
-  aura.name = 'flinger-aura';
-  aura.rotation.x = -Math.PI / 2;
-  aura.position.y = 0.05;
-  mesh.add(aura);
-
-  // Inner white ring for extra glow
-  const innerGeo = new THREE.RingGeometry(0.7, 0.95, 20);
-  const innerMat = new THREE.MeshBasicMaterial({
-    color: 0xffffff,
-    side: THREE.DoubleSide,
-    transparent: true,
-    opacity: 0.35,
-  });
-  const inner = new THREE.Mesh(innerGeo, innerMat);
-  inner.name = 'flinger-aura';
-  inner.rotation.x = -Math.PI / 2;
-  inner.position.y = 0.06;
-  mesh.add(inner);
+  // INTENTIONALLY EMPTY. Per playtester: "We don't really need the
+  // chapter tint on the asset." The previous implementation
+  // traversed every material in the GLB and set `m.needsUpdate = true`
+  // after mutating `emissive`, which forced Three.js to recompile
+  // the shader for each material the FIRST time a flinger spawned.
+  // On Unreal-rigged GLBs with 8-15 materials per mesh, that
+  // recompile cascade was blocking the main thread for 2-3 seconds
+  // — the visible freeze on first flinger summon. Removing the
+  // tint pass + the two aura rings eliminates the freeze AND
+  // removes the unwanted color-on-asset effect in one change.
+  //
+  // Kept as a no-op stub so existing call sites (_tryAutoSummon,
+  // fallback path) don't need changing.
+  void mesh; void tint;
 }
 
 function _resetFlingerHighlight(mesh) {
-  for (let i = mesh.children.length - 1; i >= 0; i--) {
-    const c = mesh.children[i];
-    if (c && c.name === 'flinger-aura') {
-      mesh.remove(c);
-      if (c.geometry) c.geometry.dispose();
-      if (c.material) c.material.dispose();
-    }
-  }
-  mesh.traverse(obj => {
-    if (obj.isMesh && obj.material) {
-      const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
-      for (const m of mats) {
-        if (m.userData && m.userData.__flingerOrigEmissive) {
-          m.emissive.copy(m.userData.__flingerOrigEmissive);
-          m.emissiveIntensity = m.userData.__flingerOrigIntensity;
-          m.needsUpdate = true;
-        }
-      }
-    }
-  });
+  // No-op: _applyFlingerHighlight no longer applies anything (per the
+  // playtester request to drop chapter tint), so there's nothing to
+  // reset. Kept as a stub for symmetry with call sites.
+  void mesh;
 }
 
 function _buildFallbackVoxel(placeholder, tint) {
