@@ -697,13 +697,120 @@ function showIncomingCall() {
         font-family: 'Impact', 'Arial Black', sans-serif;
         color: #00ff66;
       }
-      #initiate-protocol .ip-title {
-        font-size: clamp(48px, 10vw, 120px);
-        letter-spacing: 8px;
-        text-shadow: 0 0 20px #00ff66, 0 0 40px rgba(0,255,102,0.5);
-        animation: ip-pulse 2s ease-in-out infinite;
-        margin-bottom: 16px;
+      /* SIMVOID title — replaces the previous "INITIATE PROTOCOL"
+         text. Per playtester: "Instead of Initiate Protocol on the
+         screen with begin can we put SIM VOID in a really cool
+         unforgettable style? Maybe the mouse hovers over it and it
+         becomes numbers."
+
+         Composition mirrors the main title screen's #simvoid-title
+         (SIM bright + extruded, VOID darker + recessed, chromatic
+         aberration on the whole word) but scaled larger to fill the
+         pre-game splash. Each character is wrapped in a span so JS
+         can swap its content on hover for the decode-to-numbers
+         effect. The original letter is preserved in data-orig so we
+         can restore on hover-out. */
+      #initiate-protocol .simvoid-launch {
+        display: flex;
+        flex-direction: row;
+        align-items: baseline;
+        gap: 0.18em;
+        line-height: 0.92;
+        margin-bottom: 18px;
+        font-size: clamp(56px, 12vw, 160px);
+        letter-spacing: 4px;
+        cursor: default;
+        position: relative;
+        filter:
+          drop-shadow(-1.5px 0 0 rgba(255, 60, 80, 0.45))
+          drop-shadow(1.5px 0 0 rgba(60, 220, 255, 0.40));
+        animation: simvoid-launch-pulse 2.4s ease-in-out infinite;
+        user-select: none;
+        -webkit-user-select: none;
       }
+      #initiate-protocol .simvoid-launch::after {
+        content: "";
+        position: absolute;
+        inset: -8px -8px;
+        background: repeating-linear-gradient(
+          0deg,
+          rgba(0, 0, 0, 0.20) 0px,
+          rgba(0, 0, 0, 0.20) 1px,
+          transparent 1px,
+          transparent 4px
+        );
+        pointer-events: none;
+        z-index: 5;
+        mix-blend-mode: multiply;
+      }
+      .simvoid-launch-half {
+        display: inline-flex;
+        flex-direction: row;
+        align-items: baseline;
+      }
+      .simvoid-launch-char {
+        display: inline-block;
+        position: relative;
+        /* Fixed-width slot so glyph swaps don't reflow the title
+           during the hover-decode scramble. Without this, swapping
+           S→4→M would jiggle the title because Impact's character
+           widths differ. */
+        min-width: 0.62em;
+        text-align: center;
+        transition: color 0.15s ease;
+      }
+      .simvoid-launch-sim .simvoid-launch-char {
+        color: #6dff95;
+        text-shadow:
+          1px 1px 0 #4adb6e,
+          2px 2px 0 #2bbb52,
+          3px 3px 0 #11993d,
+          4px 4px 0 #0a7a30,
+          5px 5px 0 #065d24,
+          6px 6px 0 #033f17,
+          8px 8px 0 #000,
+          0 0 14px rgba(110, 255, 160, 0.85),
+          0 0 32px rgba(0, 255, 102, 0.55);
+      }
+      .simvoid-launch-void .simvoid-launch-char {
+        color: #11663a;
+        text-shadow:
+          1px 1px 0 #062b16,
+          2px 2px 0 #031808,
+          3px 3px 0 #000,
+          4px 4px 0 #1a8c4a,
+          5px 5px 0 #2bbb52,
+          -1px -1px 0 #001508,
+          0 0 8px rgba(0, 80, 30, 0.6),
+          0 0 24px rgba(0, 255, 102, 0.18);
+        transform: translateY(0.05em);
+      }
+      /* Decoding state — applied via JS during the hover scramble.
+         Letters become hot-white with strong matrix glow so the
+         decode reads as "the simulation is being pierced." */
+      #initiate-protocol .simvoid-launch.decoding .simvoid-launch-char {
+        color: #ffffff;
+        text-shadow:
+          0 0 8px #6dff95,
+          0 0 18px #00ff66,
+          0 0 36px rgba(0, 255, 102, 0.7),
+          2px 2px 0 #000;
+      }
+      /* Decoded state — after each letter has locked to a digit.
+         Slightly less hot than during-scramble so the eye reads
+         "this is the locked value, holding". */
+      #initiate-protocol .simvoid-launch.decoded .simvoid-launch-char {
+        color: #b0ffcc;
+        text-shadow:
+          0 0 6px #00ff66,
+          0 0 16px rgba(0, 255, 102, 0.5),
+          2px 2px 0 #000;
+      }
+      @keyframes simvoid-launch-pulse {
+        0%, 100% { opacity: 1; }
+        50%      { opacity: 0.85; }
+      }
+
       #initiate-protocol .ip-sub {
         font-size: 14px;
         letter-spacing: 8px;
@@ -729,25 +836,21 @@ function showIncomingCall() {
         box-shadow: 0 0 40px rgba(0,255,102,0.8);
         transform: scale(1.05);
       }
-      @keyframes ip-pulse {
-        0%, 100% { opacity: 1; }
-        50% { opacity: 0.7; }
-      }
       /* Mobile — push the title block UP by switching from center
          flex alignment to a top-anchored layout. Without this, the
-         large pulsing INITIATE PROTOCOL title gets centered on the
-         viewport and the BEGIN button sits low on the screen. Per
-         playtester: "On the main screen before we BEGIN simulation
-         can we move BEGIN up?" */
+         large pulsing title gets centered on the viewport and the
+         BEGIN button sits low on the screen. Per playtester: "On the
+         main screen before we BEGIN simulation can we move BEGIN
+         up?" */
       @media (max-width: 900px), (pointer: coarse) {
         #initiate-protocol {
           justify-content: flex-start;
           padding-top: 12vh;
         }
-        #initiate-protocol .ip-title {
-          font-size: clamp(36px, 12vw, 80px);
-          letter-spacing: 6px;
-          margin-bottom: 8px;
+        #initiate-protocol .simvoid-launch {
+          font-size: clamp(40px, 14vw, 100px);
+          letter-spacing: 2px;
+          margin-bottom: 12px;
         }
         #initiate-protocol .ip-sub {
           font-size: 11px;
@@ -761,15 +864,127 @@ function showIncomingCall() {
         }
       }
     </style>
-    <div class="ip-title">INITIATE</div>
-    <div class="ip-title">PROTOCOL</div>
+    <h1 class="simvoid-launch" id="simvoid-launch" aria-label="SIMVOID">
+      <span class="simvoid-launch-half simvoid-launch-sim" aria-hidden="true">
+        <span class="simvoid-launch-char" data-orig="S">S</span><span class="simvoid-launch-char" data-orig="I">I</span><span class="simvoid-launch-char" data-orig="M">M</span>
+      </span>
+      <span class="simvoid-launch-half simvoid-launch-void" aria-hidden="true">
+        <span class="simvoid-launch-char" data-orig="V">V</span><span class="simvoid-launch-char" data-orig="O">O</span><span class="simvoid-launch-char" data-orig="I">I</span><span class="simvoid-launch-char" data-orig="D">D</span>
+      </span>
+    </h1>
     <div class="ip-sub">:: AWAITING USER INPUT ::</div>
     <button class="ip-btn" id="ip-begin">&gt;&gt; BEGIN &lt;&lt;</button>
   `;
   document.body.appendChild(initOverlay);
 
+  // Hover-to-decode wiring on the SIMVOID title.
+  // Per playtester: "Maybe the mouse hovers over it and it becomes
+  // numbers." On mouseenter (or first touch on mobile): each letter
+  // rapid-scrambles through random matrix glyphs for ~500ms, then
+  // settles on a random digit (0-9). On mouseleave (or 1.5s after
+  // touch on mobile): scramble briefly back to the original letter.
+  // The whole effect reads as "you've pierced through the simulation
+  // and are seeing the raw data underneath SIM VOID".
+  const _simvoidTitle = document.getElementById('simvoid-launch');
+  if (_simvoidTitle) {
+    const SCRAMBLE_GLYPHS = '0123456789ABCDEF#@$%&*+=<>{}[]/\\\\|アイウエオカキクケコサシスセソタチツテト';
+    const SETTLED_DIGITS = '0123456789';
+
+    function _randGlyph(pool) {
+      return pool.charAt(Math.floor(Math.random() * pool.length));
+    }
+
+    function _clearTitleTimers() {
+      if (_simvoidTitle._scrambleTimers) {
+        for (const t of _simvoidTitle._scrambleTimers) clearTimeout(t);
+        _simvoidTitle._scrambleTimers = null;
+      }
+      if (_simvoidTitle._scrambleInterval) {
+        clearInterval(_simvoidTitle._scrambleInterval);
+        _simvoidTitle._scrambleInterval = null;
+      }
+    }
+
+    function _decodeStart() {
+      _clearTitleTimers();
+      const chars = _simvoidTitle.querySelectorAll('.simvoid-launch-char');
+      _simvoidTitle.classList.add('decoding');
+      _simvoidTitle.classList.remove('decoded');
+      // Rapid scramble — every 50ms, each unlocked letter swaps to a
+      // new random glyph. Letters lock to a digit one-by-one in a
+      // staggered cascade (left-to-right) so the lock reads as a
+      // decryption progress bar.
+      _simvoidTitle._scrambleInterval = setInterval(() => {
+        for (const c of chars) {
+          if (!c._locked) c.textContent = _randGlyph(SCRAMBLE_GLYPHS);
+        }
+      }, 50);
+      _simvoidTitle._scrambleTimers = [];
+      chars.forEach((c, i) => {
+        c._locked = false;
+        const settleAt = 350 + i * 60;       // 350ms, 410ms, 470ms, ...
+        _simvoidTitle._scrambleTimers.push(setTimeout(() => {
+          c._locked = true;
+          c.textContent = _randGlyph(SETTLED_DIGITS);
+        }, settleAt));
+      });
+      const finalSettle = 350 + chars.length * 60 + 50;
+      _simvoidTitle._scrambleTimers.push(setTimeout(() => {
+        if (_simvoidTitle._scrambleInterval) {
+          clearInterval(_simvoidTitle._scrambleInterval);
+          _simvoidTitle._scrambleInterval = null;
+        }
+        _simvoidTitle.classList.remove('decoding');
+        _simvoidTitle.classList.add('decoded');
+      }, finalSettle));
+    }
+
+    function _decodeEnd() {
+      _clearTitleTimers();
+      const chars = _simvoidTitle.querySelectorAll('.simvoid-launch-char');
+      _simvoidTitle.classList.remove('decoded');
+      _simvoidTitle.classList.add('decoding');
+      _simvoidTitle._scrambleInterval = setInterval(() => {
+        for (const c of chars) {
+          if (!c._locked) c.textContent = _randGlyph(SCRAMBLE_GLYPHS);
+        }
+      }, 50);
+      _simvoidTitle._scrambleTimers = [];
+      chars.forEach((c, i) => {
+        c._locked = false;
+        const settleAt = 200 + i * 30;
+        _simvoidTitle._scrambleTimers.push(setTimeout(() => {
+          c._locked = true;
+          c.textContent = c.dataset.orig || '';
+        }, settleAt));
+      });
+      const finalSettle = 200 + chars.length * 30 + 50;
+      _simvoidTitle._scrambleTimers.push(setTimeout(() => {
+        if (_simvoidTitle._scrambleInterval) {
+          clearInterval(_simvoidTitle._scrambleInterval);
+          _simvoidTitle._scrambleInterval = null;
+        }
+        _simvoidTitle.classList.remove('decoding');
+      }, finalSettle));
+    }
+
+    _simvoidTitle.addEventListener('mouseenter', _decodeStart);
+    _simvoidTitle.addEventListener('mouseleave', _decodeEnd);
+    // Touch — on mobile/coarse pointers there's no hover. Tap to
+    // decode; auto-restore after 2 seconds.
+    _simvoidTitle.addEventListener('touchstart', (ev) => {
+      ev.preventDefault();
+      _decodeStart();
+      setTimeout(_decodeEnd, 2000);
+    }, { passive: false });
+    _simvoidTitle._cleanup = _clearTitleTimers;
+  }
+
   const beginBtn = document.getElementById('ip-begin');
   beginBtn.addEventListener('click', () => {
+    // Cancel any in-flight scramble timers so they don't fire after
+    // the overlay is gone.
+    if (_simvoidTitle && _simvoidTitle._cleanup) _simvoidTitle._cleanup();
     // Critical: this click is the user gesture that unlocks audio for the session
     Audio.init();
     Audio.resume();
