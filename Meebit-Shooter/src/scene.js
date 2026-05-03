@@ -10,6 +10,9 @@ export const camera = new THREE.PerspectiveCamera(55, window.innerWidth / window
 export const CAMERA_OFFSET = new THREE.Vector3(0, 17, 11);
 camera.position.copy(CAMERA_OFFSET);
 camera.lookAt(0, 0, 0);
+// Camera must be in the scene graph for camera-parented children
+// (player fill lights) to be included in the render.
+scene.add(camera);
 
 export const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
 renderer.setSize(window.innerWidth, window.innerHeight);

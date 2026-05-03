@@ -9,7 +9,7 @@
 
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
-import { scene } from './scene.js';
+import { scene, camera } from './scene.js';
 import { PLAYER, WEAPONS, GUEST_AVATAR_URL } from './config.js';
 import { S } from './state.js';
 import { attachMixer, animationsReady, applyGunHoldPose, GUN_HOLD_EXCLUDE_BONES, IDLE_HIP_EXCLUDE_BONES } from './animation.js';
@@ -223,17 +223,25 @@ function attachGLB(gltf) {
 
   scene.add(wrapper);
 
-  // PERMANENT player fill lights — wide, diffused, even coverage.
-  // Key light very high (y=10) with huge range (30u) and near-zero
-  // decay (0.6) so it acts almost like a directional — the entire
-  // meebit body + nearby ground gets even illumination with no
-  // visible hotspot. Rim light wider and softer too.
-  const playerFillTop = new THREE.PointLight(0xffffff, 2.8, 30, 0.6);
-  playerFillTop.position.set(0, 10.0, 4.0);
-  wrapper.add(playerFillTop);
-  const playerFillRim = new THREE.PointLight(0xffffff, 1.2, 20, 0.8);
-  playerFillRim.position.set(0, 5.0, -4.0);
-  wrapper.add(playerFillRim);
+  // PERMANENT player fill lights — parented to the CAMERA, not the
+  // player wrapper. The player rotates to face the mouse, so lights
+  // on the wrapper rotate WITH the player — meaning the lit side
+  // changes depending on which way the player faces. By parenting
+  // to the camera, the lights always illuminate from the camera's
+  // viewpoint: whatever the camera sees is lit, regardless of
+  // player rotation.
+  //
+  // Key: offset slightly below camera toward the player (y=-4, z=-6
+  //   in camera-local space = closer to the scene, shining down).
+  //   Wide range + low decay for soft even wash over the full body.
+  // Fill: offset to the side for gentle cross-lighting that adds
+  //   dimension without creating harsh shadows.
+  const playerFillTop = new THREE.PointLight(0xffffff, 3.0, 35, 0.5);
+  playerFillTop.position.set(0, -4, -6);  // camera-local: below + forward
+  camera.add(playerFillTop);
+  const playerFillRim = new THREE.PointLight(0xffffff, 1.2, 25, 0.7);
+  playerFillRim.position.set(3, -2, -8);  // camera-local: right + forward
+  camera.add(playerFillRim);
 
   // player.obj is the WRAPPER (outer group that the game rotates).
   // player._innerMesh is the actual VRM scene — needed by tryAttachPlayerMixer
@@ -459,12 +467,12 @@ function buildVoxel(onProgress, onDone, onError) {
     // Permanent fill lights — same as the GLB path, mirrored here so
     // the legacy/voxel mode also gets clear visibility in moody chapter
     // lighting. See the GLB-path version for the rationale.
-    const playerFillTop = new THREE.PointLight(0xffffff, 2.8, 30, 0.6);
-    playerFillTop.position.set(0, 10.0, 4.0);
-    root.add(playerFillTop);
-    const playerFillRim = new THREE.PointLight(0xffffff, 1.2, 20, 0.8);
-    playerFillRim.position.set(0, 5.0, -4.0);
-    root.add(playerFillRim);
+    const playerFillTop = new THREE.PointLight(0xffffff, 3.0, 35, 0.5);
+    playerFillTop.position.set(0, -4, -6);
+    camera.add(playerFillTop);
+    const playerFillRim = new THREE.PointLight(0xffffff, 1.2, 25, 0.7);
+    playerFillRim.position.set(3, -2, -8);
+    camera.add(playerFillRim);
 
     player.obj = root;
     player.head = head; player.body = body;
