@@ -215,21 +215,64 @@ export async function preloadPixlPalGLBs(onProgress, renderer, camera) {
     }
   }
 
-  // --- Phase C: PSO / shader warm against the LIVE scene (with its lights) ---
-  // CRITICAL: previously compiled against a tmpScene with no lights,
-  // which produced shaders for the "no lights" variant. When the
-  // mesh later moved to the main scene with directional/ambient/spot
-  // lights, the shader became invalid and Three.js recompiled it
-  // SYNCHRONOUSLY on the first render frame — visible 1-3 second
-  // freeze on first pixl-pal summon. Compile against the real scene
-  // with visible=false meshes already attached so the right shader
-  // variant gets cached.
+  // --- Phase C: PSO + animation + shadow + skinning warmup ---
+  // Same comprehensive warmup as flingers (see flingers.js phase C
+  // for the detailed rationale). Three goals: (1) compile main +
+  // shadow + skinning shaders by making meshes visible during
+  // compile, (2) cache animation property bindings via mixer warmup,
+  // (3) force a render frame to flush any lazy compilation.
   try {
     if (renderer && camera) {
+      // Make pool meshes visible briefly for the warmup pass.
+      for (const entry of poolEntries) {
+        if (entry.obj) {
+          entry.obj._wasVisible = entry.obj.visible;
+          entry.obj.visible = true;
+          entry.obj._wasMatrixAutoUpdate = entry.obj.matrixAutoUpdate;
+          entry.obj.matrixAutoUpdate = true;
+          entry.obj.updateMatrixWorld(true);
+        }
+      }
       renderer.compile(scene, camera);
+
+      // Mixer warmup — caches per-skeleton animation property bindings.
+      // Stashed on userData for reuse by the runtime summon path.
+      if (animationsReady && animationsReady()) {
+        for (const entry of poolEntries) {
+          if (!entry.obj) continue;
+          try {
+            const m = attachMixer(entry.obj, {});
+            m.playWalk();
+            m.update(0);
+            if (!entry.obj.userData) entry.obj.userData = {};
+            entry.obj.userData.__warmupMixer = m;
+          } catch (e) {
+            console.warn('[pixlPal] mixer warmup failed', e);
+          }
+        }
+      }
+
+      // Force a render to flush lazy shader compilation.
+      try {
+        renderer.render(scene, camera);
+      } catch (e) {
+        console.warn('[pixlPal] warmup render failed', e);
+      }
+
+      // Restore invisibility — pool meshes don't draw until summoned.
+      for (const entry of poolEntries) {
+        if (entry.obj) {
+          entry.obj.visible = entry.obj._wasVisible !== undefined
+            ? entry.obj._wasVisible : false;
+          entry.obj.matrixAutoUpdate = entry.obj._wasMatrixAutoUpdate !== undefined
+            ? entry.obj._wasMatrixAutoUpdate : false;
+          delete entry.obj._wasVisible;
+          delete entry.obj._wasMatrixAutoUpdate;
+        }
+      }
     }
   } catch (err) {
-    console.warn('[pixlPal] renderer.compile failed (non-fatal):', err);
+    console.warn('[pixlPal] warmup failed (non-fatal):', err);
   }
   console.log(`[pixlPal] ✓ pool ready — ${loaded}/${total} prewarmed`);
   return { loaded, total };
@@ -354,9 +397,17 @@ export function trySummonPixlPal(playerPos) {
         // No excludeBones — pixlpals are on an Unreal rig, the VRM gun-hold
         // pose never hit them, and the idle2/idle3 clips had a sideways
         // lean baked in. Plain walk on all bones reads clean and natural.
-        pal.mixer = probe('pixlpal:attachMixer',
-          () => attachMixer(pooledMesh, {}));
-        probe('pixlpal:playWalk', () => pal.mixer.playWalk());
+        // Prefer the warmup mixer if one was stashed during preload.
+        const warmup = pooledMesh.userData && pooledMesh.userData.__warmupMixer;
+        if (warmup) {
+          pal.mixer = warmup;
+          delete pooledMesh.userData.__warmupMixer;
+          probe('pixlpal:playWalk', () => pal.mixer.playWalk());
+        } else {
+          pal.mixer = probe('pixlpal:attachMixer',
+            () => attachMixer(pooledMesh, {}));
+          probe('pixlpal:playWalk', () => pal.mixer.playWalk());
+        }
       } catch (e) {
         console.warn('[PixlPal] attachMixer failed', e);
       }

@@ -259,28 +259,110 @@ export async function preloadFlingerGLBs(onProgress, renderer, camera) {
     }
   }
 
-  // --- Phase C: PSO warm against the LIVE scene (with its lights) ---
-  // CRITICAL: previous code compiled against a tmpScene with no
-  // lights, then moved meshes to the main scene. Three.js's shader
-  // selection depends on the LIGHT COUNT it sees during compile —
-  // a mesh compiled against an empty scene has the "no lights"
-  // shader variant baked in. When the mesh moves to the main scene
-  // with directional + ambient + spotlight, the shader is invalid
-  // and Three.js recompiles SYNCHRONOUSLY on the first render frame
-  // after the mesh becomes visible. THAT was the 3-second freeze on
-  // first flinger summon.
+  // --- Phase C: PSO + animation + shadow + skinning warmup ---
+  // The previous fix (compile against live scene) eliminated MOST of
+  // the freeze, but ~1-2s residual stutter remained. Diagnostic logs
+  // showed all probe()'d functions completing in <2ms — meaning the
+  // residual block is in the renderer, AFTER the spawn JS returns.
   //
-  // Fix: keep the meshes in the main scene (visible=false so they
-  // don't draw) and compile against the main scene. Three.js compiles
-  // for ALL materials it can reach from scene.children, regardless
-  // of visibility, picking up the real lights. The first
-  // visible=true won't trigger any further compilation.
+  // Three remaining first-render costs that renderer.compile() alone
+  // doesn't catch:
+  //
+  //   1. SKINNING SHADERS — when a SkinnedMesh first has its bone
+  //      matrices uploaded (first time mixer.update() drives it),
+  //      the GPU pipeline state changes. We force this by attaching
+  //      a mixer + playing walk + updating once during preload.
+  //
+  //   2. SHADOW MAP SHADERS — castShadow=true meshes get a separate
+  //      depth-pass shader compiled lazily the first time they enter
+  //      a shadow-casting light's frustum. renderer.compile() may
+  //      skip this for invisible meshes. We make the meshes visible
+  //      during the compile, then a single renderer.render() forces
+  //      shadow + main-pass shaders for each variant.
+  //
+  //   3. ANIMATION PROPERTY BINDINGS — mixer.clipAction(clip).play()
+  //      walks every track of a clip, resolves bone names to property
+  //      pointers via mesh.traverse, and caches them. For Unreal
+  //      skeletons with 100+ bones this is thousands of bindings.
+  //      We pay this once during preload via the mixer warmup below
+  //      so the FIRST in-game playWalk() is a cheap cache hit.
+  //
+  // Sequence (runs while loading screen still up — invisible to user):
+  //   a. Stash original visibility flag of each pool mesh, force visible.
+  //   b. renderer.compile(scene, camera) — covers main + shadow +
+  //      skinning shader variants for the visible meshes.
+  //   c. attachMixer + playWalk + update(0) on each pool mesh — caches
+  //      animation property bindings on each skeleton instance.
+  //   d. renderer.render(scene, camera) — forces actual GL draw,
+  //      resolves any remaining shader compilation that the compile()
+  //      pass may have queued lazily. Result is discarded — the user
+  //      doesn't see this frame because the loading screen is on top.
+  //   e. Restore visible=false so nothing draws in real gameplay
+  //      until summoned.
   try {
     if (renderer && camera) {
+      // Make pool meshes visible briefly so compile() sees them in
+      // the render path AND a render frame can force shadow/skinning
+      // shader compilation.
+      for (const entry of flingerPoolEntries) {
+        if (entry.obj) {
+          entry.obj._wasVisible = entry.obj.visible;
+          entry.obj.visible = true;
+          // matrixAutoUpdate=false earlier — temporarily allow updates
+          // so the renderer sees a non-stale world matrix for compile.
+          entry.obj._wasMatrixAutoUpdate = entry.obj.matrixAutoUpdate;
+          entry.obj.matrixAutoUpdate = true;
+          entry.obj.updateMatrixWorld(true);
+        }
+      }
       renderer.compile(scene, camera);
+
+      // Mixer warmup — caches per-skeleton animation property bindings.
+      // The mixer is STASHED on the pool entry so the runtime summon
+      // path can reuse it instead of building a fresh one (which
+      // would re-resolve all the bone-name → property-ref bindings).
+      if (animationsReady && animationsReady()) {
+        for (const entry of flingerPoolEntries) {
+          if (!entry.obj) continue;
+          try {
+            const m = attachMixer(entry.obj, {});
+            m.playWalk();
+            m.update(0);
+            // Stash on userData so the runtime summon path can grab
+            // it without changing the _acquireFlingerPoolMesh return
+            // shape. Runtime treats this as "if there's a warmup
+            // mixer, use it; else build a fresh one".
+            if (!entry.obj.userData) entry.obj.userData = {};
+            entry.obj.userData.__warmupMixer = m;
+          } catch (e) {
+            console.warn('[flinger] mixer warmup failed', e);
+          }
+        }
+      }
+
+      // Force a render to flush any lazily-queued shader compilation.
+      // The result paints to the canvas but the loading screen is
+      // still over the top so the user never sees it.
+      try {
+        renderer.render(scene, camera);
+      } catch (e) {
+        console.warn('[flinger] warmup render failed', e);
+      }
+
+      // Restore invisibility — pool meshes don't draw until summoned.
+      for (const entry of flingerPoolEntries) {
+        if (entry.obj) {
+          entry.obj.visible = entry.obj._wasVisible !== undefined
+            ? entry.obj._wasVisible : false;
+          entry.obj.matrixAutoUpdate = entry.obj._wasMatrixAutoUpdate !== undefined
+            ? entry.obj._wasMatrixAutoUpdate : false;
+          delete entry.obj._wasVisible;
+          delete entry.obj._wasMatrixAutoUpdate;
+        }
+      }
     }
   } catch (err) {
-    console.warn('[flinger] renderer.compile failed (non-fatal):', err);
+    console.warn('[flinger] warmup failed (non-fatal):', err);
   }
   console.log(`[flinger] ✓ pool ready — ${loaded}/${total} prewarmed`);
   return { loaded, total };
@@ -730,9 +812,25 @@ function _tryAutoSummon() {
         // No excludeBones — flingers are on an Unreal rig, so the VRM-named
         // gun-hold pose never took effect anyway. Let the walk clip drive
         // every bone (pelvis, legs, arms, head) for a clean natural cycle.
-        f.mixer = probe('flinger:attachMixer',
-          () => attachMixer(pooledMesh, {}));
-        probe('flinger:playWalk', () => f.mixer.playWalk());
+        //
+        // PREFER the warmup mixer stashed by the preload if available —
+        // it has its property bindings + skinning shader pre-resolved,
+        // saving the runtime path the synchronous binding work that
+        // contributed to the freeze. Falls back to a fresh mixer if
+        // for some reason the warmup wasn't run.
+        const warmup = pooledMesh.userData && pooledMesh.userData.__warmupMixer;
+        if (warmup) {
+          f.mixer = warmup;
+          // Consume so we don't reuse it on a future summon (each
+          // pool acquire gets one warmup mixer; subsequent summons
+          // build fresh, but by then the shader cache is hot anyway).
+          delete pooledMesh.userData.__warmupMixer;
+          probe('flinger:playWalk', () => f.mixer.playWalk());
+        } else {
+          f.mixer = probe('flinger:attachMixer',
+            () => attachMixer(pooledMesh, {}));
+          probe('flinger:playWalk', () => f.mixer.playWalk());
+        }
       } catch (e) {
         console.warn('[Flinger] attachMixer failed', e);
       }
