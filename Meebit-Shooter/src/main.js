@@ -985,14 +985,24 @@ function showIncomingCall() {
           }
         },
         () => {
-          // FINAL WARMUP RENDER — forces the GPU to compile shaders for
-          // ALL meshes currently in the scene: prewarm enemies/bosses at
-          // y=-500, chapter-0 dormant props (depot, cannon, queen, turrets,
-          // crusher), crowd, gravestones, rain drops, player. The loading
-          // screen / matrix dive canvas is on top so the user never sees
-          // this frame, but the GPU now has every shader compiled. The
-          // first REAL render after startGame returns is instant.
+          // WARMUP RENDER #1 — shadows ON (Attack the AI config).
+          // Forces GPU to compile shaders for all meshes with the
+          // standard shadow-enabled renderer state.
           try { renderer.render(scene, camera); } catch(e) {}
+        },
+        () => {
+          // WARMUP RENDER #2 — shadows OFF (Tutorial config).
+          // Tutorial calls disableShadows + disposeRain + boostLighting
+          // which changes renderer state and invalidates shader caches.
+          // By rendering once with shadows off during loading, the GPU
+          // compiles the shadow-off shader variants too. Both Tutorial
+          // and Attack the AI get instant first renders.
+          try {
+            disableShadows(renderer);
+            renderer.render(scene, camera);
+            // Restore shadows for the default (Attack the AI) config.
+            restoreShadows(renderer);
+          } catch(e) {}
         },
       ];
       const phase3Total = phase3Tasks.length;
