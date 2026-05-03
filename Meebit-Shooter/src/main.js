@@ -1024,7 +1024,6 @@ function showIncomingCall() {
             restoreTutorialLighting();
           } catch(e) {}
           // Log program count after all warmup renders
-          console.log('[phase3] shader programs after warmup:', renderer.info?.programs?.length ?? '??');
         },
       ];
       const phase3Total = phase3Tasks.length;
@@ -2276,7 +2275,6 @@ initGamepad({
 
 // ---- GAME LIFECYCLE ----
 function startGame() {
-  console.log('[startGame] shader programs at entry:', renderer.info?.programs?.length ?? '??');
   // Make sure the phone ring + C-drone aren't still playing if we got here
   // via the incoming-call accept path (or any other unusual entry).
   Audio.stopPhoneRing && Audio.stopPhoneRing();
@@ -2690,13 +2688,6 @@ function startGame() {
   prewarmShaders(renderer);
   try { prewarmBossCinematic(); } catch (e) { console.warn('[prewarm] cinematic', e); }
 
-  // Force ONE render frame to compile any remaining shader variants
-  console.log('[startGame] programs before forced render:', renderer.info?.programs?.length ?? '??');
-  console.time('[startGame] forced render');
-  try { renderer.render(scene, camera); } catch(e) {}
-  console.timeEnd('[startGame] forced render');
-  console.log('[startGame] programs after forced render:', renderer.info?.programs?.length ?? '??');
-
   Audio.init();
   Audio.resume();
   // C-drone was playing on the title screen as an ambient bed. Stop it
@@ -2726,6 +2717,11 @@ function startGame() {
     updateHeroHexagons(0, CHAPTERS[0].full.grid1);
   } catch (e) { console.warn('[hero-hexagons]', e); }
   startWave(1);
+  // Force a render AFTER startWave so wave-1 enemies + chapter props
+  // are all in the scene. The hyperdrive overlay covers the canvas so
+  // the user sees splats, not this frame. This compiles every shader
+  // variant the first animate() frame would need — making it instant.
+  try { renderer.render(scene, camera); } catch(e) {}
 }
 
 // ---------------------------------------------------------------------
@@ -2744,7 +2740,6 @@ function startGame() {
 // systems boot identically.
 // ---------------------------------------------------------------------
 function startTutorial() {
-  console.log('[startTutorial] shader programs at entry:', renderer.info?.programs?.length ?? '??');
   Audio.stopPhoneRing && Audio.stopPhoneRing();
   Audio.stopCDrone && Audio.stopCDrone();
   // Stop the death-screen song (Beyond.mp3) if a prior run's SIGNAL
@@ -2904,13 +2899,6 @@ function startTutorial() {
   boostTutorialLighting();
   try { setFogVisible(false); } catch (e) {}
 
-  // Force one render frame with the final tutorial config.
-  console.log('[startTutorial] programs before forced render:', renderer.info?.programs?.length ?? '??');
-  console.time('[startTutorial] forced render');
-  try { renderer.render(scene, camera); } catch(e) {}
-  console.timeEnd('[startTutorial] forced render');
-  console.log('[startTutorial] programs after forced render:', renderer.info?.programs?.length ?? '??');
-
   Audio.init();
   Audio.resume();
   Audio.stopCDrone && Audio.stopCDrone();
@@ -2967,6 +2955,10 @@ function startTutorial() {
       _waitForOverdriveAndPromptComplete();
     },
   });
+  // Force a render AFTER everything is in the scene — tutorial floor,
+  // decorative hives, boosted lighting, shadows off, fog off. Compiles
+  // all tutorial-specific shader variants so first animate() is instant.
+  try { renderer.render(scene, camera); } catch(e) {}
 }
 
 // Poll until the active overdrive power-up has fully played out, then
