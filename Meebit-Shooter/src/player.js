@@ -150,29 +150,37 @@ function attachGLB(gltf) {
     wrapper.add(meebit);
     wrapper.position.copy(player.pos);
 
-    // Gun attached at a reasonable position relative to the model
+    // Gun attached at a reasonable position relative to the model.
+    // The inner mesh is rotated 180° on Y so its +Z faces backward
+    // in wrapper space. Gun z must be NEGATIVE in meebit-local to
+    // point forward in game space.
     const gunGeo = new THREE.BoxGeometry(0.1, 0.1, 0.4);
     const gunMat = new THREE.MeshStandardMaterial({
       color: 0x00ff66, emissive: 0x00ff66, emissiveIntensity: 1.2,
     });
     const gun = new THREE.Mesh(gunGeo, gunMat);
     gun.castShadow = true;
-    // Position gun at roughly right-hand height
-    gun.position.set(0.35, 1.1, 0.3);
+    gun.position.set(-0.35, 1.1, -0.3);
     meebit.add(gun);
 
     const muzzle = new THREE.PointLight(0x00ff66, 0, 6, 2);
     gun.add(muzzle);
-    muzzle.position.set(0, 0, 0.25);
+    muzzle.position.set(0, 0, -0.25);
 
     scene.add(wrapper);
 
-    // Camera-parented fill lights
+    // Remove any previous camera-parented player lights before adding new
+    for (let i = camera.children.length - 1; i >= 0; i--) {
+      const c = camera.children[i];
+      if (c.isLight && c.userData._playerFill) camera.remove(c);
+    }
     const playerFillTop = new THREE.PointLight(0xffffff, 3.0, 35, 0.5);
     playerFillTop.position.set(0, -4, -6);
+    playerFillTop.userData._playerFill = true;
     camera.add(playerFillTop);
     const playerFillRim = new THREE.PointLight(0xffffff, 1.2, 25, 0.7);
     playerFillRim.position.set(3, -2, -8);
+    playerFillRim.userData._playerFill = true;
     camera.add(playerFillRim);
 
     player.obj = wrapper;
@@ -281,11 +289,18 @@ function attachGLB(gltf) {
   //   Wide range + low decay for soft even wash over the full body.
   // Fill: offset to the side for gentle cross-lighting that adds
   //   dimension without creating harsh shadows.
+  // Remove any previous camera-parented player lights
+  for (let i = camera.children.length - 1; i >= 0; i--) {
+    const c = camera.children[i];
+    if (c.isLight && c.userData._playerFill) camera.remove(c);
+  }
   const playerFillTop = new THREE.PointLight(0xffffff, 3.0, 35, 0.5);
-  playerFillTop.position.set(0, -4, -6);  // camera-local: below + forward
+  playerFillTop.position.set(0, -4, -6);
+  playerFillTop.userData._playerFill = true;
   camera.add(playerFillTop);
   const playerFillRim = new THREE.PointLight(0xffffff, 1.2, 25, 0.7);
-  playerFillRim.position.set(3, -2, -8);  // camera-local: right + forward
+  playerFillRim.position.set(3, -2, -8);
+  playerFillRim.userData._playerFill = true;
   camera.add(playerFillRim);
 
   // player.obj is the WRAPPER (outer group that the game rotates).
@@ -512,11 +527,17 @@ function buildVoxel(onProgress, onDone, onError) {
     // Permanent fill lights — same as the GLB path, mirrored here so
     // the legacy/voxel mode also gets clear visibility in moody chapter
     // lighting. See the GLB-path version for the rationale.
+    for (let i = camera.children.length - 1; i >= 0; i--) {
+      const c = camera.children[i];
+      if (c.isLight && c.userData._playerFill) camera.remove(c);
+    }
     const playerFillTop = new THREE.PointLight(0xffffff, 3.0, 35, 0.5);
     playerFillTop.position.set(0, -4, -6);
+    playerFillTop.userData._playerFill = true;
     camera.add(playerFillTop);
     const playerFillRim = new THREE.PointLight(0xffffff, 1.2, 25, 0.7);
     playerFillRim.position.set(3, -2, -8);
+    playerFillRim.userData._playerFill = true;
     camera.add(playerFillRim);
 
     player.obj = root;

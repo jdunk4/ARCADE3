@@ -8,13 +8,13 @@ import { swapAvatarGLB } from './player.js';
 import { S } from './state.js';
 
 const AVATARS = [
-  { id: 'meebit',          name: 'MEEBIT',         url: 'assets/16801_original.vrm',                    color: '#00ff66', type: 'DEFAULT',  scale: 1.0 },
-  { id: 'pixlpal-928',     name: 'PIXLPAL #928',   url: 'assets/civilians/pixlpal/voxlpal-928.glb',     color: '#ff8844', type: 'PIXLPAL',  scale: 2.5 },
-  { id: 'pixlpal-108',     name: 'PIXLPAL #108',   url: 'assets/civilians/pixlpal/voxlpal-108.glb',     color: '#44aaff', type: 'PIXLPAL',  scale: 2.5 },
-  { id: 'gob-406',         name: 'GOB #406',        url: 'assets/civilians/gobs/406.glb',                color: '#ff3344', type: 'GOB',      scale: 2.0 },
-  { id: 'gob-1004',        name: 'GOB #1004',       url: 'assets/civilians/gobs/1004.glb',               color: '#44ff66', type: 'GOB',      scale: 2.0 },
-  { id: 'flinger-yellow',  name: 'FLINGER YELLOW',  url: 'assets/civilians/flingers/FlingerYELLOW.glb',  color: '#ffdd44', type: 'FLINGER',  scale: 1.8 },
-  { id: 'flinger-purple',  name: 'FLINGER PURPLE',  url: 'assets/civilians/flingers/FlingerPURPLE.glb',  color: '#bb44ff', type: 'FLINGER',  scale: 1.8 },
+  { id: 'meebit',          name: 'MEEBIT',         url: 'assets/16801_original.vrm',                    color: '#ffffff', type: 'DEFAULT' },
+  { id: 'pixlpal-928',     name: 'PIXLPAL #928',   url: 'assets/civilians/pixlpal/voxlpal-928.glb',     color: '#ff8844', type: 'PIXLPAL' },
+  { id: 'gob-406',         name: 'GOB #406',        url: 'assets/civilians/gobs/406.glb',                color: '#ff3344', type: 'GOB' },
+  { id: 'flinger-yellow',  name: 'FLINGER YELLOW',  url: 'assets/civilians/flingers/FlingerYELLOW.glb',  color: '#ffdd44', type: 'FLINGER' },
+  { id: 'gob-1004',        name: 'GOB #1004',       url: 'assets/civilians/gobs/1004.glb',               color: '#44ff66', type: 'GOB' },
+  { id: 'pixlpal-108',     name: 'PIXLPAL #108',    url: 'assets/civilians/pixlpal/voxlpal-108.glb',     color: '#44aaff', type: 'PIXLPAL' },
+  { id: 'flinger-purple',  name: 'FLINGER PURPLE',  url: 'assets/civilians/flingers/FlingerPURPLE.glb',  color: '#bb44ff', type: 'FLINGER' },
 ];
 
 let _overlay = null;
