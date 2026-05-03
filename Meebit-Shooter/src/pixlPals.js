@@ -194,7 +194,8 @@ export async function preloadPixlPalGLBs(onProgress, renderer, camera) {
     try {
       const mesh = await _loadPalMesh(id);
       mesh.position.set(0, POOL_STASH_Y, 0);
-      mesh.visible = false;
+      // STAY VISIBLE — match herd VRM pattern. Never hidden.
+      mesh.visible = true;
       mesh.matrixAutoUpdate = false;
       mesh.updateMatrix();
       mesh.traverse(o => { o.frustumCulled = false; });
@@ -210,33 +211,10 @@ export async function preloadPixlPalGLBs(onProgress, renderer, camera) {
     }
   }
 
-  // --- Phase C: force one rendered frame with pool meshes VISIBLE ---
-  // Same approach as flingers: make all pool meshes visible, render
-  // one frame against the real scene (with its real lights), then
-  // hide. The loading screen is on top so the user never sees this
-  // frame, but the GPU now has every pixl-pal material's shader
-  // compiled for the actual gameplay light setup. First in-game
-  // visible=true triggers zero recompilation.
-  for (const entry of poolEntries) {
-    if (entry.obj) {
-      entry.obj.visible = true;
-      entry.obj.matrixAutoUpdate = true;
-      entry.obj.updateMatrixWorld(true);
-    }
-  }
-  try {
-    if (renderer && camera) {
-      renderer.render(scene, camera);
-    }
-  } catch (err) {
-    console.warn('[pixlPal] warmup render failed (non-fatal):', err);
-  }
-  for (const entry of poolEntries) {
-    if (entry.obj) {
-      entry.obj.visible = false;
-      entry.obj.matrixAutoUpdate = false;
-    }
-  }
+  // Phase C: no explicit warmup render needed — pool meshes are
+  // visible=true at stash Y with frustumCulled=false, so the
+  // renderer draws them every frame. Shaders compile naturally
+  // during the loading screen's render loop (same as herd VRMs).
   console.log(`[pixlPal] ✓ pool ready — ${loaded}/${total} prewarmed`);
   return { loaded, total };
 }
@@ -342,7 +320,7 @@ export function trySummonPixlPal(playerPos) {
   if (pooledMesh) {
     pal.glbId = pooledMesh.userData && pooledMesh.userData.__palId;
     scene.remove(pal.obj);
-    pooledMesh.visible = true;
+    // Already visible (never hidden — herd pattern). Just teleport.
     pooledMesh.matrixAutoUpdate = true;
     pooledMesh.position.copy(pal.pos);
     pooledMesh.rotation.y = Math.random() * Math.PI * 2;
@@ -845,7 +823,7 @@ function _releasePoolMesh(mesh, mixer) {
     if (e.obj === mesh) {
       e.inUse = false;
       _resetPalHighlight(mesh);
-      mesh.visible = false;
+      // Don't hide — keep visible at stash Y (herd pattern).
       mesh.matrixAutoUpdate = false;
       mesh.position.set(0, POOL_STASH_Y, 0);
       mesh.rotation.set(0, 0, 0);

@@ -235,13 +235,24 @@ export async function preloadFlingerGLBs(onProgress, renderer, camera) {
   // [flinger] fetched log suppressed — the manifest-found line above
   // already confirms the file count; the fetch completion is implied.
 
-  // --- Phase B: build hidden mesh pool (clones parked at y=-1000) ---
+  // --- Phase B: build mesh pool (clones parked at y=-1000, ALWAYS VISIBLE) ---
+  // CRITICAL: meshes stay visible=true at all times, matching the herd
+  // VRM pattern. The renderer only compiles shaders for meshes it
+  // actually DRAWS. Setting visible=false skips the mesh entirely —
+  // no draw call, no shader compile, no GPU cache entry. When the
+  // mesh later becomes visible, the GPU has to compile from scratch
+  // (the 1-3 second freeze). Herd VRMs avoid this by never hiding —
+  // they're parked at y=-1000 (below camera) but visible=true, so
+  // the renderer draws them every frame and their shaders stay warm.
+  // We do the same here.
   for (let i = 0; i < names.length; i++) {
     const glbName = names[i];
     try {
       const mesh = await _loadFlingerMesh(glbName);
       mesh.position.set(0, FLINGER_POOL_STASH_Y, 0);
-      mesh.visible = false;
+      // STAY VISIBLE — renderer draws them every frame at stash Y.
+      // frustumCulled=false ensures they're drawn even below camera.
+      mesh.visible = true;
       mesh.matrixAutoUpdate = false;
       mesh.updateMatrix();
       mesh.traverse(o => { o.frustumCulled = false; });
@@ -257,36 +268,6 @@ export async function preloadFlingerGLBs(onProgress, renderer, camera) {
     }
   }
 
-  // --- Phase C: force one rendered frame with pool meshes VISIBLE ---
-  // The renderer only compiles shaders for meshes it actually DRAWS.
-  // renderer.compile() queues work but doesn't guarantee GPU completion,
-  // and compiling against a tmpScene (no lights) produces the wrong
-  // shader variant. Instead: keep pool meshes in the real scene, make
-  // them visible, call renderer.render() once (the loading screen is
-  // on top so the user never sees this frame), then hide them again.
-  // This forces the GPU to compile every flinger material with the
-  // real scene lights — so the FIRST in-game visible=true triggers
-  // zero shader recompilation.
-  for (const entry of flingerPoolEntries) {
-    if (entry.obj) {
-      entry.obj.visible = true;
-      entry.obj.matrixAutoUpdate = true;
-      entry.obj.updateMatrixWorld(true);
-    }
-  }
-  try {
-    if (renderer && camera) {
-      renderer.render(scene, camera);
-    }
-  } catch (err) {
-    console.warn('[flinger] warmup render failed (non-fatal):', err);
-  }
-  for (const entry of flingerPoolEntries) {
-    if (entry.obj) {
-      entry.obj.visible = false;
-      entry.obj.matrixAutoUpdate = false;
-    }
-  }
   console.log(`[flinger] ✓ pool ready — ${loaded}/${total} prewarmed`);
   return { loaded, total };
 }
@@ -314,7 +295,8 @@ function _releaseFlingerPoolMesh(mesh, mixer) {
     if (e.obj === mesh) {
       e.inUse = false;
       _resetFlingerHighlight(mesh);
-      mesh.visible = false;
+      // DON'T set visible=false — keep it visible at stash Y so the
+      // renderer keeps drawing it and the shader cache stays warm.
       mesh.matrixAutoUpdate = false;
       mesh.position.set(0, FLINGER_POOL_STASH_Y, 0);
       mesh.rotation.set(0, 0, 0);
@@ -703,7 +685,8 @@ function _tryAutoSummon() {
   const pooledMesh = _acquireFlingerPoolMesh(glbName);
   if (pooledMesh) {
     scene.remove(f.obj);
-    pooledMesh.visible = true;
+    // Mesh is already visible (never hidden — herd pattern). Just
+    // teleport from stash Y to spawn position.
     pooledMesh.matrixAutoUpdate = true;
     pooledMesh.position.copy(f.pos);
     pooledMesh.rotation.y = Math.random() * Math.PI * 2;
