@@ -2585,7 +2585,9 @@ function startGame() {
     if (hyperFlash && hyperFlash.parentNode) hyperFlash.parentNode.removeChild(hyperFlash);
   }, 3700);
   document.querySelectorAll('.hidden-ui').forEach(el => el.style.display = '');
+  console.time('[startGame] resetGame');
   resetGame();
+  console.timeEnd('[startGame] resetGame');
   const rec = Save.load();
   S.username = rec.username;
   S.playerMeebitId = rec.playerMeebitId || S.playerMeebitId;
@@ -2603,8 +2605,13 @@ function startGame() {
     if (S.currentWeapon === 'sniper') S.currentWeapon = 'raygun';
     if (S.previousCombatWeapon === 'sniper') S.previousCombatWeapon = 'raygun';
   }
+  console.time('[sg] resetPlayer');
   resetPlayer();
+  console.timeEnd('[sg] resetPlayer');
+  console.time('[sg] resetWaves');
   resetWaves();
+  console.timeEnd('[sg] resetWaves');
+  console.time('[sg] clearAll');
   clearBullets();
   clearRockets();
   // Clear any stray grenades from a previous run and give the player a
@@ -2635,33 +2642,20 @@ function startGame() {
   clearInfectors();
   clearAllPowerups();
   hideMissileArrow();
-  // Initialize rain for chapter 1 wave 1 — chapter sets color, wave sets
-  // intensity (wave 1 = drizzle, wave 5 = typhoon). startWave() will also
-  // call applyRainTo every wave, but we prime it here so the title->game
-  // transition shows the right rain immediately.
+  console.timeEnd('[sg] clearAll');
+  console.time('[sg] initRainEtc');
   initRain(CHAPTERS[0].full.grid1, 1);
   ensureBeamMesh();
   ensureFlameMeshes();
   applyTheme(0, 1);
   applyRainTo(CHAPTERS[0].full.grid1, 1);
-  // Build the spectator crowd if it doesn't exist yet (first game start),
-  // then tint it to chapter 0.
   buildCrowd();
   recolorCrowd(CHAPTERS[0].full.grid1);
-  // Spawn perimeter gravestones (X/O carvings, chapter-tinted). Cleared
-  // first to handle restart from a previous session — otherwise stones
-  // accumulate across runs.
   clearGravestones();
   spawnGravestones(14, CHAPTERS[0].full.grid1);
-  // Prewarm every shader permutation (enemies, bosses, projectiles, pickups,
-  // weapons) before the first frame of real gameplay. Runs once; no-op on
-  // subsequent calls. This eliminates the wave-6 hitch (new red-chapter
-  // enemies and fireball projectiles) and the first-frame stall.
   prewarmShaders(renderer);
-  // Build and warm the boss-cinematic overlay DOM once, up front. This pays
-  // the ~30ms CSS parse + layout cost during the already-loading startup
-  // phase instead of at the moment the first boss cinematic fires.
   try { prewarmBossCinematic(); } catch (e) { console.warn('[prewarm] cinematic', e); }
+  console.timeEnd('[sg] initRainEtc');
   Audio.init();
   Audio.resume();
   // C-drone was playing on the title screen as an ambient bed. Stop it
@@ -2690,7 +2684,9 @@ function startGame() {
     setHeroHexagonsVisible(true);
     updateHeroHexagons(0, CHAPTERS[0].full.grid1);
   } catch (e) { console.warn('[hero-hexagons]', e); }
+  console.time('[sg] startWave');
   startWave(1);
+  console.timeEnd('[sg] startWave');
 }
 
 // ---------------------------------------------------------------------
