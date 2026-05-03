@@ -96,11 +96,18 @@ function _placeModel(model, av) {
   model.scale.setScalar(1);
   model.rotation.set(0, 0, 0);
 
-  // VRMs face -Z in their bind pose — rotate 180° on Y so they face
-  // toward the camera (+Z direction). This matches the pre-rotation
-  // that player.js attachGLB applies for gameplay. Without this the
-  // avatar preview shows the meebit's back on the initial frame.
-  model.rotation.y = Math.PI;
+  // Detect whether this is a VRM (faces -Z, needs 180° flip) or a
+  // non-VRM GLB (Gob, Flinger, PixlPal — faces +Z already).
+  // Check by URL extension AND by scanning for VRM bone names.
+  let isVRM = av.url.endsWith('.vrm');
+  if (!isVRM) {
+    model.traverse((o) => {
+      if (o.isBone && o.name === 'HipsBone') isVRM = true;
+    });
+  }
+  if (isVRM) {
+    model.rotation.y = Math.PI;
+  }
 
   // Measure raw bounding box (after rotation so extents are correct)
   const box = new THREE.Box3().setFromObject(model);
@@ -114,7 +121,7 @@ function _placeModel(model, av) {
   model.scale.setScalar(s);
 
   // Wrap in an outer group so the preview spin (rotation.y += 0.008)
-  // applies to the GROUP while the inner model keeps its 180° facing.
+  // applies to the GROUP while the inner model keeps its facing.
   const wrapper = new THREE.Group();
 
   // Re-measure after scale

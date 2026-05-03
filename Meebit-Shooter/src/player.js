@@ -155,15 +155,16 @@ function attachGLB(gltf) {
     // No skeleton — static voxel model (PixlPal, Gob, Flinger GLB).
     // Still usable as a player avatar: wrap in Group, attach gun
     // to a guessed hand position, skip animation binding.
+    //
+    // These non-VRM GLBs face +Z in their authored pose, so NO 180°
+    // rotation is needed (unlike the VRM path which faces -Z).
     console.log('[player] no skeleton — loading as static avatar');
     const wrapper = new THREE.Group();
-    meebit.rotation.y = Math.PI;
     wrapper.add(meebit);
     wrapper.position.copy(player.pos);
 
     // Gun attached at a reasonable position relative to the model.
-    // The inner mesh is rotated 180° on Y so its +Z faces backward
-    // in wrapper space. Gun z must be NEGATIVE in meebit-local to
+    // Model faces +Z (no pre-rotation), so gun z is POSITIVE to
     // point forward in game space.
     const gunGeo = new THREE.BoxGeometry(0.1, 0.1, 0.4);
     const gunMat = new THREE.MeshStandardMaterial({
@@ -171,12 +172,12 @@ function attachGLB(gltf) {
     });
     const gun = new THREE.Mesh(gunGeo, gunMat);
     gun.castShadow = true;
-    gun.position.set(-0.35, 1.1, -0.3);
+    gun.position.set(-0.35, 1.1, 0.3);
     meebit.add(gun);
 
     const muzzle = new THREE.PointLight(0x00ff66, 0, 6, 2);
     gun.add(muzzle);
-    muzzle.position.set(0, 0, -0.25);
+    muzzle.position.set(0, 0, 0.25);
 
     scene.add(wrapper);
 
@@ -208,17 +209,17 @@ function attachGLB(gltf) {
     return;
   }
 
-  // Wrap in an outer Group + pre-rotate the VRM 180° on Y. Same pattern as
-  // meebitsPublicApi.js / herdVrmLoader.js — VRMs authored for Meebits.app
-  // face -Z in their bind pose, but Mixamo walk clips drive motion in +Z,
-  // and the game sets `player.obj.rotation.y = atan2(dx,dz)` expecting +Z
-  // forward. Without this wrap the player visibly faces (and fires) backward
-  // relative to movement direction. The outer Group is what the game
-  // rotates; the inner VRM's pre-rotation aligns its animation-forward
-  // with the outer Group's forward. Animation mixer still binds to the
-  // inner scene's bones so nothing else has to change.
+  // Wrap in an outer Group. VRMs authored for Meebits.app face -Z in
+  // their bind pose and need a 180° pre-rotation on Y so the game's
+  // +Z-forward convention works. Unreal-rigged GLBs (PixlPal, Flinger,
+  // Gob) already face +Z and must NOT be flipped.
+  //
+  // Detection: VRM rigs have "HipsBone"; Unreal rigs have "pelvis".
+  const isVRM = !!skeleton.bones.find(b => b.name === 'HipsBone');
   const wrapper = new THREE.Group();
-  meebit.rotation.y = Math.PI;
+  if (isVRM) {
+    meebit.rotation.y = Math.PI;
+  }
   wrapper.add(meebit);
   wrapper.position.copy(player.pos);
 
@@ -319,6 +320,7 @@ function attachGLB(gltf) {
   // so the animation mixer binds to the real skeleton, not the empty wrapper.
   player.obj = wrapper;
   player._innerMesh = meebit;
+  player._isVRM = isVRM;
   player.gun = gun;
   player.gunMat = gunMat;
   player.muzzle = muzzle;
