@@ -985,45 +985,44 @@ function showIncomingCall() {
           }
         },
         () => {
-          // WARMUP RENDER #1 — standard shadows-ON config.
+          // WARMUP COMPILE #1 — standard shadows-ON config.
+          // compileAsync is non-blocking — GPU compiles in background
+          // while the matrix rain keeps animating.
+          if (typeof renderer.compileAsync === 'function') {
+            renderer.compileAsync(scene, camera).catch(() => {});
+          }
           try { renderer.render(scene, camera); } catch(e) {}
         },
         () => {
-          // WARMUP RENDER #2 — hyperdrive fog config (Attack the AI).
-          // startGame pulls fog near=15 far=22 color=black for the
-          // hyperdrive prelude. Different fog params = different shader
-          // defines. Render once with these exact settings so the GPU
-          // compiles the hyperdrive fog shader variants.
+          // WARMUP COMPILE #2 — hyperdrive fog config.
           const _fn = scene.fog.near, _ff = scene.fog.far;
           const _fc = scene.fog.color.getHex();
           const _bg = scene.background ? scene.background.getHex() : 0;
-          try {
-            scene.fog.near = 15; scene.fog.far = 22;
-            scene.fog.color.setHex(0x000000);
-            if (scene.background) scene.background.setHex(0x000000);
-            renderer.render(scene, camera);
-          } catch(e) {}
-          // Restore
+          scene.fog.near = 15; scene.fog.far = 22;
+          scene.fog.color.setHex(0x000000);
+          if (scene.background) scene.background.setHex(0x000000);
+          if (typeof renderer.compileAsync === 'function') {
+            renderer.compileAsync(scene, camera).catch(() => {});
+          }
+          try { renderer.render(scene, camera); } catch(e) {}
           scene.fog.near = _fn; scene.fog.far = _ff;
           scene.fog.color.setHex(_fc);
           if (scene.background) scene.background.setHex(_bg);
         },
         () => {
-          // WARMUP RENDER #3 — tutorial config: shadows OFF + fog OFF.
-          // Tutorial disables shadows, disables fog, boosts lighting.
-          // Each change invalidates shader caches. Render once with
-          // this exact config so the GPU has all tutorial variants.
+          // WARMUP COMPILE #3 — tutorial config.
           try {
             disableShadows(renderer);
             disableFog();
             boostTutorialLighting();
+            if (typeof renderer.compileAsync === 'function') {
+              renderer.compileAsync(scene, camera).catch(() => {});
+            }
             renderer.render(scene, camera);
-            // Restore everything back to default.
             restoreShadows(renderer);
             restoreFog();
             restoreTutorialLighting();
           } catch(e) {}
-          // Log program count after all warmup renders
         },
       ];
       const phase3Total = phase3Tasks.length;
@@ -2717,11 +2716,16 @@ function startGame() {
     updateHeroHexagons(0, CHAPTERS[0].full.grid1);
   } catch (e) { console.warn('[hero-hexagons]', e); }
   startWave(1);
-  // Force a render AFTER startWave so wave-1 enemies + chapter props
-  // are all in the scene. The hyperdrive overlay covers the canvas so
-  // the user sees splats, not this frame. This compiles every shader
-  // variant the first animate() frame would need — making it instant.
-  try { renderer.render(scene, camera); } catch(e) {}
+  // Non-blocking shader compilation. compileAsync (Three r184) uses
+  // KHR_parallel_shader_compile to compile shaders on a background
+  // thread. The main thread stays responsive — the hyperdrive overlay
+  // animation runs smoothly while the GPU compiles. When done, one
+  // render flushes any remaining lazy work.
+  if (typeof renderer.compileAsync === 'function') {
+    renderer.compileAsync(scene, camera).then(() => {
+      try { renderer.render(scene, camera); } catch(e) {}
+    }).catch(() => {});
+  }
 }
 
 // ---------------------------------------------------------------------
@@ -2955,10 +2959,13 @@ function startTutorial() {
       _waitForOverdriveAndPromptComplete();
     },
   });
-  // Force a render AFTER everything is in the scene — tutorial floor,
-  // decorative hives, boosted lighting, shadows off, fog off. Compiles
-  // all tutorial-specific shader variants so first animate() is instant.
-  try { renderer.render(scene, camera); } catch(e) {}
+  // Non-blocking shader compilation for tutorial config (shadows off,
+  // fog off, boosted lighting, tutorial floor, decorative hives).
+  if (typeof renderer.compileAsync === 'function') {
+    renderer.compileAsync(scene, camera).then(() => {
+      try { renderer.render(scene, camera); } catch(e) {}
+    }).catch(() => {});
+  }
 }
 
 // Poll until the active overdrive power-up has fully played out, then
