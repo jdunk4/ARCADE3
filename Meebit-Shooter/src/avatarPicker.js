@@ -1,11 +1,13 @@
 // ============================================================
-// AVATAR PICKER — fullscreen 3D preview with GLB loading
+// AVATAR PICKER — fullscreen 3D preview with GLB loading,
+// matrix rain backdrop, and collectible shard unlock system.
 // ============================================================
 
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { swapAvatarGLB } from './player.js';
 import { S } from './state.js';
+import { getShardProgress, isAvatarUnlocked, SHARDS_PER_AVATAR } from './avatarShards.js';
 
 const AVATARS = [
   { id: 'meebit',          name: 'MEEBIT',         url: 'assets/16801_original.vrm',                    color: '#ffffff', type: 'DEFAULT' },
@@ -27,10 +29,28 @@ let _pvScene = null, _pvCamera = null, _pvRenderer = null;
 let _pvModel = null, _pvRaf = 0, _pvCanvas = null;
 const _pvCache = new Map();
 
+// Matrix rain state
+let _rainCanvas = null, _rainCtx = null, _rainDrops = null;
+let _rainRGB = '255,255,255';
+
+const GLYPHS = 'アイウエオカキクケコサシスセソタチツテトナニヌネノハヒフヘホマミムメモヤユヨラリルレロワヲン0123456789:.-=*+';
+function _randGlyph() { return GLYPHS[Math.floor(Math.random() * GLYPHS.length)]; }
+
+function _hexToRGB(hex) {
+  let h = hex.replace('#', '');
+  if (h.length === 3) h = h[0]+h[0]+h[1]+h[1]+h[2]+h[2];
+  const n = parseInt(h, 16);
+  return `${(n>>16)&0xff},${(n>>8)&0xff},${n&0xff}`;
+}
+
+// ============================================================
+// 3D PREVIEW
+// ============================================================
+
 function _initPreview() {
   if (_pvScene) return;
   _pvScene = new THREE.Scene();
-  _pvScene.background = new THREE.Color(0x050f08);
+  _pvScene.background = null; // transparent — rain canvas shows through
 
   _pvCamera = new THREE.PerspectiveCamera(30, 1, 0.1, 50);
   _pvCamera.position.set(0, 1.8, 6.5);
@@ -54,6 +74,7 @@ function _ensureRenderer() {
   _pvCanvas = document.getElementById('ap-3d-canvas');
   if (!_pvCanvas) return;
   _pvRenderer = new THREE.WebGLRenderer({ canvas: _pvCanvas, antialias: true, alpha: true });
+  _pvRenderer.setClearColor(0x000000, 0);
   _pvRenderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
   _pvRenderer.outputColorSpace = THREE.SRGBColorSpace;
   _pvRenderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -68,11 +89,82 @@ function _resizePreview() {
   _pvRenderer.setSize(c.clientWidth, c.clientHeight);
   _pvCamera.aspect = c.clientWidth / c.clientHeight;
   _pvCamera.updateProjectionMatrix();
+  _resizeRainCanvas();
 }
+
+// ============================================================
+// MATRIX RAIN
+// ============================================================
+
+function _initRainCanvas() {
+  _rainCanvas = document.getElementById('ap-rain-canvas');
+  if (!_rainCanvas) return;
+  _rainCtx = _rainCanvas.getContext('2d');
+  _resizeRainCanvas();
+}
+
+function _resizeRainCanvas() {
+  if (!_rainCanvas) return;
+  const c = _rainCanvas.parentElement;
+  if (!c) return;
+  _rainCanvas.width = c.clientWidth;
+  _rainCanvas.height = c.clientHeight;
+  const FONT_SIZE = 14;
+  const colCount = Math.ceil(_rainCanvas.width / FONT_SIZE);
+  _rainDrops = new Array(colCount);
+  for (let i = 0; i < colCount; i++) {
+    _rainDrops[i] = { y: -Math.random() * 30, trail: [] };
+  }
+}
+
+function _setRainColor(colorHex) {
+  _rainRGB = _hexToRGB(colorHex);
+}
+
+function _tickRain() {
+  if (!_rainCtx || !_rainDrops || !_rainCanvas) return;
+  const w = _rainCanvas.width;
+  const h = _rainCanvas.height;
+  if (w === 0 || h === 0) return;
+  const FONT_SIZE = 14;
+  const TRAIL_LEN = 16;
+  const ctx = _rainCtx;
+
+  ctx.fillStyle = 'rgba(0, 4, 2, 0.12)';
+  ctx.fillRect(0, 0, w, h);
+  ctx.font = FONT_SIZE + 'px monospace';
+
+  for (let i = 0; i < _rainDrops.length; i++) {
+    const d = _rainDrops[i];
+    const x = i * FONT_SIZE;
+    d.y += 0.6 + Math.random() * 0.3;
+    d.trail.unshift({ y: d.y, glyph: _randGlyph() });
+    if (d.trail.length > TRAIL_LEN) d.trail.pop();
+
+    for (let t = 0; t < d.trail.length; t++) {
+      const entry = d.trail[t];
+      const py = entry.y * FONT_SIZE;
+      if (py < -FONT_SIZE || py > h + FONT_SIZE) continue;
+      const alpha = t === 0 ? 0.95 : 0.7 * Math.pow(0.82, t);
+      ctx.fillStyle = 'rgba(' + _rainRGB + ',' + alpha.toFixed(3) + ')';
+      ctx.fillText(entry.glyph, x, py);
+    }
+
+    if (d.y * FONT_SIZE > h && Math.random() > 0.975) {
+      d.y = -Math.random() * 10;
+      d.trail.length = 0;
+    }
+  }
+}
+
+// ============================================================
+// MODEL LOADING
+// ============================================================
 
 function _loadModel(av) {
   _updateUI('LOADING...');
   if (_pvModel) { _pvScene.remove(_pvModel); _pvModel = null; }
+  _setRainColor(av.color);
 
   if (_pvCache.has(av.id)) {
     _placeModel(_pvCache.get(av.id).clone(), av);
@@ -91,48 +183,30 @@ function _loadModel(av) {
 }
 
 function _placeModel(model, av) {
-  // Reset transforms
   model.position.set(0, 0, 0);
   model.scale.setScalar(1);
   model.rotation.set(0, 0, 0);
 
-  // Detect whether this is a VRM (faces -Z, needs 180° flip) or a
-  // non-VRM GLB (Gob, Flinger, PixlPal — faces +Z already).
-  // Check by URL extension AND by scanning for VRM bone names.
   let isVRM = av.url.endsWith('.vrm');
   if (!isVRM) {
     model.traverse((o) => {
       if (o.isBone && o.name === 'HipsBone') isVRM = true;
     });
   }
-  if (isVRM) {
-    model.rotation.y = Math.PI;
-  }
+  if (isVRM) model.rotation.y = Math.PI;
 
-  // Measure raw bounding box (after rotation so extents are correct)
   const box = new THREE.Box3().setFromObject(model);
   const size = box.getSize(new THREE.Vector3());
-  const center = box.getCenter(new THREE.Vector3());
   const maxDim = Math.max(size.x, size.y, size.z) || 1;
+  model.scale.setScalar(2.0 / maxDim);
 
-  // Scale to fit within a target height of ~2.0 units
-  const targetH = 2.0;
-  const s = targetH / maxDim;
-  model.scale.setScalar(s);
-
-  // Wrap in an outer group so the preview spin (rotation.y += 0.008)
-  // applies to the GROUP while the inner model keeps its facing.
   const wrapper = new THREE.Group();
-
-  // Re-measure after scale
   const box2 = new THREE.Box3().setFromObject(model);
   const center2 = box2.getCenter(new THREE.Vector3());
   const min2 = box2.min;
-
-  // Center horizontally, place feet on ground (y=0)
   model.position.x = -center2.x;
   model.position.z = -center2.z;
-  model.position.y = -min2.y;  // lift so bottom of model is at y=0
+  model.position.y = -min2.y;
 
   wrapper.add(model);
   _pvScene.add(wrapper);
@@ -140,22 +214,36 @@ function _placeModel(model, av) {
   _updateUI('');
 }
 
+// ============================================================
+// RENDER LOOP
+// ============================================================
+
 function _renderLoop() {
   _pvRaf = requestAnimationFrame(_renderLoop);
+  _tickRain();
   if (!_pvRenderer) return;
   if (_pvModel) _pvModel.rotation.y += 0.008;
   _pvRenderer.render(_pvScene, _pvCamera);
 }
 
+// ============================================================
+// UI
+// ============================================================
+
 function _updateUI(loadText) {
   if (!_overlay) return;
   const av = AVATARS[_currentIdx];
   const el = (id) => _overlay.querySelector('#' + id);
+
   const preview = el('ap-preview');
   if (preview) {
     preview.style.borderColor = av.color;
     preview.style.boxShadow = '0 0 30px ' + av.color + '22, inset 0 0 60px ' + av.color + '08';
   }
+  _overlay.querySelectorAll('.ap-corner-tl,.ap-corner-tr,.ap-corner-bl,.ap-corner-br').forEach(c => {
+    c.style.borderColor = av.color;
+  });
+
   const name = el('ap-name');
   if (name) { name.textContent = av.name; name.style.color = av.color; }
   const type = el('ap-type');
@@ -164,16 +252,68 @@ function _updateUI(loadText) {
   if (idx) idx.textContent = (_currentIdx+1) + ' / ' + AVATARS.length;
   const ld = el('ap-loading');
   if (ld) ld.textContent = loadText || '';
+
+  // Shard progress diamonds
+  const unlocked = isAvatarUnlocked(av.id);
+  const progress = getShardProgress(av.id);
+  const shardRow = el('ap-shards');
+  if (shardRow) {
+    if (av.id === 'meebit') {
+      shardRow.style.display = 'none';
+    } else {
+      shardRow.style.display = 'flex';
+      const diamonds = shardRow.querySelectorAll('.ap-shard');
+      for (let i = 0; i < diamonds.length; i++) {
+        if (i < progress.collected) {
+          diamonds[i].classList.add('filled');
+          diamonds[i].style.color = av.color;
+          diamonds[i].style.textShadow = '0 0 8px ' + av.color;
+        } else {
+          diamonds[i].classList.remove('filled');
+          diamonds[i].style.color = '#333';
+          diamonds[i].style.textShadow = 'none';
+        }
+      }
+    }
+  }
+
+  // Lock overlay
+  const lockEl = el('ap-lock');
+  if (lockEl) lockEl.style.display = unlocked ? 'none' : 'flex';
+
+  // Select button
+  const selectBtn = el('ap-select');
+  if (selectBtn) {
+    if (unlocked) {
+      selectBtn.disabled = false;
+      selectBtn.style.opacity = '1';
+      selectBtn.style.cursor = 'pointer';
+      selectBtn.textContent = 'SELECT';
+    } else {
+      selectBtn.disabled = true;
+      selectBtn.style.opacity = '0.35';
+      selectBtn.style.cursor = 'not-allowed';
+      selectBtn.textContent = 'LOCKED (' + progress.collected + '/' + progress.total + ')';
+    }
+  }
 }
 
 function _navigate(dir) {
   _currentIdx = (_currentIdx + dir + AVATARS.length) % AVATARS.length;
+  if (_rainCtx && _rainCanvas) {
+    _rainCtx.fillStyle = 'rgba(0, 4, 2, 1)';
+    _rainCtx.fillRect(0, 0, _rainCanvas.width, _rainCanvas.height);
+  }
+  if (_rainDrops) {
+    for (const d of _rainDrops) { d.y = -Math.random() * 30; d.trail.length = 0; }
+  }
   _updateUI('');
   _loadModel(AVATARS[_currentIdx]);
 }
 
 function _selectCurrent() {
   const av = AVATARS[_currentIdx];
+  if (!isAvatarUnlocked(av.id)) return;
   _updateUI('APPLYING...');
   try { localStorage.setItem('simvoid_avatar_url', av.url); } catch(e) {}
   S.avatarUrl = av.url;
@@ -187,59 +327,81 @@ function _selectCurrent() {
   });
 }
 
+// ============================================================
+// BUILD DOM
+// ============================================================
+
 function _buildUI() {
   if (_overlay) return _overlay;
   const el = document.createElement('div');
   el.id = 'avatar-picker';
-  el.innerHTML = `
-<style>
-#avatar-picker{position:fixed;inset:0;z-index:10000;background:rgba(0,4,2,0.96);display:flex;flex-direction:column;align-items:center;justify-content:center;font-family:'Courier New',monospace;color:#00ff66;opacity:0;transition:opacity .3s}
-#avatar-picker.visible{opacity:1}
-.ap-title{font-family:'Impact','Arial Black',sans-serif;font-size:clamp(24px,4vw,36px);letter-spacing:6px;color:#6dff95;text-shadow:0 0 16px rgba(0,255,102,.5);margin-bottom:4px}
-.ap-sub{font-size:11px;letter-spacing:4px;color:#6effaa;opacity:.7;margin-bottom:16px}
-.ap-main{display:flex;align-items:center;gap:16px;width:90vw;max-width:800px;height:clamp(300px,58vh,600px)}
-.ap-arrow{font-size:clamp(36px,5vw,56px);cursor:pointer;color:#00ff66;user-select:none;transition:transform .15s,color .15s;text-shadow:0 0 12px rgba(0,255,102,.4);flex-shrink:0}
-.ap-arrow:hover{transform:scale(1.2);color:#fff}
-.ap-preview{flex:1;height:100%;border:2px solid #00ff66;border-radius:16px;position:relative;overflow:hidden;background:radial-gradient(ellipse at 50% 80%,#051a0d,#020a05)}
-.ap-preview canvas{width:100%!important;height:100%!important;display:block}
-.ap-info{position:absolute;bottom:0;left:0;right:0;padding:16px 20px;background:linear-gradient(transparent,rgba(0,0,0,.85));text-align:center}
-.ap-type{font-size:10px;letter-spacing:5px;opacity:.6;margin-bottom:4px}
-.ap-name{font-size:clamp(18px,3vw,26px);letter-spacing:4px;font-weight:bold}
-.ap-idx{font-size:11px;opacity:.4;margin-top:4px}
-.ap-corner-tl,.ap-corner-tr,.ap-corner-bl,.ap-corner-br{position:absolute;width:20px;height:20px;border-color:#00ff66;border-style:solid}
-.ap-corner-tl{top:8px;left:8px;border-width:2px 0 0 2px}
-.ap-corner-tr{top:8px;right:8px;border-width:2px 2px 0 0}
-.ap-corner-bl{bottom:8px;left:8px;border-width:0 0 2px 2px}
-.ap-corner-br{bottom:8px;right:8px;border-width:0 2px 2px 0}
-.ap-actions{display:flex;gap:16px;margin-top:20px}
-.ap-btn{font-family:'Impact','Arial Black',sans-serif;font-size:18px;letter-spacing:4px;padding:14px 40px;background:transparent;color:#00ff66;border:2px solid #00ff66;cursor:pointer;box-shadow:0 0 12px rgba(0,255,102,.3);transition:all .2s}
-.ap-btn:hover{background:#00ff66;color:#000;box-shadow:0 0 30px rgba(0,255,102,.7);transform:scale(1.05)}
-.ap-btn-cancel{border-color:#444;color:#888;box-shadow:none}
-.ap-btn-cancel:hover{background:#222;color:#ccc;border-color:#666;box-shadow:none}
-.ap-loading{font-size:13px;color:#ffdd44;letter-spacing:3px;margin-top:10px;min-height:20px;text-align:center}
-@media(max-width:600px){.ap-main{height:clamp(250px,50vh,400px)}.ap-btn{font-size:14px;padding:10px 24px}}
-</style>
-<div class="ap-title">SWITCH AVATAR</div>
-<div class="ap-sub">:: SELECT YOUR OPERATIVE ::</div>
-<div class="ap-main">
-  <div class="ap-arrow" id="ap-prev">◀</div>
-  <div class="ap-preview" id="ap-preview">
-    <div class="ap-corner-tl"></div><div class="ap-corner-tr"></div>
-    <div class="ap-corner-bl"></div><div class="ap-corner-br"></div>
-    <canvas id="ap-3d-canvas"></canvas>
-    <div class="ap-info">
-      <div class="ap-type" id="ap-type"></div>
-      <div class="ap-name" id="ap-name"></div>
-      <div class="ap-idx" id="ap-idx"></div>
-    </div>
-  </div>
-  <div class="ap-arrow" id="ap-next">▶</div>
-</div>
-<div class="ap-actions">
-  <button class="ap-btn ap-btn-cancel" id="ap-cancel">CANCEL</button>
-  <button class="ap-btn" id="ap-select">SELECT</button>
-</div>
-<div class="ap-loading" id="ap-loading"></div>`;
+
+  let shardDiamonds = '';
+  for (let i = 0; i < SHARDS_PER_AVATAR; i++) shardDiamonds += '<span class="ap-shard">\u25C6</span>';
+
+  el.innerHTML = '<style>' +
+'#avatar-picker{position:fixed;inset:0;z-index:10000;background:rgba(0,4,2,0.96);display:flex;flex-direction:column;align-items:center;justify-content:center;font-family:"Courier New",monospace;color:#00ff66;opacity:0;transition:opacity .3s}' +
+'#avatar-picker.visible{opacity:1}' +
+'.ap-title{font-family:"Impact","Arial Black",sans-serif;font-size:clamp(24px,4vw,36px);letter-spacing:6px;color:#6dff95;text-shadow:0 0 16px rgba(0,255,102,.5);margin-bottom:4px}' +
+'.ap-sub{font-size:11px;letter-spacing:4px;color:#6effaa;opacity:.7;margin-bottom:16px}' +
+'.ap-main{display:flex;align-items:center;gap:16px;width:90vw;max-width:800px;height:clamp(300px,58vh,600px)}' +
+'.ap-arrow{font-size:clamp(36px,5vw,56px);cursor:pointer;color:#00ff66;user-select:none;transition:transform .15s,color .15s;text-shadow:0 0 12px rgba(0,255,102,.4);flex-shrink:0}' +
+'.ap-arrow:hover{transform:scale(1.2);color:#fff}' +
+'.ap-preview{flex:1;height:100%;border:2px solid #00ff66;border-radius:16px;position:relative;overflow:hidden;background:#020a05}' +
+'.ap-preview canvas{display:block}' +
+'#ap-rain-canvas{position:absolute;inset:0;width:100%!important;height:100%!important;z-index:0}' +
+'#ap-3d-canvas{position:absolute;inset:0;width:100%!important;height:100%!important;z-index:1}' +
+'.ap-info{position:absolute;bottom:0;left:0;right:0;padding:16px 20px;background:linear-gradient(transparent,rgba(0,0,0,.85));text-align:center;z-index:2}' +
+'.ap-type{font-size:10px;letter-spacing:5px;opacity:.6;margin-bottom:4px}' +
+'.ap-name{font-size:clamp(18px,3vw,26px);letter-spacing:4px;font-weight:bold}' +
+'.ap-idx{font-size:11px;opacity:.4;margin-top:4px}' +
+'.ap-corner-tl,.ap-corner-tr,.ap-corner-bl,.ap-corner-br{position:absolute;width:20px;height:20px;border-color:#00ff66;border-style:solid;z-index:3}' +
+'.ap-corner-tl{top:8px;left:8px;border-width:2px 0 0 2px}' +
+'.ap-corner-tr{top:8px;right:8px;border-width:2px 2px 0 0}' +
+'.ap-corner-bl{bottom:8px;left:8px;border-width:0 0 2px 2px}' +
+'.ap-corner-br{bottom:8px;right:8px;border-width:0 2px 2px 0}' +
+'.ap-shards{display:flex;gap:8px;justify-content:center;margin-top:8px;font-size:16px;letter-spacing:2px}' +
+'.ap-shard{color:#333;transition:color .3s,text-shadow .3s}' +
+'.ap-shard.filled{color:#00ff66;text-shadow:0 0 8px rgba(0,255,102,.6)}' +
+'.ap-lock{position:absolute;inset:0;z-index:4;display:flex;flex-direction:column;align-items:center;justify-content:center;background:rgba(0,0,0,.7);backdrop-filter:blur(3px)}' +
+'.ap-lock-icon{font-size:48px;margin-bottom:8px;opacity:.6}' +
+'.ap-lock-text{font-size:12px;letter-spacing:4px;color:#888;text-transform:uppercase}' +
+'.ap-actions{display:flex;gap:16px;margin-top:20px}' +
+'.ap-btn{font-family:"Impact","Arial Black",sans-serif;font-size:18px;letter-spacing:4px;padding:14px 40px;background:transparent;color:#00ff66;border:2px solid #00ff66;cursor:pointer;box-shadow:0 0 12px rgba(0,255,102,.3);transition:all .2s}' +
+'.ap-btn:hover:not(:disabled){background:#00ff66;color:#000;box-shadow:0 0 30px rgba(0,255,102,.7);transform:scale(1.05)}' +
+'.ap-btn:disabled{cursor:not-allowed}' +
+'.ap-btn-cancel{border-color:#444;color:#888;box-shadow:none}' +
+'.ap-btn-cancel:hover{background:#222;color:#ccc;border-color:#666;box-shadow:none}' +
+'.ap-loading{font-size:13px;color:#ffdd44;letter-spacing:3px;margin-top:10px;min-height:20px;text-align:center}' +
+'@media(max-width:600px){.ap-main{height:clamp(250px,50vh,400px)}.ap-btn{font-size:14px;padding:10px 24px}}' +
+'</style>' +
+'<div class="ap-title">SWITCH AVATAR</div>' +
+'<div class="ap-sub">:: SELECT YOUR OPERATIVE ::</div>' +
+'<div class="ap-main">' +
+'  <div class="ap-arrow" id="ap-prev">\u25C0</div>' +
+'  <div class="ap-preview" id="ap-preview">' +
+'    <div class="ap-corner-tl"></div><div class="ap-corner-tr"></div>' +
+'    <div class="ap-corner-bl"></div><div class="ap-corner-br"></div>' +
+'    <canvas id="ap-rain-canvas"></canvas>' +
+'    <canvas id="ap-3d-canvas"></canvas>' +
+'    <div class="ap-lock" id="ap-lock">' +
+'      <div class="ap-lock-icon">\uD83D\uDD12</div>' +
+'      <div class="ap-lock-text">COLLECT DATA SHARDS TO UNLOCK</div>' +
+'    </div>' +
+'    <div class="ap-info">' +
+'      <div class="ap-type" id="ap-type"></div>' +
+'      <div class="ap-name" id="ap-name"></div>' +
+'      <div class="ap-shards" id="ap-shards">' + shardDiamonds + '</div>' +
+'      <div class="ap-idx" id="ap-idx"></div>' +
+'    </div>' +
+'  </div>' +
+'  <div class="ap-arrow" id="ap-next">\u25B6</div>' +
+'</div>' +
+'<div class="ap-actions">' +
+'  <button class="ap-btn ap-btn-cancel" id="ap-cancel">CANCEL</button>' +
+'  <button class="ap-btn" id="ap-select">SELECT</button>' +
+'</div>' +
+'<div class="ap-loading" id="ap-loading"></div>';
 
   el.querySelector('#ap-prev').addEventListener('click', () => _navigate(-1));
   el.querySelector('#ap-next').addEventListener('click', () => _navigate(1));
@@ -265,6 +427,10 @@ function _buildUI() {
   return el;
 }
 
+// ============================================================
+// PUBLIC API
+// ============================================================
+
 export function openAvatarPicker(onCloseCb) {
   if (_isOpen) return;
   _isOpen = true;
@@ -275,8 +441,10 @@ export function openAvatarPicker(onCloseCb) {
   _initPreview();
   requestAnimationFrame(() => {
     el.classList.add('visible');
+    _initRainCanvas();
     _ensureRenderer();
     _resizePreview();
+    _setRainColor(AVATARS[_currentIdx].color);
     _updateUI('');
     _loadModel(AVATARS[_currentIdx]);
     _pvRaf = requestAnimationFrame(_renderLoop);
@@ -288,6 +456,7 @@ export function closeAvatarPicker() {
   if (!_isOpen || !_overlay) return;
   _isOpen = false;
   cancelAnimationFrame(_pvRaf);
+  _rainCanvas = null; _rainCtx = null; _rainDrops = null;
   window.removeEventListener('resize', _resizePreview);
   _overlay.classList.remove('visible');
   setTimeout(() => { if (_overlay && _overlay.parentNode) _overlay.parentNode.removeChild(_overlay); }, 300);
@@ -300,3 +469,5 @@ export function isAvatarPickerOpen() { return _isOpen; }
 export function getStoredAvatarUrl() {
   try { return localStorage.getItem('simvoid_avatar_url') || null; } catch(e) { return null; }
 }
+
+export { AVATARS };
