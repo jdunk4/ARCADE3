@@ -3479,23 +3479,7 @@ export function resetWaves() {
   clearAllBlocks();
   // teardownChapter() clears the chapter-scoped dormant props (depot,
   // hives + their shield meshes). It's idempotent.
-  //
-  // OPTIMIZATION: skip the teardown if chapter 0 is already prepared
-  // and we're entering a fresh run (S.chapter === 0 or not yet set).
-  // The matrix-dive pre-builds chapter 0 during loading; tearing it
-  // down here just to rebuild it 100ms later in startWave(1) was
-  // costing 3-5 seconds of wasted mesh construction. On subsequent
-  // runs (player died, restarts from a later chapter), teardown IS
-  // needed because the old chapter's props don't match chapter 0.
-  //
-  // isChapterPrepared(0) returns true if prepareChapter(0) ran during
-  // the matrix dive and nothing has torn it down since. If the player
-  // is restarting from chapter 0, we keep the existing props. If
-  // restarting from a different chapter (e.g. died in chapter 3), we
-  // tear down because chapter 3's props are wrong for chapter 0.
-  if (!isChapterPrepared(0)) {
-    teardownChapter();
-  }
+  teardownChapter();
   clearAllOrbs();
   clearBossCubes();
   clearAllCivilians();

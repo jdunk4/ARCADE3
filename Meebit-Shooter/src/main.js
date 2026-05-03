@@ -963,15 +963,6 @@ function showIncomingCall() {
         () => { try { applyRainTo(CHAPTERS[0].full.grid1, 1); } catch(e) {} },
         () => { try { prewarmBossCinematic(); } catch(e) {} },
         () => {
-          // Pre-build chapter 0 dormant props (depot, cannon, queen
-          // hive, turrets, crusher). This is the ~3s cost that was
-          // previously paid at startGame/startTutorial. Now it runs
-          // during the matrix dive and SURVIVES into gameplay because
-          // resetWaves() skips teardownChapter() when chapter 0 is
-          // already prepared.
-          try { prepareChapter(0); } catch(e) {}
-        },
-        () => {
           try {
             clearGravestones();
             spawnGravestones(14, CHAPTERS[0].full.grid1);
