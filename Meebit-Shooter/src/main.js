@@ -111,6 +111,7 @@ import {
 } from './armory.js';
 import { Wallet } from './wallet.js';
 import { initArmoryUI } from './armoryUI.js';
+import { openAvatarPicker } from './avatarPicker.js';
 import {
   beginStratagemInput, endStratagemInput, pushStratagemArrow,
   pushStratagemVariantKey,
@@ -3597,6 +3598,16 @@ document.getElementById('restart-btn').addEventListener('click', () => {
 // Wires the title-screen ⚙ ARMORY button + close handlers. The
 // armoryUI module is purely DOM-side (no game-loop participation),
 // so initializing it once at startup is sufficient.
+
+// ---- AVATAR PICKER ----
+{
+  const avatarBtn = document.getElementById('avatar-btn');
+  if (avatarBtn) {
+    avatarBtn.addEventListener('click', () => {
+      openAvatarPicker();
+    });
+  }
+}
 initArmoryUI();
 
 // ---- PAUSE MENU HANDLERS ----
