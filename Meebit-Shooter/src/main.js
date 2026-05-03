@@ -1023,6 +1023,8 @@ function showIncomingCall() {
             restoreFog();
             restoreTutorialLighting();
           } catch(e) {}
+          // Log program count after all warmup renders
+          console.log('[phase3] shader programs after warmup:', renderer.info?.programs?.length ?? '??');
         },
       ];
       const phase3Total = phase3Tasks.length;
@@ -2274,6 +2276,7 @@ initGamepad({
 
 // ---- GAME LIFECYCLE ----
 function startGame() {
+  console.log('[startGame] shader programs at entry:', renderer.info?.programs?.length ?? '??');
   // Make sure the phone ring + C-drone aren't still playing if we got here
   // via the incoming-call accept path (or any other unusual entry).
   Audio.stopPhoneRing && Audio.stopPhoneRing();
@@ -2688,12 +2691,11 @@ function startGame() {
   try { prewarmBossCinematic(); } catch (e) { console.warn('[prewarm] cinematic', e); }
 
   // Force ONE render frame to compile any remaining shader variants
-  // (fog-near/far changed for hyperdrive, theme re-applied, etc.)
-  // This stalls on the GPU but the hyperdrive overlay is on top so
-  // the user sees splats, not a frozen frame. The stall happens HERE
-  // (before startWave / before enemies spawn) rather than on the
-  // first animate() frame where it would freeze the hyperdrive anim.
+  console.log('[startGame] programs before forced render:', renderer.info?.programs?.length ?? '??');
+  console.time('[startGame] forced render');
   try { renderer.render(scene, camera); } catch(e) {}
+  console.timeEnd('[startGame] forced render');
+  console.log('[startGame] programs after forced render:', renderer.info?.programs?.length ?? '??');
 
   Audio.init();
   Audio.resume();
@@ -2742,6 +2744,7 @@ function startGame() {
 // systems boot identically.
 // ---------------------------------------------------------------------
 function startTutorial() {
+  console.log('[startTutorial] shader programs at entry:', renderer.info?.programs?.length ?? '??');
   Audio.stopPhoneRing && Audio.stopPhoneRing();
   Audio.stopCDrone && Audio.stopCDrone();
   // Stop the death-screen song (Beyond.mp3) if a prior run's SIGNAL
@@ -2901,12 +2904,12 @@ function startTutorial() {
   boostTutorialLighting();
   try { setFogVisible(false); } catch (e) {}
 
-  // Force one render frame with the final tutorial config. Any shader
-  // variants not covered by the phase-3 warmup render #3 (e.g. the
-  // tutorial floor texture, decorative hives below) compile here while
-  // the title screen is still fading out. This prevents a visible
-  // freeze on the first gameplay frame.
+  // Force one render frame with the final tutorial config.
+  console.log('[startTutorial] programs before forced render:', renderer.info?.programs?.length ?? '??');
+  console.time('[startTutorial] forced render');
   try { renderer.render(scene, camera); } catch(e) {}
+  console.timeEnd('[startTutorial] forced render');
+  console.log('[startTutorial] programs after forced render:', renderer.info?.programs?.length ?? '??');
 
   Audio.init();
   Audio.resume();
