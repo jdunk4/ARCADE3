@@ -979,6 +979,67 @@ function showIncomingCall() {
         const attackBtn = document.getElementById('start-btn');
         const focusable = [attackBtn].filter(Boolean);
         setTitleMode(true, focusable);
+
+        // ============================================================
+        // PRE-BUILD GAME INFRASTRUCTURE WHILE USER READS THE MENU
+        // ============================================================
+        // The title screen is fading in over the matrix rain. The user
+        // will spend 2-10 seconds deciding which mode to play. Use
+        // that time to build all the heavy game infrastructure that
+        // previously caused 5-10 second freezes at startGame/
+        // startTutorial. All these functions are idempotent (internal
+        // guards prevent duplicate work), so calling them again in
+        // startGame/startTutorial is a no-op.
+        //
+        // Strategy: yield to the browser between batches so the title
+        // screen fade + matrix rain stay smooth. Each rAF callback
+        // does one chunk of work. If the user clicks ATTACK THE AI
+        // before all chunks finish, startGame/startTutorial will
+        // pick up any remaining work (the idempotent guards handle
+        // the partial-complete case cleanly).
+        const _bgTasks = [
+          () => {
+            try { initRain(CHAPTERS[0].full.grid1, 1); } catch(e) {}
+          },
+          () => {
+            try { ensureBeamMesh(); } catch(e) {}
+            try { ensureFlameMeshes(); } catch(e) {}
+          },
+          () => {
+            try { applyTheme(0, 1); } catch(e) {}
+          },
+          () => {
+            try { buildCrowd(); } catch(e) {}
+            try { recolorCrowd(CHAPTERS[0].full.grid1); } catch(e) {}
+          },
+          () => {
+            try { applyRainTo(CHAPTERS[0].full.grid1, 1); } catch(e) {}
+          },
+          () => {
+            try { prewarmBossCinematic(); } catch(e) {}
+          },
+          () => {
+            // Pre-promote damage-flash compositor layer
+            const df = document.getElementById('damage-flash');
+            if (df) {
+              df.style.transition = 'none';
+              df.style.opacity = '0.01';
+              requestAnimationFrame(() => {
+                requestAnimationFrame(() => {
+                  df.style.opacity = '0';
+                  df.style.transition = '';
+                });
+              });
+            }
+          },
+        ];
+        let _bgIdx = 0;
+        function _runNextBgTask() {
+          if (_bgIdx >= _bgTasks.length) return;
+          _bgTasks[_bgIdx++]();
+          requestAnimationFrame(_runNextBgTask);
+        }
+        requestAnimationFrame(_runNextBgTask);
       },
     );
 
