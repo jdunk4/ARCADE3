@@ -189,46 +189,53 @@ export async function preloadPixlPalGLBs(onProgress, renderer, camera) {
   // [pixlPal] fetched log suppressed — see [flinger] rationale above.
 
   // --- Phase B: build the hidden mesh pool (clones, parked at y=-1000) ---
-  const tmpScene = new THREE.Scene();
   for (let i = 0; i < ids.length; i++) {
     const id = ids[i];
     try {
-      const mesh = await _loadPalMesh(id);    // fetches-or-returns-cached
-      // _loadPalMesh returns a fresh clone; we keep it as our pool entry.
+      const mesh = await _loadPalMesh(id);
       mesh.position.set(0, POOL_STASH_Y, 0);
       mesh.visible = false;
       mesh.matrixAutoUpdate = false;
       mesh.updateMatrix();
       mesh.traverse(o => { o.frustumCulled = false; });
       scene.add(mesh);
-      tmpScene.add(mesh);
       poolEntries.push({ id, obj: mesh, inUse: false });
     } catch (err) {
       console.warn('[pixlPal] pool build failed for', id, err);
     }
     loaded++;
     if (onProgress) onProgress({ loaded, total, id });
-
-    // Yield between batches so the dive's render loop stays responsive.
     if ((i + 1) % POOL_BATCH_PER_FRAME === 0) {
       await new Promise(r => requestAnimationFrame(r));
     }
   }
 
-  // --- Phase C: PSO / shader warm for the whole set ---
+  // --- Phase C: force one rendered frame with pool meshes VISIBLE ---
+  // Same approach as flingers: make all pool meshes visible, render
+  // one frame against the real scene (with its real lights), then
+  // hide. The loading screen is on top so the user never sees this
+  // frame, but the GPU now has every pixl-pal material's shader
+  // compiled for the actual gameplay light setup. First in-game
+  // visible=true triggers zero recompilation.
+  for (const entry of poolEntries) {
+    if (entry.obj) {
+      entry.obj.visible = true;
+      entry.obj.matrixAutoUpdate = true;
+      entry.obj.updateMatrixWorld(true);
+    }
+  }
   try {
     if (renderer && camera) {
-      renderer.compile(tmpScene, camera);
+      renderer.render(scene, camera);
     }
   } catch (err) {
-    console.warn('[pixlPal] renderer.compile failed (non-fatal):', err);
+    console.warn('[pixlPal] warmup render failed (non-fatal):', err);
   }
-  // Re-parent clones back to the real scene (they were attached to
-  // tmpScene temporarily for the compile pass).
-  while (tmpScene.children.length > 0) {
-    const m = tmpScene.children[0];
-    tmpScene.remove(m);
-    scene.add(m);
+  for (const entry of poolEntries) {
+    if (entry.obj) {
+      entry.obj.visible = false;
+      entry.obj.matrixAutoUpdate = false;
+    }
   }
   console.log(`[pixlPal] ✓ pool ready — ${loaded}/${total} prewarmed`);
   return { loaded, total };
