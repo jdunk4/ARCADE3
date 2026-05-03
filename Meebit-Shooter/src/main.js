@@ -1377,15 +1377,12 @@ loadPlayer(
     setLoad(100, 'READY');
     // Run shader prewarm while the loading screen is still visible.
     // This spawns sample meshes for every enemy/boss/projectile type
-    // offscreen and compiles their shaders — ~2-10 seconds of work
-    // that previously blocked startGame/startTutorial. Paying it
-    // here means the player sees the loading bar at 100% for a
-    // moment longer, but Tutorial and Attack the AI start instantly.
+    // offscreen and compiles their shaders. The loading bar stays at
+    // 100% during this work so the player has visual feedback.
     prewarmShaders(renderer);
-    setTimeout(() => {
-      document.getElementById('loading').style.display = 'none';
-      showIncomingCall();
-    }, 300);
+    // NOW hide the loading screen — prewarm is done, title can show.
+    document.getElementById('loading').style.display = 'none';
+    showIncomingCall();
     if (authCallback) tryUpgradeAvatarFromAuth(authCallback);
     else {
       const stored = getStoredAuth();
