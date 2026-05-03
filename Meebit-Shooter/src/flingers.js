@@ -149,6 +149,10 @@ const flungEnemies = [];         // enemies mid-flight (airborne)
 // Hidden mesh pool — prebuilt during matrix dive by preloadFlingerGLBs().
 // Mirrors the pixl-pal pool pattern. Zero-jank first arrival.
 const flingerPoolEntries = [];
+/** Expose pool entries for the startGame recompile pass in main.js.
+ *  Returns the same array (not a copy) so the caller can toggle
+ *  visibility on the actual objects. */
+export function getFlingerPoolEntries() { return flingerPoolEntries; }
 
 let lastWaveAwarded = 0;         // last wave for which we granted a charge
 let _killHandler = null;         // main.js registers a hook that routes kills

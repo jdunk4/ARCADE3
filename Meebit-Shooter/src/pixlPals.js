@@ -102,6 +102,8 @@ const palBullets = [];   // bullets fired by pals (separate pipe)
 // summon we pull a not-in-use entry, flip it visible, teleport into place.
 // Zero-jank because the clone + shader-compile cost was paid up front.
 const poolEntries = [];
+/** Expose pool entries for the startGame recompile pass. */
+export function getPixlPalPoolEntries() { return poolEntries; }
 
 let lastWaveAwarded = 0; // last wave on which we awarded a charge
 let _killHandler = null; // registered by main.js — wires kills to score/XP

@@ -185,12 +185,12 @@ import { updateTurrets, registerTurretKillHandler } from './turrets.js';
 import {
   updatePixlPals, clearAllPixlPals, trySummonPixlPal,
   registerPixlPalKillHandler, onWaveStarted as onWaveStartedForPals,
-  initPixlPalHUD, preloadPixlPalGLBs,
+  initPixlPalHUD, preloadPixlPalGLBs, getPixlPalPoolEntries,
 } from './pixlPals.js';
 import {
   updateFlingers, clearAllFlingers,
   registerFlingerKillHandler, onWaveStartedForFlingers,
-  initFlingerHUD, preloadFlingerGLBs,
+  initFlingerHUD, preloadFlingerGLBs, getFlingerPoolEntries,
 } from './flingers.js';
 import {
   updateInfectors, clearInfectors, triggerSuperNuke, isInfector,
@@ -2422,6 +2422,53 @@ function startGame() {
   // it forever. Has to run after scene + lights are set up but
   // before the first throw can possibly happen.
   _warmupGrenadeShader();
+
+  // Full scene recompile with gameplay lights. The matrix-dive preload
+  // compiled pool meshes against the loading-screen light setup, but
+  // chapter atmosphere may have different light count/types (e.g.
+  // tutorial adds PointLights, chapter-7 adds SpotLight). A light
+  // count mismatch invalidates the cached shader variant — the first
+  // render with the new lights recompiles synchronously (the 3-5s
+  // freeze). This recompile at startGame fires AFTER chapter lighting
+  // is set up, so the shader variant matches what renderer.render()
+  // will encounter in gameplay. Runs async behind the wave-1 countdown.
+  (async () => {
+    try {
+      // Gather all pool meshes (flingers + pixlPals). Make them
+      // visible briefly so compileAsync/render sees them with the
+      // actual gameplay lights. Then hide again.
+      const allPool = [
+        ...getFlingerPoolEntries(),
+        ...getPixlPalPoolEntries(),
+      ];
+      for (const e of allPool) {
+        if (e.obj) {
+          e.obj._svVis = e.obj.visible;
+          e.obj.visible = true;
+          e.obj.matrixAutoUpdate = true;
+          e.obj.updateMatrixWorld(true);
+        }
+      }
+      if (typeof renderer.compileAsync === 'function') {
+        await renderer.compileAsync(scene, camera);
+      } else {
+        renderer.compile(scene, camera);
+      }
+      // Force a render to flush GPU-side lazy compilation.
+      renderer.render(scene, camera);
+      // Restore
+      for (const e of allPool) {
+        if (e.obj) {
+          e.obj.visible = e.obj._svVis !== undefined ? e.obj._svVis : false;
+          e.obj.matrixAutoUpdate = false;
+          delete e.obj._svVis;
+        }
+      }
+      console.log('[perf] startGame scene recompiled with gameplay lights');
+    } catch (e) {
+      console.warn('[perf] startGame recompile failed (non-fatal):', e);
+    }
+  })();
 
   // Exit title-screen gamepad mode — stick/d-pad input stops moving focus
   // between buttons and resumes driving the player.
@@ -5846,11 +5893,29 @@ function tryThrowGrenade() {
       player.pos.z + Math.cos(player.facing) * 0.8,
     );
     probe('grenade:buildMesh', () => {
-      const geo = new THREE.IcosahedronGeometry(0.22, 0);
-      const mat = new THREE.MeshStandardMaterial({
-        color: 0x2b3d1e, emissive: w.color, emissiveIntensity: 1.4,
-        roughness: 0.5, metalness: 0.3,
-      });
+      // CRITICAL: reuse the SAME geometry + material from the warmup
+      // mesh. Building `new MeshStandardMaterial(...)` per throw
+      // creates a unique material instance that the renderer has never
+      // seen → 5-second shader compile on first draw. The warmup mesh's
+      // material was already compiled via compileAsync during the
+      // matrix dive. Sharing that instance means zero compile at throw
+      // time. The geometry is also shared (small perf win — avoids
+      // re-uploading the same vertex data to the GPU every throw).
+      //
+      // _grenadeWarmupMesh is guaranteed to exist by the time a player
+      // can throw (it's built at startGame, before any input is
+      // possible). If somehow missing, fall back to building fresh.
+      let geo, mat;
+      if (_grenadeWarmupMesh) {
+        geo = _grenadeWarmupMesh.geometry;
+        mat = _grenadeWarmupMesh.material;
+      } else {
+        geo = new THREE.IcosahedronGeometry(0.22, 0);
+        mat = new THREE.MeshStandardMaterial({
+          color: 0x2b3d1e, emissive: w.color, emissiveIntensity: 1.4,
+          roughness: 0.5, metalness: 0.3,
+        });
+      }
       const mesh = new THREE.Mesh(geo, mat);
       mesh.castShadow = true;
       mesh.position.copy(origin);
