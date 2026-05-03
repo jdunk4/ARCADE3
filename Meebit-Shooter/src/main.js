@@ -5663,13 +5663,6 @@ function updateGrenades(dt) {
     _grenadeLight.intensity = 0;
   }
 }
-      _detonateGrenade(g);
-      scene.remove(g);
-      _grenades.splice(i, 1);
-      continue;
-    }
-  }
-}
 
 function _detonateGrenade(g) {
   // Reuse explodeRocket's AoE by shaping the grenade's userData the same
