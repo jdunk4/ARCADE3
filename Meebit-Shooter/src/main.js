@@ -2417,6 +2417,12 @@ function startGame() {
   // beyond visibility.
   initFogRing();
 
+  // Pre-compile the grenade shader so first-throw doesn't hitch.
+  // Idempotent — sets up an invisible warmup mesh once and reuses
+  // it forever. Has to run after scene + lights are set up but
+  // before the first throw can possibly happen.
+  _warmupGrenadeShader();
+
   // Exit title-screen gamepad mode — stick/d-pad input stops moving focus
   // between buttons and resumes driving the player.
   setTitleMode(false);
@@ -5750,6 +5756,56 @@ function explodeRocket(r) {
 
 const GRENADE_GRAVITY = 22;    // m/s^2 — snappy feel
 const _grenades = [];
+
+// Grenade shader warmup — builds the same mesh + material + light
+// combination tryThrowGrenade() will create at run-time, adds it to
+// the live scene (invisible), runs renderer.compile() so the shader
+// variant is cached, then leaves the warmup mesh parked offscreen.
+//
+// Why an explicit warmup is needed: tryThrowGrenade() builds an
+// IcosahedronGeometry + StandardMaterial(emissive) + a child
+// PointLight on every throw. The FIRST throw introduces a
+// material+light shader variant the renderer hasn't seen, and Three.js
+// recompiles synchronously on the next render frame after the mesh
+// is added to the scene. On a complex scene (player + chapter mesh +
+// herds + lights) that compile blocks the main thread for 1-2 seconds
+// — the visible freeze the playtester reports.
+//
+// Called once at game-init time after renderer + scene + lights are
+// set up. The warmup mesh stays in the scene forever (parked at
+// y=-2000, visible=false, frustumCulled=false). Cost: 1 invisible
+// vertex pass per render, negligible.
+let _grenadeWarmupMesh = null;
+function _warmupGrenadeShader() {
+  if (_grenadeWarmupMesh) return;       // idempotent
+  if (!renderer || !camera) return;
+  try {
+    const w = WEAPONS.grenade;
+    if (!w) return;
+    const geo = new THREE.IcosahedronGeometry(0.22, 0);
+    const mat = new THREE.MeshStandardMaterial({
+      color: 0x2b3d1e, emissive: w.color, emissiveIntensity: 1.4,
+      roughness: 0.5, metalness: 0.3,
+    });
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.castShadow = true;
+    mesh.position.set(0, -2000, 0);
+    mesh.visible = false;
+    mesh.frustumCulled = false;
+    // Match the runtime build — child PointLight changes the shader
+    // variant. Without it, the warmup compiles a mesh-without-light
+    // shader and the FIRST throw still recompiles for the
+    // mesh-with-attached-light variant.
+    const trailLight = new THREE.PointLight(w.color, 1.4, 4, 2);
+    mesh.add(trailLight);
+    scene.add(mesh);
+    renderer.compile(scene, camera);
+    _grenadeWarmupMesh = mesh;
+    console.log('[perf] grenade shader warmed');
+  } catch (e) {
+    console.warn('[perf] grenade warmup failed (non-fatal):', e);
+  }
+}
 
 function tryThrowGrenade() {
   if (!S.running || S.paused) return;

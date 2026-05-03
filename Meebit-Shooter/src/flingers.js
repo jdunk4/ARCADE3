@@ -238,7 +238,6 @@ export async function preloadFlingerGLBs(onProgress, renderer, camera) {
   // already confirms the file count; the fetch completion is implied.
 
   // --- Phase B: build hidden mesh pool (clones parked at y=-1000) ---
-  const tmpScene = new THREE.Scene();
   for (let i = 0; i < names.length; i++) {
     const glbName = names[i];
     try {
@@ -249,7 +248,6 @@ export async function preloadFlingerGLBs(onProgress, renderer, camera) {
       mesh.updateMatrix();
       mesh.traverse(o => { o.frustumCulled = false; });
       scene.add(mesh);
-      tmpScene.add(mesh);
       flingerPoolEntries.push({ name: glbName, obj: mesh, inUse: false });
     } catch (err) {
       console.warn('[flinger] pool build failed for', glbName, err);
@@ -261,18 +259,28 @@ export async function preloadFlingerGLBs(onProgress, renderer, camera) {
     }
   }
 
-  // --- Phase C: PSO warm ---
+  // --- Phase C: PSO warm against the LIVE scene (with its lights) ---
+  // CRITICAL: previous code compiled against a tmpScene with no
+  // lights, then moved meshes to the main scene. Three.js's shader
+  // selection depends on the LIGHT COUNT it sees during compile —
+  // a mesh compiled against an empty scene has the "no lights"
+  // shader variant baked in. When the mesh moves to the main scene
+  // with directional + ambient + spotlight, the shader is invalid
+  // and Three.js recompiles SYNCHRONOUSLY on the first render frame
+  // after the mesh becomes visible. THAT was the 3-second freeze on
+  // first flinger summon.
+  //
+  // Fix: keep the meshes in the main scene (visible=false so they
+  // don't draw) and compile against the main scene. Three.js compiles
+  // for ALL materials it can reach from scene.children, regardless
+  // of visibility, picking up the real lights. The first
+  // visible=true won't trigger any further compilation.
   try {
     if (renderer && camera) {
-      renderer.compile(tmpScene, camera);
+      renderer.compile(scene, camera);
     }
   } catch (err) {
     console.warn('[flinger] renderer.compile failed (non-fatal):', err);
-  }
-  while (tmpScene.children.length > 0) {
-    const m = tmpScene.children[0];
-    tmpScene.remove(m);
-    scene.add(m);
   }
   console.log(`[flinger] ✓ pool ready — ${loaded}/${total} prewarmed`);
   return { loaded, total };

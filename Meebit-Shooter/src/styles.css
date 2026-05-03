@@ -1491,9 +1491,18 @@ canvas { display: block; cursor: var(--matrix-cursor); }
   );
   opacity: 0;
   transition: opacity 0.15s;
-  /* Hint to the browser to keep this element on its own layer — avoids
-   * re-promoting the layer each time opacity flashes from 0 → 1. */
+  /* COMPOSITOR LAYER PROMOTION — combined will-change + translateZ.
+   * `will-change: opacity` alone hints the browser, but Chromium
+   * doesn't actually allocate the layer until the property changes
+   * for the first time — so the FIRST damage hit still pays the
+   * layer-creation cost (visible 0.5-1s freeze on lower-end hardware).
+   * `transform: translateZ(0)` forces an immediate, permanent
+   * compositor layer at page load, eliminating the first-hit hitch.
+   * Per playtester: "every time I take damage the first time" was
+   * blocking the main thread for ~500ms; this fix moves that cost
+   * to page load (where it's invisible). */
   will-change: opacity;
+  transform: translateZ(0);
 }
 
 #loading {

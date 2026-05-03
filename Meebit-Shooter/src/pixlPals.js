@@ -41,6 +41,8 @@ import { Audio } from './audio.js';
 import { S, shake } from './state.js';
 import { UI } from './ui.js';
 import { attachMixer, animationsReady, applyGunHoldPose, GUN_HOLD_EXCLUDE_BONES, IDLE_HIP_EXCLUDE_BONES } from './animation.js';
+// Performance instrumentation (REMOVE-ME after diagnosing first-spawn freezes)
+import { probe } from './perfProbe.js';
 
 // -----------------------------------------------------------------------------
 // ASSETS / CONSTANTS
@@ -189,7 +191,6 @@ export async function preloadPixlPalGLBs(onProgress, renderer, camera) {
   // [pixlPal] fetched log suppressed — see [flinger] rationale above.
 
   // --- Phase B: build the hidden mesh pool (clones, parked at y=-1000) ---
-  const tmpScene = new THREE.Scene();
   for (let i = 0; i < ids.length; i++) {
     const id = ids[i];
     try {
@@ -201,7 +202,6 @@ export async function preloadPixlPalGLBs(onProgress, renderer, camera) {
       mesh.updateMatrix();
       mesh.traverse(o => { o.frustumCulled = false; });
       scene.add(mesh);
-      tmpScene.add(mesh);
       poolEntries.push({ id, obj: mesh, inUse: false });
     } catch (err) {
       console.warn('[pixlPal] pool build failed for', id, err);
@@ -215,20 +215,21 @@ export async function preloadPixlPalGLBs(onProgress, renderer, camera) {
     }
   }
 
-  // --- Phase C: PSO / shader warm for the whole set ---
+  // --- Phase C: PSO / shader warm against the LIVE scene (with its lights) ---
+  // CRITICAL: previously compiled against a tmpScene with no lights,
+  // which produced shaders for the "no lights" variant. When the
+  // mesh later moved to the main scene with directional/ambient/spot
+  // lights, the shader became invalid and Three.js recompiled it
+  // SYNCHRONOUSLY on the first render frame — visible 1-3 second
+  // freeze on first pixl-pal summon. Compile against the real scene
+  // with visible=false meshes already attached so the right shader
+  // variant gets cached.
   try {
     if (renderer && camera) {
-      renderer.compile(tmpScene, camera);
+      renderer.compile(scene, camera);
     }
   } catch (err) {
     console.warn('[pixlPal] renderer.compile failed (non-fatal):', err);
-  }
-  // Re-parent clones back to the real scene (they were attached to
-  // tmpScene temporarily for the compile pass).
-  while (tmpScene.children.length > 0) {
-    const m = tmpScene.children[0];
-    tmpScene.remove(m);
-    scene.add(m);
   }
   console.log(`[pixlPal] ✓ pool ready — ${loaded}/${total} prewarmed`);
   return { loaded, total };
@@ -331,7 +332,7 @@ export function trySummonPixlPal(playerPos) {
   // shader compile. All paid during the matrix dive. Pool was seeded by
   // preloadPixlPalGLBs(). Ring tint comes from the current chapter.
   const chapterTint = CHAPTERS[S.chapter % CHAPTERS.length].full.grid1;
-  const pooledMesh = _acquirePoolMesh();
+  const pooledMesh = probe('pixlpal:acquirePool', () => _acquirePoolMesh());
   if (pooledMesh) {
     pal.glbId = pooledMesh.userData && pooledMesh.userData.__palId;
     scene.remove(pal.obj);
@@ -341,8 +342,9 @@ export function trySummonPixlPal(playerPos) {
     pooledMesh.rotation.y = Math.random() * Math.PI * 2;
     // Reset per-summon ring (remove any stale aura from a previous use,
     // then attach a fresh one in the current chapter's tint).
-    _resetPalHighlight(pooledMesh);
-    _applyPalHighlight(pooledMesh, chapterTint);
+    probe('pixlpal:resetHighlight', () => _resetPalHighlight(pooledMesh));
+    probe('pixlpal:applyHighlight',
+      () => _applyPalHighlight(pooledMesh, chapterTint));
     pal.obj = pooledMesh;
     pal.pos = pooledMesh.position;
     pal.ready = true;
@@ -352,8 +354,9 @@ export function trySummonPixlPal(playerPos) {
         // No excludeBones — pixlpals are on an Unreal rig, the VRM gun-hold
         // pose never hit them, and the idle2/idle3 clips had a sideways
         // lean baked in. Plain walk on all bones reads clean and natural.
-        pal.mixer = attachMixer(pooledMesh, {});
-        pal.mixer.playWalk();
+        pal.mixer = probe('pixlpal:attachMixer',
+          () => attachMixer(pooledMesh, {}));
+        probe('pixlpal:playWalk', () => pal.mixer.playWalk());
       } catch (e) {
         console.warn('[PixlPal] attachMixer failed', e);
       }
@@ -443,11 +446,21 @@ export function updatePixlPals(dt, playerPos) {
     _bossPalDeployed = false;
   }
 
-  // (Legacy ch7 force-deploy + persistence was removed when pixl pals
-  // were disabled entirely in chapter 7. Per playtester: "Can we get
-  // rid of the flinger and pixl pal in chapter 7?")
-  // Reset the ch7 dedupe flag whenever we leave ch7 just so it stays
-  // tidy across runs.
+  // --- CH7 CO-DEPLOY ---
+  // Chapter 7 (PARADISE FALLEN) has no boss, so the boss-fight timer
+  // above never fires. Instead, we force-deploy one pal the first time
+  // updatePixlPals runs in ch7 so the player gets their ally alongside
+  // the flinger that was also force-deployed by onWaveStartedForFlingers.
+  // Both stay until the run ends (ch7 persistence gate, below).
+  if (S.chapter === PARADISE_FALLEN_CHAPTER_IDX &&
+      !_ch7PalDeployed &&
+      S.running && !S.paused) {
+    _ch7PalDeployed = true;
+    S.pixlPalCharges = Math.max(1, S.pixlPalCharges || 1);
+    trySummonPixlPal(playerPos);
+    UI.toast && UI.toast('PIXL PAL DEPLOYED', '#00ff66', 2000);
+  }
+  // Reset the ch7 dedupe flag whenever we leave ch7 (back to title, new run).
   if (S.chapter !== PARADISE_FALLEN_CHAPTER_IDX) {
     _ch7PalDeployed = false;
   }
@@ -459,11 +472,11 @@ export function updatePixlPals(dt, playerPos) {
 
     p.life += dt;
 
-    // Standard despawn conditions — lifetime expired or kill cap reached.
-    // (Legacy ch7 persistence flag was removed when pals were disabled
-    // entirely in chapter 7; any pal still alive in ch7 is a leftover
-    // from an earlier chapter and should despawn.)
-    if (!p.despawning && (
+    // Despawn conditions: lifetime expired, mission complete, or game over.
+    // EXCEPT in chapter 7 (PARADISE FALLEN), where pals + flingers are
+    // summoned together as final-chapter allies and stay until the run ends.
+    const isCh7 = S.chapter === PARADISE_FALLEN_CHAPTER_IDX;
+    if (!p.despawning && !isCh7 && (
         p.life >= p.maxLife ||
         p.killsThisSummon >= p.killsGoal
     )) {
