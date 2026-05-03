@@ -124,6 +124,12 @@ export function spawnOre(x, z, tintHex, chapterIdx) {
       Math.random() * 2 - 1,
     ).normalize(),
     spinSpeed: 1.3 + Math.random() * 0.6,
+    // Auto-fly: ore immediately homes toward the player on spawn.
+    // Brief launch delay (0.15s) lets the ore "pop" visibly from the
+    // block before zipping to the player, so it reads as a reward
+    // rather than just vanishing.
+    autoFly: true,
+    autoFlyDelay: 0.15,
   };
   ores.push(ore);
   return ore;
@@ -154,18 +160,41 @@ export function updateOres(dt, player) {
       continue;
     }
 
-    // Magnetize to player
+    // --- Auto-fly: ore homes to player immediately after spawn ---
     const dx = player.pos.x - o.pos.x;
     const dz = player.pos.z - o.pos.z;
     const d2 = dx * dx + dz * dz;
-    if (d2 < ORE_MAGNET_RADIUS * ORE_MAGNET_RADIUS) {
-      const d = Math.sqrt(d2) || 1;
-      const pull = Math.max(0, (ORE_MAGNET_RADIUS - d) / ORE_MAGNET_RADIUS) * 10 * dt;
-      o.pos.x += (dx / d) * pull;
-      o.pos.z += (dz / d) * pull;
-    }
-    if (d2 < ORE_PICKUP_RADIUS * ORE_PICKUP_RADIUS) {
-      pickupOre(o, i);
+
+    if (o.autoFly) {
+      // Brief launch delay so the ore visually "pops" from the block
+      if (o.autoFlyDelay > 0) {
+        o.autoFlyDelay -= dt;
+        // Rise slightly during the pop
+        o.mesh.position.y += dt * 4;
+      } else {
+        // Fast homing — 25 units/sec toward player, accelerating
+        const d = Math.sqrt(d2) || 1;
+        const speed = 25 * dt;
+        o.pos.x += (dx / d) * speed;
+        o.pos.z += (dz / d) * speed;
+        // Lerp Y toward player height
+        o.mesh.position.y += (1.2 - o.mesh.position.y) * dt * 8;
+      }
+      // Auto-collect when close enough
+      if (d2 < 2.0 * 2.0) {
+        pickupOre(o, i);
+      }
+    } else {
+      // Legacy magnetize path for any ores without autoFly
+      if (d2 < ORE_MAGNET_RADIUS * ORE_MAGNET_RADIUS) {
+        const d = Math.sqrt(d2) || 1;
+        const pull = Math.max(0, (ORE_MAGNET_RADIUS - d) / ORE_MAGNET_RADIUS) * 10 * dt;
+        o.pos.x += (dx / d) * pull;
+        o.pos.z += (dz / d) * pull;
+      }
+      if (d2 < ORE_PICKUP_RADIUS * ORE_PICKUP_RADIUS) {
+        pickupOre(o, i);
+      }
     }
   }
 }
