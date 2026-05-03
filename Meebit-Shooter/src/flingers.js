@@ -315,7 +315,23 @@ export async function preloadFlingerGLBs(onProgress, renderer, camera) {
           entry.obj.updateMatrixWorld(true);
         }
       }
-      renderer.compile(scene, camera);
+      // Use compileAsync (Three r152+) which returns a Promise that
+      // resolves only when the GPU has FULLY COMPILED all shaders,
+      // not just queued them. Crucial because WebGL shader compilation
+      // can be deferred to first-draw time — sync renderer.compile()
+      // queues the work but doesn't wait for the GPU. The first
+      // actual render then stalls the browser at GL state setup, which
+      // shows up as a long-task but is invisible to our synchronous
+      // timing probes.
+      //
+      // compileAsync forces the wait. Worth ~200ms of preload time
+      // (paid behind the loading screen) to eliminate ~1s of in-game
+      // freeze on first spawn.
+      if (typeof renderer.compileAsync === 'function') {
+        await renderer.compileAsync(scene, camera);
+      } else {
+        renderer.compile(scene, camera);
+      }
 
       // Mixer warmup — caches per-skeleton animation property bindings.
       // The mixer is STASHED on the pool entry so the runtime summon

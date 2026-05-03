@@ -4514,13 +4514,7 @@ function animate() {
     updateObjectiveArrows(S, camera, getWaveDef_current(), player.pos);
   }
 
-  // Time the actual render call. If a freeze happens HERE, the only
-  // possible cause is shader compile / texture upload / GL state
-  // change in the renderer itself. Probes around the JS spawn paths
-  // all return 0.0ms, so the residual freeze MUST be inside this
-  // renderer.render() call. Probe wraps it so the long-frame logger
-  // can correctly attribute the cost.
-  probe('render:frame', () => renderer.render(scene, camera));
+  renderer.render(scene, camera);
 
   // Long-frame probe (see top of animate). If this frame took longer
   // than 80ms — well above 16ms target — log a single line with
@@ -5782,7 +5776,7 @@ const _grenades = [];
 // y=-2000, visible=false, frustumCulled=false). Cost: 1 invisible
 // vertex pass per render, negligible.
 let _grenadeWarmupMesh = null;
-function _warmupGrenadeShader() {
+async function _warmupGrenadeShader() {
   if (_grenadeWarmupMesh) return;       // idempotent
   if (!renderer || !camera) return;
   try {
@@ -5796,7 +5790,11 @@ function _warmupGrenadeShader() {
     const mesh = new THREE.Mesh(geo, mat);
     mesh.castShadow = true;
     mesh.position.set(0, -2000, 0);
-    mesh.visible = false;
+    // Start VISIBLE during compile so renderer.compileAsync sees it
+    // as part of the render path. Compile is per-material but it
+    // also needs to know the mesh is in the visible draw list to
+    // queue the shader properly. Hidden after compile finishes.
+    mesh.visible = true;
     mesh.frustumCulled = false;
     // Match the runtime build — child PointLight changes the shader
     // variant. Without it, the warmup compiles a mesh-without-light
@@ -5805,7 +5803,16 @@ function _warmupGrenadeShader() {
     const trailLight = new THREE.PointLight(w.color, 1.4, 4, 2);
     mesh.add(trailLight);
     scene.add(mesh);
-    renderer.compile(scene, camera);
+    // compileAsync waits for GPU compile to actually complete;
+    // sync compile() only queues the work and the actual GL compile
+    // happens later (during first draw), causing a 1-2s freeze on
+    // first throw. See flingers.js for the full rationale.
+    if (typeof renderer.compileAsync === 'function') {
+      await renderer.compileAsync(scene, camera);
+    } else {
+      renderer.compile(scene, camera);
+    }
+    mesh.visible = false;       // hide now that compile is done
     _grenadeWarmupMesh = mesh;
     console.log('[perf] grenade shader warmed');
   } catch (e) {

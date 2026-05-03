@@ -233,7 +233,15 @@ export async function preloadPixlPalGLBs(onProgress, renderer, camera) {
           entry.obj.updateMatrixWorld(true);
         }
       }
-      renderer.compile(scene, camera);
+      // compileAsync (Three r152+) waits for GPU shader compile
+      // completion, not just queueing. Sync compile() leaves shader
+      // work pending, which stalls on first draw. See flingers.js
+      // for the full rationale.
+      if (typeof renderer.compileAsync === 'function') {
+        await renderer.compileAsync(scene, camera);
+      } else {
+        renderer.compile(scene, camera);
+      }
 
       // Mixer warmup — caches per-skeleton animation property bindings.
       // Stashed on userData for reuse by the runtime summon path.
