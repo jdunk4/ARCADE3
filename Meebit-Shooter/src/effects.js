@@ -265,16 +265,38 @@ let currentRainCfg = rainIntensity(1);
 let windPhase = 0;
 let nextLightningIn = 0;
 let lightningFlashT = 0;
-let lightningLight = null;       // THREE.DirectionalLight — chapter-tinted
-let cssFlashEl = null;           // DOM overlay for the camera flash
-let lightningTintHex = 0xc5d8ff; // current lightning color (chapter-tinted)
+// Lightning DirectionalLight — created at MODULE LOAD and added to
+// the scene immediately so the light count (NUM_DIR_LIGHTS) is stable
+// from the very first render frame. Previously this was lazy-created
+// via ensureLightningLight() on first wave with lightning enabled,
+// which changed the directional light count from 1→2 mid-gameplay.
+// That invalidated every cached shader program in the scene and
+// forced a full recompile on the next render (~1-3 second freeze).
+// By adding it upfront at intensity 0, the shader compiler sees 2
+// directional lights from the start. No light-count change ever
+// happens = no shader recompile = no freeze.
+let lightningLight = null;
+let cssFlashEl = null;
+let lightningTintHex = 0xc5d8ff;
+
+// Eagerly create + add the lightning light.
+try {
+  lightningLight = new THREE.DirectionalLight(lightningTintHex, 0);
+  lightningLight.position.set(0, 40, 0);
+  scene.add(lightningLight);
+} catch (_) { /* scene not ready at module load — ensureLightningLight will retry */ }
 
 const RAIN_DROP_GEO = new THREE.BoxGeometry(0.04, 0.7, 0.04);
 
 function ensureLightningLight() {
-  if (lightningLight) return;
-  lightningLight = new THREE.DirectionalLight(lightningTintHex, 0);
-  lightningLight.position.set(0, 40, 0);
+  // Now a no-op in the normal case since the light was created above.
+  // Fallback: if the module-level creation failed (scene wasn't ready),
+  // create it here on first call.
+  if (lightningLight && lightningLight.parent) return;
+  if (!lightningLight) {
+    lightningLight = new THREE.DirectionalLight(lightningTintHex, 0);
+    lightningLight.position.set(0, 40, 0);
+  }
   scene.add(lightningLight);
 }
 
