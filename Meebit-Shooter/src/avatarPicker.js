@@ -32,9 +32,9 @@ function _initPreview() {
   _pvScene = new THREE.Scene();
   _pvScene.background = new THREE.Color(0x050f08);
 
-  _pvCamera = new THREE.PerspectiveCamera(35, 1, 0.1, 50);
-  _pvCamera.position.set(0, 1.2, 4.5);
-  _pvCamera.lookAt(0, 0.8, 0);
+  _pvCamera = new THREE.PerspectiveCamera(30, 1, 0.1, 50);
+  _pvCamera.position.set(0, 1.8, 6.5);
+  _pvCamera.lookAt(0, 1.0, 0);
 
   _pvScene.add(new THREE.AmbientLight(0xffffff, 1.2));
   const key = new THREE.DirectionalLight(0xffffff, 1.5);
@@ -91,16 +91,31 @@ function _loadModel(av) {
 }
 
 function _placeModel(model, av) {
+  // Reset transforms
+  model.position.set(0, 0, 0);
+  model.scale.setScalar(1);
+  model.rotation.set(0, 0, 0);
+
+  // Measure raw bounding box
   const box = new THREE.Box3().setFromObject(model);
   const size = box.getSize(new THREE.Vector3());
+  const center = box.getCenter(new THREE.Vector3());
   const maxDim = Math.max(size.x, size.y, size.z) || 1;
-  const s = (2.2 / maxDim) * (av.scale || 1);
+
+  // Scale to fit within a target height of ~2.0 units
+  const targetH = 2.0;
+  const s = targetH / maxDim;
   model.scale.setScalar(s);
 
+  // Re-measure after scale
   const box2 = new THREE.Box3().setFromObject(model);
-  const c2 = box2.getCenter(new THREE.Vector3());
-  model.position.sub(c2);
-  model.position.y += box2.getSize(new THREE.Vector3()).y / 2;
+  const center2 = box2.getCenter(new THREE.Vector3());
+  const min2 = box2.min;
+
+  // Center horizontally, place feet on ground (y=0)
+  model.position.x = -center2.x;
+  model.position.z = -center2.z;
+  model.position.y = -min2.y;  // lift so bottom of model is at y=0
 
   _pvScene.add(model);
   _pvModel = model;

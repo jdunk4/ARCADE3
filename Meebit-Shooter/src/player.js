@@ -141,7 +141,52 @@ function attachGLB(gltf) {
   });
 
   if (!skeleton) {
-    throw new Error('No skeleton in GLB');
+    // No skeleton — static voxel model (PixlPal, Gob, Flinger GLB).
+    // Still usable as a player avatar: wrap in Group, attach gun
+    // to a guessed hand position, skip animation binding.
+    console.log('[player] no skeleton — loading as static avatar');
+    const wrapper = new THREE.Group();
+    meebit.rotation.y = Math.PI;
+    wrapper.add(meebit);
+    wrapper.position.copy(player.pos);
+
+    // Gun attached at a reasonable position relative to the model
+    const gunGeo = new THREE.BoxGeometry(0.1, 0.1, 0.4);
+    const gunMat = new THREE.MeshStandardMaterial({
+      color: 0x00ff66, emissive: 0x00ff66, emissiveIntensity: 1.2,
+    });
+    const gun = new THREE.Mesh(gunGeo, gunMat);
+    gun.castShadow = true;
+    // Position gun at roughly right-hand height
+    gun.position.set(0.35, 1.1, 0.3);
+    meebit.add(gun);
+
+    const muzzle = new THREE.PointLight(0x00ff66, 0, 6, 2);
+    gun.add(muzzle);
+    muzzle.position.set(0, 0, 0.25);
+
+    scene.add(wrapper);
+
+    // Camera-parented fill lights
+    const playerFillTop = new THREE.PointLight(0xffffff, 3.0, 35, 0.5);
+    playerFillTop.position.set(0, -4, -6);
+    camera.add(playerFillTop);
+    const playerFillRim = new THREE.PointLight(0xffffff, 1.2, 25, 0.7);
+    playerFillRim.position.set(3, -2, -8);
+    camera.add(playerFillRim);
+
+    player.obj = wrapper;
+    player._innerMesh = meebit;
+    player.gun = gun;
+    player.gunMat = gunMat;
+    player.muzzleLight = muzzle;
+    player.bones = {};
+    player.restQuat = {};
+    player.restPos = {};
+    player.skeleton = null;
+    player.skinnedMeshes = [];
+    player.ready = true;
+    return;
   }
 
   // Wrap in an outer Group + pre-rotate the VRM 180° on Y. Same pattern as
