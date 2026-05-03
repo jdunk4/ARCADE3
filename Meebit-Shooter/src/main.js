@@ -2206,6 +2206,24 @@ function startGame() {
   // beyond visibility.
   initFogRing();
 
+  // Pre-promote the damage-flash overlay's compositor layer. The
+  // first opacity transition on #damage-flash forces the browser to
+  // allocate + paint the layer (~100-200ms hitch on first damage).
+  // Flash it invisibly now so the layer is ready before gameplay.
+  {
+    const df = document.getElementById('damage-flash');
+    if (df) {
+      df.style.transition = 'none';
+      df.style.opacity = '0.01';
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          df.style.opacity = '0';
+          df.style.transition = '';
+        });
+      });
+    }
+  }
+
   // Exit title-screen gamepad mode — stick/d-pad input stops moving focus
   // between buttons and resumes driving the player.
   setTitleMode(false);
