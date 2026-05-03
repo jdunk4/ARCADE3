@@ -985,23 +985,43 @@ function showIncomingCall() {
           }
         },
         () => {
-          // WARMUP RENDER #1 — shadows ON (Attack the AI config).
-          // Forces GPU to compile shaders for all meshes with the
-          // standard shadow-enabled renderer state.
+          // WARMUP RENDER #1 — standard shadows-ON config.
           try { renderer.render(scene, camera); } catch(e) {}
         },
         () => {
-          // WARMUP RENDER #2 — shadows OFF (Tutorial config).
-          // Tutorial calls disableShadows + disposeRain + boostLighting
-          // which changes renderer state and invalidates shader caches.
-          // By rendering once with shadows off during loading, the GPU
-          // compiles the shadow-off shader variants too. Both Tutorial
-          // and Attack the AI get instant first renders.
+          // WARMUP RENDER #2 — hyperdrive fog config (Attack the AI).
+          // startGame pulls fog near=15 far=22 color=black for the
+          // hyperdrive prelude. Different fog params = different shader
+          // defines. Render once with these exact settings so the GPU
+          // compiles the hyperdrive fog shader variants.
+          const _fn = scene.fog.near, _ff = scene.fog.far;
+          const _fc = scene.fog.color.getHex();
+          const _bg = scene.background ? scene.background.getHex() : 0;
+          try {
+            scene.fog.near = 15; scene.fog.far = 22;
+            scene.fog.color.setHex(0x000000);
+            if (scene.background) scene.background.setHex(0x000000);
+            renderer.render(scene, camera);
+          } catch(e) {}
+          // Restore
+          scene.fog.near = _fn; scene.fog.far = _ff;
+          scene.fog.color.setHex(_fc);
+          if (scene.background) scene.background.setHex(_bg);
+        },
+        () => {
+          // WARMUP RENDER #3 — tutorial config: shadows OFF + fog OFF.
+          // Tutorial disables shadows, disables fog, boosts lighting.
+          // Each change invalidates shader caches. Render once with
+          // this exact config so the GPU has all tutorial variants.
           try {
             disableShadows(renderer);
+            disableFog();
+            boostTutorialLighting();
             renderer.render(scene, camera);
-            // Restore shadows for the default (Attack the AI) config.
+            // Restore everything back to default.
             restoreShadows(renderer);
+            restoreFog();
+            restoreTutorialLighting();
           } catch(e) {}
         },
       ];
@@ -2666,6 +2686,15 @@ function startGame() {
   spawnGravestones(14, CHAPTERS[0].full.grid1);
   prewarmShaders(renderer);
   try { prewarmBossCinematic(); } catch (e) { console.warn('[prewarm] cinematic', e); }
+
+  // Force ONE render frame to compile any remaining shader variants
+  // (fog-near/far changed for hyperdrive, theme re-applied, etc.)
+  // This stalls on the GPU but the hyperdrive overlay is on top so
+  // the user sees splats, not a frozen frame. The stall happens HERE
+  // (before startWave / before enemies spawn) rather than on the
+  // first animate() frame where it would freeze the hyperdrive anim.
+  try { renderer.render(scene, camera); } catch(e) {}
+
   Audio.init();
   Audio.resume();
   // C-drone was playing on the title screen as an ambient bed. Stop it
@@ -2871,6 +2900,13 @@ function startTutorial() {
   // dominates the meebit's albedo.
   boostTutorialLighting();
   try { setFogVisible(false); } catch (e) {}
+
+  // Force one render frame with the final tutorial config. Any shader
+  // variants not covered by the phase-3 warmup render #3 (e.g. the
+  // tutorial floor texture, decorative hives below) compile here while
+  // the title screen is still fading out. This prevents a visible
+  // freeze on the first gameplay frame.
+  try { renderer.render(scene, camera); } catch(e) {}
 
   Audio.init();
   Audio.resume();
