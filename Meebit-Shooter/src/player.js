@@ -223,24 +223,16 @@ function attachGLB(gltf) {
 
   scene.add(wrapper);
 
-  // PERMANENT player fill lights — addresses the "meebit looks dark
-  // / can't see full body" issue in chapters with moody lighting.
-  //
-  // Two lights on the wrapper (NOT three — adding a PointLight changes
-  // NUM_POINT_LIGHTS which invalidates every shader in the scene):
-  //   1. High key light — y=8, slightly toward camera (+z=3), long
-  //      range (22u), gentle decay (1.0). The height eliminates the
-  //      visible ground hotspot and the forward offset lights the
-  //      meebit's front face instead of just the crown.
-  //   2. Rim fill — behind and higher up, wider range for softer
-  //      silhouette separation.
-  //
-  // Both white so they don't tint toward chapter color.
-  const playerFillTop = new THREE.PointLight(0xffffff, 2.0, 22, 1.0);
-  playerFillTop.position.set(0, 8.0, 3.0);    // high above, toward camera
+  // PERMANENT player fill lights — wide, diffused, even coverage.
+  // Key light very high (y=10) with huge range (30u) and near-zero
+  // decay (0.6) so it acts almost like a directional — the entire
+  // meebit body + nearby ground gets even illumination with no
+  // visible hotspot. Rim light wider and softer too.
+  const playerFillTop = new THREE.PointLight(0xffffff, 2.8, 30, 0.6);
+  playerFillTop.position.set(0, 10.0, 4.0);
   wrapper.add(playerFillTop);
-  const playerFillRim = new THREE.PointLight(0xffffff, 0.8, 14, 1.4);
-  playerFillRim.position.set(0, 4.0, -3.0);   // behind and above
+  const playerFillRim = new THREE.PointLight(0xffffff, 1.2, 20, 0.8);
+  playerFillRim.position.set(0, 5.0, -4.0);
   wrapper.add(playerFillRim);
 
   // player.obj is the WRAPPER (outer group that the game rotates).
@@ -467,11 +459,11 @@ function buildVoxel(onProgress, onDone, onError) {
     // Permanent fill lights — same as the GLB path, mirrored here so
     // the legacy/voxel mode also gets clear visibility in moody chapter
     // lighting. See the GLB-path version for the rationale.
-    const playerFillTop = new THREE.PointLight(0xffffff, 1.4, 14, 1.6);
-    playerFillTop.position.set(0, 4.0, 0);
+    const playerFillTop = new THREE.PointLight(0xffffff, 2.8, 30, 0.6);
+    playerFillTop.position.set(0, 10.0, 4.0);
     root.add(playerFillTop);
-    const playerFillRim = new THREE.PointLight(0xffffff, 0.7, 8, 1.8);
-    playerFillRim.position.set(0, 2.5, -2.0);
+    const playerFillRim = new THREE.PointLight(0xffffff, 1.2, 20, 0.8);
+    playerFillRim.position.set(0, 5.0, -4.0);
     root.add(playerFillRim);
 
     player.obj = root;
