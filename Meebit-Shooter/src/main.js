@@ -4514,7 +4514,13 @@ function animate() {
     updateObjectiveArrows(S, camera, getWaveDef_current(), player.pos);
   }
 
-  renderer.render(scene, camera);
+  // Time the actual render call. If a freeze happens HERE, the only
+  // possible cause is shader compile / texture upload / GL state
+  // change in the renderer itself. Probes around the JS spawn paths
+  // all return 0.0ms, so the residual freeze MUST be inside this
+  // renderer.render() call. Probe wraps it so the long-frame logger
+  // can correctly attribute the cost.
+  probe('render:frame', () => renderer.render(scene, camera));
 
   // Long-frame probe (see top of animate). If this frame took longer
   // than 80ms — well above 16ms target — log a single line with
