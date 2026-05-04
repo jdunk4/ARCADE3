@@ -6740,7 +6740,9 @@ function killEnemy(idx) {
 
   scene.remove(e.obj);
   // Clean up ASCII vision sprite if active
-  if (e._asciiSprite) { scene.remove(e._asciiSprite); e._asciiSprite.material.dispose(); e._asciiSprite = null; }
+  // Clean up ASCII vision cloud if active
+  if (e._asciiCloud) { scene.remove(e._asciiCloud); e._asciiCloud.dispose(); e._asciiCloud = null; }
+  if (e._asciiSprite) { scene.remove(e._asciiSprite); e._asciiSprite = null; }
   enemies.splice(idx, 1);
   S.kills++;
   S.score += e.scoreVal;

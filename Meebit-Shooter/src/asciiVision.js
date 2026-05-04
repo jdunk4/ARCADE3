@@ -1,87 +1,186 @@
 // ============================================================
-// ASCII VISION — Enemy meshes become floating ASCII glyphs.
+// ASCII VISION — Enemies become clouds of ASCII glyphs shaped
+// like their mesh silhouette.
 //
-// When active:
-//   - Each enemy's .body group is hidden
-//   - A THREE.Sprite with a canvas-rendered ASCII character is
-//     added to the scene at the enemy's position
-//   - Sprites are bright green, emissive, billboard-facing
-//   - A CSS overlay adds scanlines + green tint to the canvas
-//   - New enemies spawned during the effect also get swapped
+// When active, each enemy's 3D body is hidden and replaced with
+// an InstancedMesh of small quads textured with ASCII characters,
+// positioned at sampled surface points of the original mesh. The
+// result: a swarm of hundreds of green glyphs forming the shape
+// of each enemy.
 //
-// Press V to activate. Lasts 15 seconds.
+// Uses THREE.InstancedMesh for performance — one draw call per
+// enemy cloud, not hundreds of individual meshes.
 // ============================================================
 
 import * as THREE from 'three';
 
 let _active = false;
 let _timer = 0;
-let _enemies = null;       // reference to the game's enemies array
-let _scene = null;         // reference to the game scene
+let _enemies = null;
+let _scene = null;
 let _styleEl = null;
 const ASCII_DURATION = 15.0;
 
-// Map enemy type → ASCII character
-const TYPE_GLYPHS = {
-  zomeeb:     '@',
-  sprinter:   '%',
-  brute:      '#',
-  spider:     '*',
-  pumpkin:    'P',
-  ghost:      'G',
-  vampire:    'V',
-  red_devil:  'D',
-  wizard:     'W',
-  goospitter: 'S',
-  jumper:     'J',
-  infector:   'X',
-  roach:      'R',
-  ant:        'a',
-};
-const DEFAULT_GLYPH = '@';
+// Glyph atlas — a texture with a grid of ASCII characters
+let _glyphTex = null;
+const ATLAS_COLS = 10;
+const ATLAS_ROWS = 5;
+const ATLAS_CHARS = '@#%&*+=-:.?!~^$WVGDPSJXRa0123456789ABCDEFHIKLMNOQTUYZアイウエオカキクケコ';
 
-// Sprite texture cache — one per unique glyph
-const _texCache = new Map();
-
-function _makeGlyphTexture(char) {
-  if (_texCache.has(char)) return _texCache.get(char);
-  const size = 64;
+function _buildGlyphAtlas() {
+  if (_glyphTex) return _glyphTex;
+  const cellSize = 32;
   const canvas = document.createElement('canvas');
-  canvas.width = size;
-  canvas.height = size;
+  canvas.width = cellSize * ATLAS_COLS;
+  canvas.height = cellSize * ATLAS_ROWS;
   const ctx = canvas.getContext('2d');
-  ctx.clearRect(0, 0, size, size);
-  ctx.font = 'bold 52px monospace';
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.font = `bold ${cellSize - 4}px monospace`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  // Glow layers
-  ctx.shadowColor = '#00ff66';
-  ctx.shadowBlur = 12;
-  ctx.fillStyle = '#00ff66';
-  ctx.fillText(char, size / 2, size / 2);
-  // Sharper layer on top
-  ctx.shadowBlur = 4;
-  ctx.fillStyle = '#aaffcc';
-  ctx.fillText(char, size / 2, size / 2);
-
-  const tex = new THREE.CanvasTexture(canvas);
-  tex.needsUpdate = true;
-  _texCache.set(char, tex);
-  return tex;
+  ctx.fillStyle = '#ffffff';
+  for (let i = 0; i < ATLAS_COLS * ATLAS_ROWS; i++) {
+    const col = i % ATLAS_COLS;
+    const row = Math.floor(i / ATLAS_COLS);
+    const char = ATLAS_CHARS[i % ATLAS_CHARS.length];
+    ctx.fillText(char, col * cellSize + cellSize / 2, row * cellSize + cellSize / 2);
+  }
+  _glyphTex = new THREE.CanvasTexture(canvas);
+  _glyphTex.minFilter = THREE.LinearFilter;
+  _glyphTex.magFilter = THREE.LinearFilter;
+  return _glyphTex;
 }
 
-function _makeSprite(char) {
-  const tex = _makeGlyphTexture(char);
-  const mat = new THREE.SpriteMaterial({
-    map: tex,
+// Shared instanced geometry — small quad
+const _quadGeo = new THREE.PlaneGeometry(0.18, 0.18);
+
+// Shared material
+let _glyphMat = null;
+function _getGlyphMaterial() {
+  if (_glyphMat) return _glyphMat;
+  _buildGlyphAtlas();
+  _glyphMat = new THREE.MeshBasicMaterial({
+    map: _glyphTex,
     transparent: true,
-    depthTest: true,
+    alphaTest: 0.1,
     depthWrite: false,
+    side: THREE.DoubleSide,
+    color: 0x00ff66,
     blending: THREE.AdditiveBlending,
   });
-  const sprite = new THREE.Sprite(mat);
-  sprite.scale.set(2.2, 2.2, 1);
-  return sprite;
+  return _glyphMat;
+}
+
+// ---- SURFACE SAMPLING ----
+// Sample N points on the surface of an enemy's mesh hierarchy.
+// Returns array of Vector3 in LOCAL space of the enemy's body group.
+function _sampleMeshSurface(group, count) {
+  const points = [];
+  const meshes = [];
+
+  // Collect all Mesh children
+  group.traverse((child) => {
+    if (child.isMesh && child.geometry) {
+      meshes.push(child);
+    }
+  });
+
+  if (meshes.length === 0) {
+    // Fallback: generate a random box cloud
+    for (let i = 0; i < count; i++) {
+      points.push(new THREE.Vector3(
+        (Math.random() - 0.5) * 1.5,
+        Math.random() * 2.5,
+        (Math.random() - 0.5) * 1.5,
+      ));
+    }
+    return points;
+  }
+
+  // Distribute samples across meshes proportionally to their bounding box volume
+  const volumes = meshes.map(m => {
+    const box = new THREE.Box3().setFromObject(m);
+    const size = box.getSize(new THREE.Vector3());
+    return Math.max(0.001, size.x * size.y * size.z);
+  });
+  const totalVol = volumes.reduce((a, b) => a + b, 0);
+
+  for (let mi = 0; mi < meshes.length; mi++) {
+    const mesh = meshes[mi];
+    const sampleCount = Math.max(2, Math.round(count * volumes[mi] / totalVol));
+    const box = new THREE.Box3().setFromObject(mesh);
+    const min = box.min;
+    const size = box.getSize(new THREE.Vector3());
+
+    // Generate points within the bounding box
+    // We use rejection sampling — generate random points in the box
+    for (let i = 0; i < sampleCount; i++) {
+      const p = new THREE.Vector3(
+        min.x + Math.random() * size.x,
+        min.y + Math.random() * size.y,
+        min.z + Math.random() * size.z,
+      );
+      // Transform from world space to group-local space
+      group.worldToLocal(p);
+      points.push(p);
+    }
+  }
+
+  return points;
+}
+
+// ---- BUILD GLYPH CLOUD FOR ONE ENEMY ----
+function _buildCloud(enemy) {
+  if (!enemy.body) return null;
+
+  // Determine point count based on enemy size
+  const isBoss = enemy.isBoss;
+  const pointCount = isBoss ? 400 : (enemy.scale > 1 ? 150 : 80);
+
+  // Sample surface points
+  const pts = _sampleMeshSurface(enemy.body, pointCount);
+  const count = pts.length;
+  if (count === 0) return null;
+
+  const mat = _getGlyphMaterial();
+  const instMesh = new THREE.InstancedMesh(_quadGeo, mat, count);
+  instMesh.frustumCulled = false;
+
+  const dummy = new THREE.Object3D();
+  const uvOffsets = new Float32Array(count); // store random UV offsets for variety
+
+  for (let i = 0; i < count; i++) {
+    dummy.position.copy(pts[i]);
+    // Random rotation so glyphs face different directions
+    dummy.rotation.set(
+      Math.random() * Math.PI,
+      Math.random() * Math.PI,
+      Math.random() * Math.PI,
+    );
+    // Slight size variation
+    const s = 0.7 + Math.random() * 0.6;
+    dummy.scale.set(s, s, s);
+    dummy.updateMatrix();
+    instMesh.setMatrixAt(i, dummy.matrix);
+
+    // Random brightness per instance
+    const brightness = 0.4 + Math.random() * 0.6;
+    instMesh.setColorAt(i, new THREE.Color(0, brightness, brightness * 0.4));
+
+    uvOffsets[i] = Math.random();
+  }
+  instMesh.instanceMatrix.needsUpdate = true;
+  if (instMesh.instanceColor) instMesh.instanceColor.needsUpdate = true;
+
+  // Store metadata for animation
+  instMesh.userData = {
+    points: pts,
+    uvOffsets,
+    baseScale: isBoss ? 1.0 : (enemy.scale || 0.55),
+  };
+
+  return instMesh;
 }
 
 // ---- CSS OVERLAY ----
@@ -90,7 +189,7 @@ function _injectCSS() {
   _styleEl = document.createElement('style');
   _styleEl.textContent = `
 #game.ascii-active > canvas {
-  filter: contrast(1.4) brightness(0.85) saturate(0.3);
+  filter: contrast(1.3) brightness(0.85) saturate(0.25);
 }
 #ascii-scanlines {
   position: absolute; inset: 0; z-index: 3;
@@ -105,7 +204,7 @@ function _injectCSS() {
   position: absolute; inset: 0; z-index: 1;
   pointer-events: none; display: none;
   background: radial-gradient(ellipse at center,
-    rgba(0,40,10,0.15) 0%, rgba(0,20,5,0.45) 100%);
+    rgba(0,40,10,0.1) 0%, rgba(0,20,5,0.35) 100%);
   mix-blend-mode: multiply;
 }
 #game.ascii-active #ascii-tint { display: block; }
@@ -123,21 +222,13 @@ function _injectCSS() {
 function _buildOverlayEls() {
   const gameEl = document.getElementById('game');
   if (!gameEl) return;
-  if (!document.getElementById('ascii-scanlines')) {
-    const sl = document.createElement('div');
-    sl.id = 'ascii-scanlines';
-    gameEl.appendChild(sl);
-  }
-  if (!document.getElementById('ascii-tint')) {
-    const t = document.createElement('div');
-    t.id = 'ascii-tint';
-    gameEl.appendChild(t);
-  }
-  if (!document.getElementById('ascii-timer-bar')) {
-    const b = document.createElement('div');
-    b.id = 'ascii-timer-bar';
-    gameEl.appendChild(b);
-  }
+  ['ascii-scanlines', 'ascii-tint', 'ascii-timer-bar'].forEach(id => {
+    if (!document.getElementById(id)) {
+      const el = document.createElement('div');
+      el.id = id;
+      gameEl.appendChild(el);
+    }
+  });
 }
 
 // ---- PUBLIC API ----
@@ -147,6 +238,8 @@ export function initAsciiVision(sceneRef, enemiesRef) {
   _enemies = enemiesRef;
   _injectCSS();
   _buildOverlayEls();
+  _buildGlyphAtlas();
+  _getGlyphMaterial();
 }
 
 export function activateAsciiVision(duration) {
@@ -167,7 +260,6 @@ export function deactivateAsciiVision() {
   _timer = 0;
   const gameEl = document.getElementById('game');
   if (gameEl) gameEl.classList.remove('ascii-active');
-  // Restore all enemies
   if (_enemies) {
     for (const e of _enemies) _restoreFromAscii(e);
   }
@@ -178,7 +270,6 @@ export function isAsciiActive() { return _active; }
 export function updateAsciiVision(dt) {
   if (!_active) return false;
   _timer -= dt;
-  // Timer bar
   const bar = document.getElementById('ascii-timer-bar');
   if (bar) bar.style.width = Math.max(0, _timer / ASCII_DURATION * 100) + '%';
 
@@ -187,61 +278,110 @@ export function updateAsciiVision(dt) {
     return false;
   }
 
-  // Swap any newly-spawned enemies that don't have sprites yet
+  // Update clouds: follow enemy position + shimmer
+  const time = performance.now() * 0.001;
   if (_enemies) {
     for (const e of _enemies) {
-      if (!e._asciiSprite) _swapToAscii(e);
-      // Update sprite position + bob
-      if (e._asciiSprite && e.pos) {
-        e._asciiSprite.position.set(
-          e.pos.x,
-          1.5 + Math.sin(performance.now() * 0.003 + e.pos.x) * 0.2,
-          e.pos.z,
-        );
-        // Pulse scale on hit
-        const s = e.hitFlash > 0 ? 2.8 : 2.2;
-        e._asciiSprite.scale.set(s, s, 1);
+      // Swap newly spawned enemies
+      if (!e._asciiCloud && e.body) _swapToAscii(e);
+
+      if (e._asciiCloud && e.pos) {
+        // Move cloud to enemy position
+        e._asciiCloud.position.set(e.pos.x, 0, e.pos.z);
+
+        // Shimmer: jitter each instance slightly
+        const cloud = e._asciiCloud;
+        const pts = cloud.userData.points;
+        const dummy = _dummyObj;
+        const count = pts.length;
+        // Only update a subset each frame for performance
+        const startIdx = Math.floor(time * 20) % count;
+        const updateCount = Math.min(20, count);
+        for (let k = 0; k < updateCount; k++) {
+          const i = (startIdx + k) % count;
+          const p = pts[i];
+          dummy.position.set(
+            p.x + Math.sin(time * 3 + i) * 0.04,
+            p.y + Math.sin(time * 2.5 + i * 0.7) * 0.06,
+            p.z + Math.cos(time * 3 + i) * 0.04,
+          );
+          dummy.rotation.y = time + i;
+          dummy.rotation.x = Math.sin(time + i) * 0.3;
+          const s = (0.7 + Math.random() * 0.6);
+          dummy.scale.set(s, s, s);
+          dummy.updateMatrix();
+          cloud.setMatrixAt(i, dummy.matrix);
+        }
+        cloud.instanceMatrix.needsUpdate = true;
+
+        // Pulse on hit
+        if (e.hitFlash > 0 && cloud.material.color) {
+          cloud.material = _hitMat;
+        } else if (cloud.material !== _getGlyphMaterial()) {
+          cloud.material = _getGlyphMaterial();
+        }
       }
     }
   }
   return true;
 }
 
-// Render pass — no-op, sprites are in the scene and render with normal pass
 export function renderAsciiPass() {}
-
 export function getAsciiTimeRemaining() { return Math.max(0, _timer); }
+
+// ---- REUSABLE OBJECTS ----
+const _dummyObj = new THREE.Object3D();
+
+// Hit flash material — bright white
+let _hitMat = null;
+function _getHitMat() {
+  if (_hitMat) return _hitMat;
+  _buildGlyphAtlas();
+  _hitMat = new THREE.MeshBasicMaterial({
+    map: _glyphTex,
+    transparent: true,
+    alphaTest: 0.1,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+    color: 0xffffff,
+    blending: THREE.AdditiveBlending,
+  });
+  return _hitMat;
+}
 
 // ---- SWAP HELPERS ----
 
 function _swapToAscii(enemy) {
-  if (enemy._asciiSprite) return;  // already swapped
-  if (!_scene) return;
+  if (enemy._asciiCloud) return;
+  if (!_scene || !enemy.body) return;
 
-  const glyph = TYPE_GLYPHS[enemy.typeKey] || DEFAULT_GLYPH;
+  // Make sure body is positioned before sampling
+  if (enemy.obj) enemy.obj.updateMatrixWorld(true);
 
-  // Boss gets a bigger, different glyph
-  const char = enemy.isBoss ? '\u2588' : glyph;  // █ for bosses
-  const sprite = _makeSprite(char);
+  const cloud = _buildCloud(enemy);
+  if (!cloud) return;
 
-  if (enemy.pos) {
-    sprite.position.set(enemy.pos.x, 1.5, enemy.pos.z);
-  }
-  if (enemy.isBoss) sprite.scale.set(4.5, 4.5, 1);
+  // Position at enemy
+  if (enemy.pos) cloud.position.set(enemy.pos.x, 0, enemy.pos.z);
 
-  _scene.add(sprite);
-  enemy._asciiSprite = sprite;
+  _scene.add(cloud);
+  enemy._asciiCloud = cloud;
 
   // Hide the 3D body
   if (enemy.body) enemy.body.visible = false;
+  // Also hide shield meshes etc
+  if (enemy.shieldMesh) enemy.shieldMesh.visible = false;
+
+  // Init hit material
+  _getHitMat();
 }
 
 function _restoreFromAscii(enemy) {
-  if (!enemy._asciiSprite) return;
-  if (_scene) _scene.remove(enemy._asciiSprite);
-  enemy._asciiSprite.material.dispose();
-  enemy._asciiSprite = null;
+  if (!enemy._asciiCloud) return;
+  if (_scene) _scene.remove(enemy._asciiCloud);
+  enemy._asciiCloud.dispose();
+  enemy._asciiCloud = null;
 
-  // Restore the 3D body
   if (enemy.body) enemy.body.visible = true;
+  if (enemy.shieldMesh) enemy.shieldMesh.visible = true;
 }
