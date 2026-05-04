@@ -16,6 +16,7 @@
 // / tryUpgradePlayer helpers and persist via Save.writeArmory.
 
 import { Save } from './save.js';
+import { getOreBalance } from './runReward.js';
 import {
   ARMORY_WEAPON_IDS,
   ARMORY_WEAPON_META,
@@ -176,7 +177,7 @@ function _render() {
 
   // Header XP.
   const xpEl = document.getElementById('armory-xp-amount');
-  if (xpEl) xpEl.textContent = (armory.xp || 0).toLocaleString();
+  if (xpEl) xpEl.textContent = (getOreBalance() || 0).toLocaleString();
 
   // Player tracks.
   const playerEl = document.getElementById('armory-player-tracks');
@@ -190,7 +191,7 @@ function _render() {
         level: lvl,
         maxLevel: track.maxLevel,
         cost: lvl < track.maxLevel ? track.cost(lvl) : 0,
-        canAfford: armory.xp >= (lvl < track.maxLevel ? track.cost(lvl) : 0),
+        canAfford: getOreBalance() >= (lvl < track.maxLevel ? track.cost(lvl) : 0),
         onBuy: () => _handlePlayerBuy(trackKey),
       });
       playerEl.appendChild(row);
@@ -239,7 +240,7 @@ function _makeTrackRow({ label, level, maxLevel, cost, canAfford, onBuy }) {
     buy.textContent = 'MAX';
     buy.disabled = true;
   } else {
-    buy.textContent = `+UPGRADE  ${cost.toLocaleString()} XP`;
+    buy.textContent = `+UPGRADE  ${cost.toLocaleString()} ORE`;
     buy.disabled = !canAfford;
     buy.addEventListener('click', (e) => {
       e.preventDefault();
@@ -292,8 +293,8 @@ function _makeWeaponCard(armory, id) {
     const btn = document.createElement('button');
     btn.type = 'button';
     btn.className = 'armory-weapon-unlock';
-    const canAfford = armory.xp >= cost;
-    btn.textContent = `🔒 UNLOCK  ${cost.toLocaleString()} XP`;
+    const canAfford = getOreBalance() >= cost;
+    btn.textContent = `🔒 UNLOCK  ${cost.toLocaleString()} ORE`;
     btn.disabled = !canAfford;
     btn.addEventListener('click', (e) => {
       e.preventDefault();
@@ -316,7 +317,7 @@ function _makeWeaponCard(armory, id) {
       level: lvl,
       maxLevel: track.maxLevel,
       cost,
-      canAfford: armory.xp >= cost,
+      canAfford: getOreBalance() >= cost,
       onBuy: () => _handleWeaponBuy(id, trackKey),
     });
     tracksWrap.appendChild(row);

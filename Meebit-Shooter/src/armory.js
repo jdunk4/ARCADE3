@@ -1,16 +1,15 @@
 // armory.js — Persistent weapon & player upgrades.
 //
-// Concept: between runs the player spends "armory XP" (a separate
-// persistent currency, distinct from in-run XP) to permanently
-// improve weapons and the player. These improvements stack with the
-// existing per-run level-up boosts. Persistence is owned by save.js
-// (see Save.getArmory / Save.writeArmory / Save.spendArmoryXP).
+// Currency: ORE (from runReward.js). Players earn ore from runs and
+// spend it here on weapon unlocks, weapon stat upgrades, and player
+// stat upgrades. The old armory.xp field is kept for save compat but
+// all cost checks now read from the shared ore balance.
 //
 // Design rules:
 //   • Only six weapons appear here — the canonical chapter 1-6
 //     weapons. The chapter 7 lifedrainer is excluded.
 //   • Pistol is always unlocked. The other five must be unlocked
-//     once via XP, then their stat tracks become spendable.
+//     once via ORE, then their stat tracks become spendable.
 //   • Each weapon has 3 upgradeable stat tracks: DAMAGE, FIRE RATE,
 //     CAPACITY (magazine size for the new reload mechanic).
 //   • Player has 2 tracks: SPEED, HEALTH.
@@ -24,6 +23,8 @@
 // =====================================================================
 // CATALOG
 // =====================================================================
+import { getOreBalance, spendOre } from './runReward.js';
+
 // Six weapons — matches chapter 1..6 progression. Pistol is the
 // chapter 1 baseline, the others unlock as you progress in the game.
 // Order here is the order they appear in the armory grid.
@@ -310,9 +311,9 @@ export function tryUnlockWeapon(armory, weaponId) {
   if (!ARMORY_WEAPON_META[weaponId]) return null;
   if (armory.unlocked[weaponId]) return null;     // already unlocked
   const cost = ARMORY_WEAPON_META[weaponId].unlockCost;
-  if (armory.xp < cost) return null;
+  if (getOreBalance() < cost) return null;
+  if (!spendOre(cost)) return null;
   const next = _clone(armory);
-  next.xp -= cost;
   next.unlocked[weaponId] = true;
   return next;
 }
@@ -324,9 +325,9 @@ export function tryUpgradeWeapon(armory, weaponId, trackKey) {
   const cur = armory.weapons[weaponId][trackKey] || 0;
   if (cur >= track.maxLevel) return null;
   const cost = track.cost(cur);
-  if (armory.xp < cost) return null;
+  if (getOreBalance() < cost) return null;
+  if (!spendOre(cost)) return null;
   const next = _clone(armory);
-  next.xp -= cost;
   next.weapons[weaponId][trackKey] = cur + 1;
   return next;
 }
@@ -337,9 +338,9 @@ export function tryUpgradePlayer(armory, trackKey) {
   const cur = armory.player[trackKey] || 0;
   if (cur >= track.maxLevel) return null;
   const cost = track.cost(cur);
-  if (armory.xp < cost) return null;
+  if (getOreBalance() < cost) return null;
+  if (!spendOre(cost)) return null;
   const next = _clone(armory);
-  next.xp -= cost;
   next.player[trackKey] = cur + 1;
   return next;
 }

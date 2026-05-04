@@ -7,7 +7,8 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { swapAvatarGLB } from './player.js';
 import { S } from './state.js';
-import { getShardProgress, isAvatarUnlocked, SHARDS_PER_AVATAR, getStoneInventory, spendStoneOnAvatar } from './avatarShards.js';
+import { getShardProgress, isAvatarUnlocked, SHARDS_PER_AVATAR, getStoneInventory, spendStoneOnAvatar, addStones } from './avatarShards.js';
+import { getOreBalance, spendOre } from './runReward.js';
 
 const AVATARS = [
   { id: 'meebit',          name: 'MEEBIT',         url: 'assets/16801_original.vrm',                    color: '#ffffff', type: 'DEFAULT' },
@@ -330,11 +331,29 @@ function _updateUI(loadText) {
   // Inventory display
   const inv = el('ap-inventory');
   const stoneCount = getStoneInventory();
+  const oreCount = getOreBalance();
   if (inv) {
     if (av.id === 'meebit') {
       inv.textContent = '';
     } else {
-      inv.textContent = '\u2B21 STONES: ' + stoneCount;
+      inv.textContent = '\u2B21 STONES: ' + stoneCount + '  \u00B7  ORE: ' + oreCount;
+    }
+  }
+
+  // CRACK ORE button — converts 1 ore into 1 stone
+  const crackBtn = el('ap-crack');
+  if (crackBtn) {
+    if (av.id === 'meebit' || unlocked) {
+      crackBtn.style.display = 'none';
+    } else {
+      crackBtn.style.display = '';
+      if (oreCount > 0) {
+        crackBtn.disabled = false;
+        crackBtn.textContent = '\u2B21 CRACK ORE (' + oreCount + ')';
+      } else {
+        crackBtn.disabled = true;
+        crackBtn.textContent = '\u2B21 NO ORE';
+      }
     }
   }
 
@@ -367,6 +386,13 @@ function _navigate(dir) {
   }
   _updateUI('');
   _loadModel(AVATARS[_currentIdx]);
+}
+
+function _crackOre() {
+  if (getOreBalance() < 1) return;
+  if (!spendOre(1)) return;
+  addStones(1);
+  _updateUI('ORE CRACKED \u2192 +1 STONE');
 }
 
 function _spendStone() {
@@ -458,6 +484,9 @@ function _buildUI() {
 '.ap-btn-spend{border-color:#ffd93d;color:#ffd93d;box-shadow:0 0 12px rgba(255,217,61,.3)}' +
 '.ap-btn-spend:hover:not(:disabled){background:#ffd93d;color:#000;box-shadow:0 0 30px rgba(255,217,61,.7);transform:scale(1.05)}' +
 '.ap-btn-spend:disabled{border-color:#555;color:#555;box-shadow:none;cursor:not-allowed;opacity:.4}' +
+'.ap-btn-crack{border-color:#ff6a1a;color:#ff6a1a;box-shadow:0 0 12px rgba(255,106,26,.3)}' +
+'.ap-btn-crack:hover:not(:disabled){background:#ff6a1a;color:#000;box-shadow:0 0 30px rgba(255,106,26,.7);transform:scale(1.05)}' +
+'.ap-btn-crack:disabled{border-color:#555;color:#555;box-shadow:none;cursor:not-allowed;opacity:.4}' +
 '.ap-inventory{font-size:12px;letter-spacing:3px;color:#ffd93d;text-shadow:0 0 6px rgba(255,217,61,.4);margin-top:6px;min-height:18px;text-align:center}' +
 '.ap-loading{font-size:13px;color:#ffdd44;letter-spacing:3px;margin-top:10px;min-height:20px;text-align:center}' +
 '@media(max-width:600px){.ap-main{height:clamp(250px,50vh,400px)}.ap-btn{font-size:14px;padding:10px 24px}}' +
@@ -490,6 +519,7 @@ function _buildUI() {
 '</div>' +
 '<div class="ap-actions">' +
 '  <button class="ap-btn ap-btn-cancel" id="ap-cancel">CANCEL</button>' +
+'  <button class="ap-btn ap-btn-crack" id="ap-crack">\u2B21 CRACK ORE</button>' +
 '  <button class="ap-btn ap-btn-spend" id="ap-spend">\u2B21 USE STONE</button>' +
 '  <button class="ap-btn" id="ap-select">SELECT</button>' +
 '</div>' +
@@ -501,6 +531,7 @@ function _buildUI() {
   el.querySelector('#ap-cancel').addEventListener('click', closeAvatarPicker);
   el.querySelector('#ap-select').addEventListener('click', _selectCurrent);
   el.querySelector('#ap-spend').addEventListener('click', _spendStone);
+  el.querySelector('#ap-crack').addEventListener('click', _crackOre);
 
   let tx = 0;
   el.addEventListener('touchstart', e => { tx = e.touches[0].clientX; }, { passive: true });
