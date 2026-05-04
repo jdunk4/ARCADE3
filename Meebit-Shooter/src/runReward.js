@@ -19,6 +19,8 @@
 //   addOre(n)         → newBalance
 // ============================================================
 
+import { Audio } from './audio.js';
+
 const LS_KEY = 'mbs_player_meta_v2';
 const SEGMENTS = 10;
 
@@ -266,6 +268,8 @@ export function showRunReward(stats, callbacks = {}) {
     const line = lines[i];
     _animTimers.push(setTimeout(() => {
       _addTallyLine(line);
+      // Tick sound for each tally line
+      try { Audio.shot && Audio.shot('pistol'); } catch (_) {}
       if (line.ore > 0) {
         runningOre += line.ore;
         _animateBarTo(before, runningOre);
@@ -283,6 +287,9 @@ export function showRunReward(stats, callbacks = {}) {
     if (tallyEl) tallyEl.appendChild(totalRow);
     requestAnimationFrame(() => { totalRow.style.opacity = '1'; });
 
+    // Ore grant sound — satisfying crunch
+    try { Audio.shot && Audio.shot('shotgun'); } catch (_) {}
+
     const result = _processOreReward(totalOre);
 
     // Update balance display
@@ -290,7 +297,11 @@ export function showRunReward(stats, callbacks = {}) {
     if (bal) bal.innerHTML = '<span class="rr-ore-icon"></span> ' + result.ore + ' ORE';
 
     if (result.levelsGained > 0) {
-      _animTimers.push(setTimeout(() => _showStars(result.levelsGained, result.level, result.bonusOre), 500));
+      _animTimers.push(setTimeout(() => {
+        _showStars(result.levelsGained, result.level, result.bonusOre);
+        // Level-up fanfare
+        try { Audio.shot && Audio.shot('raygun'); } catch (_) {}
+      }, 500));
     }
   }, delay));
 }

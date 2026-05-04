@@ -7,8 +7,9 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { swapAvatarGLB } from './player.js';
 import { S } from './state.js';
-import { getShardProgress, isAvatarUnlocked, SHARDS_PER_AVATAR, spendStoneOnAvatar } from './avatarShards.js';
+import { getShardProgress, isAvatarUnlocked, SHARDS_PER_AVATAR, spendStoneOnAvatar, addStones } from './avatarShards.js';
 import { getOreBalance, spendOre, addOre } from './runReward.js';
+import { Audio } from './audio.js';
 
 const AVATARS = [
   { id: 'meebit',          name: 'MEEBIT',         url: 'assets/16801_original.vrm',                    color: '#ffffff', type: 'DEFAULT' },
@@ -467,16 +468,37 @@ function _forgeStone() {
   if (getOreBalance() < cost) return;
   if (!spendOre(cost)) return;
 
-  // Directly award the stone to this avatar
+  // Add a stone to inventory, then immediately spend it on this avatar.
+  // This two-step keeps avatarShards.js's bookkeeping consistent.
+  addStones(1);
   const result = spendStoneOnAvatar(av.id);
   if (!result.success) {
-    // Shouldn't happen since we checked progress, but refund if it does
+    // Refund both the ore and the stone
     addOre(cost);
     return;
   }
 
+  // ---- SOUND: forge clang ----
+  try { Audio.shot && Audio.shot('pickaxe'); } catch (_) {}
+
+  // ---- VISUAL: flash the newly-lit corner stone ----
+  const stoneIdx = result.newProgress - 1; // 0-indexed
+  const stoneEl = _overlay && _overlay.querySelector('#ap-stone-' + stoneIdx);
+  if (stoneEl) {
+    stoneEl.style.transition = 'none';
+    stoneEl.style.transform = 'rotate(45deg) scale(2)';
+    stoneEl.style.filter = 'brightness(3)';
+    requestAnimationFrame(() => {
+      stoneEl.style.transition = 'transform 0.5s ease-out, filter 0.5s ease-out';
+      stoneEl.style.transform = 'rotate(45deg) scale(1)';
+      stoneEl.style.filter = 'brightness(1)';
+    });
+  }
+
   _updateUI('');
   if (result.justUnlocked) {
+    // Play a celebratory sound
+    try { Audio.shot && Audio.shot('raygun'); } catch (_) {}
     _updateUI(av.name + ' UNLOCKED!');
   }
 }
