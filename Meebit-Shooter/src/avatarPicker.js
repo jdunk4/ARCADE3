@@ -277,9 +277,39 @@ function _updateUI(loadText) {
     }
   }
 
-  // Lock overlay
+  // Lock overlay + rain z-index swap
   const lockEl = el('ap-lock');
+  const previewEl = el('ap-preview');
   if (lockEl) lockEl.style.display = unlocked ? 'none' : 'flex';
+  if (previewEl) {
+    if (unlocked || av.id === 'meebit') {
+      previewEl.classList.remove('locked');
+    } else {
+      previewEl.classList.add('locked');
+    }
+  }
+
+  // Corner stones — light up based on shard progress (4 stones = 4 shards)
+  for (let i = 0; i < 4; i++) {
+    const stone = el('ap-stone-' + i);
+    if (!stone) continue;
+    if (av.id === 'meebit') {
+      // Default avatar — all stones lit in white
+      stone.className = 'ap-stone ap-stone-' + ['tl','tr','bl','br'][i] + ' lit';
+      stone.style.background = 'rgba(255,255,255,0.7)';
+      stone.style.boxShadow = '0 0 10px rgba(255,255,255,0.5), 0 0 20px rgba(255,255,255,0.2)';
+    } else if (i < progress.collected) {
+      // Collected shard — lit in avatar color
+      stone.className = 'ap-stone ap-stone-' + ['tl','tr','bl','br'][i] + ' lit';
+      stone.style.background = av.color;
+      stone.style.boxShadow = '0 0 10px ' + av.color + ', 0 0 24px ' + av.color + '66';
+    } else {
+      // Not yet collected — dim
+      stone.className = 'ap-stone ap-stone-' + ['tl','tr','bl','br'][i] + ' dim';
+      stone.style.background = 'rgba(255,255,255,0.08)';
+      stone.style.boxShadow = 'none';
+    }
+  }
 
   // Select button
   const selectBtn = el('ap-select');
@@ -349,23 +379,33 @@ function _buildUI() {
 '.ap-arrow:hover{transform:scale(1.2);color:#fff}' +
 '.ap-preview{flex:1;height:100%;border:2px solid #00ff66;border-radius:16px;position:relative;overflow:hidden;background:#020a05}' +
 '.ap-preview canvas{display:block}' +
-'#ap-rain-canvas{position:absolute;inset:0;width:100%!important;height:100%!important;z-index:0}' +
+'#ap-rain-canvas{position:absolute;inset:0;width:100%!important;height:100%!important;z-index:0;transition:z-index 0s}' +
 '#ap-3d-canvas{position:absolute;inset:0;width:100%!important;height:100%!important;z-index:1}' +
-'.ap-info{position:absolute;bottom:0;left:0;right:0;padding:16px 20px;background:linear-gradient(transparent,rgba(0,0,0,.85));text-align:center;z-index:2}' +
+'.ap-preview.locked #ap-rain-canvas{z-index:2}' +
+'.ap-preview.locked #ap-3d-canvas{z-index:0}' +
+'.ap-info{position:absolute;bottom:0;left:0;right:0;padding:16px 20px;background:linear-gradient(transparent,rgba(0,0,0,.85));text-align:center;z-index:5}' +
 '.ap-type{font-size:10px;letter-spacing:5px;opacity:.6;margin-bottom:4px}' +
 '.ap-name{font-size:clamp(18px,3vw,26px);letter-spacing:4px;font-weight:bold}' +
 '.ap-idx{font-size:11px;opacity:.4;margin-top:4px}' +
-'.ap-corner-tl,.ap-corner-tr,.ap-corner-bl,.ap-corner-br{position:absolute;width:20px;height:20px;border-color:#00ff66;border-style:solid;z-index:3}' +
+'.ap-corner-tl,.ap-corner-tr,.ap-corner-bl,.ap-corner-br{position:absolute;width:20px;height:20px;border-color:#00ff66;border-style:solid;z-index:6}' +
 '.ap-corner-tl{top:8px;left:8px;border-width:2px 0 0 2px}' +
 '.ap-corner-tr{top:8px;right:8px;border-width:2px 2px 0 0}' +
 '.ap-corner-bl{bottom:8px;left:8px;border-width:0 0 2px 2px}' +
 '.ap-corner-br{bottom:8px;right:8px;border-width:0 2px 2px 0}' +
+'.ap-stone{position:absolute;width:18px;height:18px;z-index:7;transform:rotate(45deg);border-radius:3px;transition:background .5s,box-shadow .5s}' +
+'.ap-stone-tl{top:14px;left:14px}' +
+'.ap-stone-tr{top:14px;right:14px}' +
+'.ap-stone-bl{bottom:14px;left:14px}' +
+'.ap-stone-br{bottom:14px;right:14px}' +
+'.ap-stone.lit{animation:ap-stone-pulse 1.8s ease-in-out infinite}' +
+'.ap-stone.dim{background:rgba(255,255,255,0.08);box-shadow:none}' +
+'@keyframes ap-stone-pulse{0%,100%{filter:brightness(1);transform:rotate(45deg) scale(1)}50%{filter:brightness(1.4);transform:rotate(45deg) scale(1.15)}}' +
 '.ap-shards{display:flex;gap:8px;justify-content:center;margin-top:8px;font-size:16px;letter-spacing:2px}' +
 '.ap-shard{color:#333;transition:color .3s,text-shadow .3s}' +
 '.ap-shard.filled{color:#00ff66;text-shadow:0 0 8px rgba(0,255,102,.6)}' +
-'.ap-lock{position:absolute;inset:0;z-index:4;display:flex;flex-direction:column;align-items:center;justify-content:center;background:rgba(0,0,0,.7);backdrop-filter:blur(3px)}' +
-'.ap-lock-icon{font-size:48px;margin-bottom:8px;opacity:.6}' +
-'.ap-lock-text{font-size:12px;letter-spacing:4px;color:#888;text-transform:uppercase}' +
+'.ap-lock{position:absolute;inset:0;z-index:3;display:flex;flex-direction:column;align-items:center;justify-content:center;pointer-events:none}' +
+'.ap-lock-icon{font-size:48px;margin-bottom:8px;opacity:.6;filter:drop-shadow(0 0 12px rgba(0,0,0,.8))}' +
+'.ap-lock-text{font-size:12px;letter-spacing:4px;color:#aaa;text-transform:uppercase;text-shadow:0 2px 8px rgba(0,0,0,.9)}' +
 '.ap-actions{display:flex;gap:16px;margin-top:20px}' +
 '.ap-btn{font-family:"Impact","Arial Black",sans-serif;font-size:18px;letter-spacing:4px;padding:14px 40px;background:transparent;color:#00ff66;border:2px solid #00ff66;cursor:pointer;box-shadow:0 0 12px rgba(0,255,102,.3);transition:all .2s}' +
 '.ap-btn:hover:not(:disabled){background:#00ff66;color:#000;box-shadow:0 0 30px rgba(0,255,102,.7);transform:scale(1.05)}' +
@@ -382,6 +422,10 @@ function _buildUI() {
 '  <div class="ap-preview" id="ap-preview">' +
 '    <div class="ap-corner-tl"></div><div class="ap-corner-tr"></div>' +
 '    <div class="ap-corner-bl"></div><div class="ap-corner-br"></div>' +
+'    <div class="ap-stone ap-stone-tl dim" id="ap-stone-0"></div>' +
+'    <div class="ap-stone ap-stone-tr dim" id="ap-stone-1"></div>' +
+'    <div class="ap-stone ap-stone-bl dim" id="ap-stone-2"></div>' +
+'    <div class="ap-stone ap-stone-br dim" id="ap-stone-3"></div>' +
 '    <canvas id="ap-rain-canvas"></canvas>' +
 '    <canvas id="ap-3d-canvas"></canvas>' +
 '    <div class="ap-lock" id="ap-lock">' +

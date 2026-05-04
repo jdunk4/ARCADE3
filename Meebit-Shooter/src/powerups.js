@@ -480,28 +480,39 @@ export function chainLightningOnKill(deadEnemyOrPos) {
   }
 }
 
+// Shared material for chain bolts — avoids allocating a new material per bolt.
+const _chainMat = new THREE.LineBasicMaterial({
+  color: 0x88eeff, transparent: true, opacity: 1.0,
+});
+
+// Cap simultaneous bolts to avoid geometry spam in dense crowds.
+const MAX_CHAIN_BOLTS = 8;
+
 function _spawnChainBolt(a, b) {
-  // Jagged lightning using a few random midpoints along the segment.
+  // If too many bolts are already live, skip the visual — damage still
+  // applied by the caller. Prevents the GPU/GC spike that was freezing
+  // the screen when chain lightning chained through a dense crowd.
+  if (chainBolts.length >= MAX_CHAIN_BOLTS) return;
+
+  // Jagged lightning with fewer midpoints (4 steps instead of 6).
   const pts = [];
-  const steps = 6;
+  const steps = 4;
   for (let i = 0; i <= steps; i++) {
     const t = i / steps;
-    const x = a.x + (b.x - a.x) * t + (Math.random() - 0.5) * 0.6 * Math.sin(t * Math.PI);
-    const y = a.y + (b.y - a.y) * t + (Math.random() - 0.5) * 0.4 * Math.sin(t * Math.PI);
-    const z = a.z + (b.z - a.z) * t + (Math.random() - 0.5) * 0.6 * Math.sin(t * Math.PI);
+    const x = a.x + (b.x - a.x) * t + (Math.random() - 0.5) * 0.5 * Math.sin(t * Math.PI);
+    const y = a.y + (b.y - a.y) * t + (Math.random() - 0.5) * 0.3 * Math.sin(t * Math.PI);
+    const z = a.z + (b.z - a.z) * t + (Math.random() - 0.5) * 0.5 * Math.sin(t * Math.PI);
     pts.push(new THREE.Vector3(x, y, z));
   }
   const geom = new THREE.BufferGeometry().setFromPoints(pts);
-  const mat = new THREE.LineBasicMaterial({
-    color: 0x88eeff, transparent: true, opacity: 1.0,
-  });
+  // Clone the shared material so each bolt can fade independently.
+  const mat = _chainMat.clone();
   const line = new THREE.Line(geom, mat);
   line.userData.life = 0.18;
   scene.add(line);
   chainBolts.push(line);
-  // Brief sparkles at endpoints
-  hitBurst(a, 0x88eeff, 4);
-  hitBurst(b, 0x88eeff, 6);
+  // Minimal sparkle — only at the target endpoint, small count.
+  hitBurst(b, 0x88eeff, 2);
 }
 
 function _updateChainBolts(dt) {

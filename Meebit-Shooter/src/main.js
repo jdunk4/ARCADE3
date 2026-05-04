@@ -3379,7 +3379,10 @@ function gameOver() {
       },
       onAvatar: () => {
         document.getElementById('gameover').classList.add('hidden');
-        openAvatarPicker();
+        openAvatarPicker(() => {
+          // Cancel/close from avatar picker → return to SIGNAL LOST screen
+          document.getElementById('gameover').classList.remove('hidden');
+        });
       },
       onMainMenu: () => {
         document.getElementById('gameover').classList.add('hidden');
