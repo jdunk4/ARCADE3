@@ -191,10 +191,27 @@ function _setPreviewMood(locked) {
   }
 }
 
+// Load generation counter — prevents stale async loads from adding models
+// when the user has already navigated to a different avatar.
+let _loadGen = 0;
+
 function _loadModel(av) {
   _updateUI('LOADING...');
-  if (_pvModel) { _pvScene.remove(_pvModel); _pvModel = null; }
+  // Remove ALL models from the scene (not just _pvModel) to prevent stacking
+  // from rapid navigation. Lights and grid are re-added in _initPreview and
+  // persist — we only strip objects that are Groups (wrappers from _placeModel).
+  if (_pvScene) {
+    const toRemove = [];
+    for (const child of _pvScene.children) {
+      if (child.isGroup && child !== _pvLights.grid) toRemove.push(child);
+    }
+    for (const obj of toRemove) _pvScene.remove(obj);
+  }
+  _pvModel = null;
   _setRainColor(av.color);
+
+  // Bump generation — any in-flight async load with an older gen is stale
+  const gen = ++_loadGen;
 
   if (_pvCache.has(av.id)) {
     _placeModel(_pvCache.get(av.id).clone(), av);
@@ -203,16 +220,22 @@ function _loadModel(av) {
 
   const loader = new GLTFLoader();
   loader.load(av.url, (gltf) => {
+    // Stale load — user already navigated away. Discard.
+    if (gen !== _loadGen) return;
     const model = gltf.scene;
     _pvCache.set(av.id, model.clone());
     _placeModel(model, av);
   }, undefined, (err) => {
+    if (gen !== _loadGen) return;
     console.warn('[avatar] load fail:', av.url, err);
     _updateUI('ASSET NOT FOUND');
   });
 }
 
 function _placeModel(model, av) {
+  // Safety: if a model is already placed, remove it first
+  if (_pvModel && _pvScene) { _pvScene.remove(_pvModel); _pvModel = null; }
+
   model.position.set(0, 0, 0);
   model.scale.setScalar(1);
   model.rotation.set(0, 0, 0);
