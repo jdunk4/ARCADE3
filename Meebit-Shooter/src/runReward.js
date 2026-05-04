@@ -220,6 +220,7 @@ export function showRunReward(stats, callbacks = {}) {
   btnRow.innerHTML =
     '<button class="rr-btn rr-btn-reboot" id="rr-btn-reboot">\u21BB REBOOT</button>' +
     '<button class="rr-btn rr-btn-avatar" id="rr-btn-avatar">\u263A AVATAR</button>' +
+    '<button class="rr-btn rr-btn-armory" id="rr-btn-armory">\u2699 ARMORY</button>' +
     '<button class="rr-btn rr-btn-menu" id="rr-btn-menu">\u2302 MAIN MENU</button>';
   el.appendChild(btnRow);
 
@@ -244,6 +245,10 @@ export function showRunReward(stats, callbacks = {}) {
     // hides #gameover; when the avatar picker closes it re-shows gameover
     // and the reward overlay is still there.
     if (callbacks.onAvatar) callbacks.onAvatar();
+  });
+  el.querySelector('#rr-btn-armory').addEventListener('click', () => {
+    // Same as avatar — don't teardown. Armory close returns to gameover.
+    if (callbacks.onArmory) callbacks.onArmory();
   });
   el.querySelector('#rr-btn-menu').addEventListener('click', () => {
     _teardownAndRestore();
@@ -442,6 +447,8 @@ function _injectStyles() {
 .rr-btn-reboot:hover{background:#4ff7ff;color:#000}
 .rr-btn-avatar{color:#ffd93d;border-color:#ffd93d;box-shadow:0 0 12px rgba(255,217,61,.2)}
 .rr-btn-avatar:hover{background:#ffd93d;color:#000}
+.rr-btn-armory{color:#ff8800;border-color:#ff8800;box-shadow:0 0 12px rgba(255,136,0,.2)}
+.rr-btn-armory:hover{background:linear-gradient(135deg,#ff8800,#ff3cac);color:#fff;border-color:#ff8800}
 .rr-btn-menu{color:#888;border-color:#555}
 .rr-btn-menu:hover{background:#333;color:#ccc;border-color:#888}
 @keyframes rr-pop{0%{transform:scale(.6);opacity:0}60%{transform:scale(1.15)}100%{transform:scale(1);opacity:1}}
