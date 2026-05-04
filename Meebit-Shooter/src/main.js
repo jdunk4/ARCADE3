@@ -114,7 +114,7 @@ import { initArmoryUI, openArmory } from './armoryUI.js';
 import { openAvatarPicker } from './avatarPicker.js';
 import { showRunReward, hideRunReward } from './runReward.js';
 import { getRunStones, clearRunStones } from './avatarShards.js';
-import { initAsciiVision, activateAsciiVision, isAsciiActive, updateAsciiVision, renderAsciiPass } from './asciiVision.js';
+import { initAsciiVision, activateAsciiVision, isAsciiActive, updateAsciiVision, renderAsciiPass, onAsciiEnemyKill, asciiDamageOverride } from './asciiVision.js';
 import {
   beginStratagemInput, endStratagemInput, pushStratagemArrow,
   pushStratagemVariantKey,
@@ -3872,7 +3872,8 @@ registerBlockExplosionHandler((centerVec3, radius, color) => {
         e.hitFlash = 0.15;
         try { Audio.shieldHit && Audio.shieldHit(); } catch (err) {}
       } else {
-        e.hp -= dmg;
+        const beamDmg = isAsciiActive() ? asciiDamageOverride(e, dmg) : dmg;
+        e.hp -= beamDmg;
         e.hitFlash = 0.25;
       }
       hitBurst(e.pos, color, 6);
@@ -5256,7 +5257,8 @@ function applyBeamDamage(w, dmgBoost) {
         }
         continue;
       }
-      e.hp -= dmg;
+      const finalDmg = isAsciiActive() ? asciiDamageOverride(e, dmg) : dmg;
+      e.hp -= finalDmg;
       e.hitFlash = 0.15;
       if (Math.random() < 0.4) {
         const hitPos = new THREE.Vector3(
@@ -6649,6 +6651,8 @@ function killEnemy(idx) {
   // hand us a stale index in that case. Silently bail — if e is
   // undefined, something else already removed this enemy this frame.
   if (!e || !e.pos) return;
+  // ASCII Vision: spawn glyph explosion before we remove the enemy
+  try { onAsciiEnemyKill(e); } catch (_) {}
   // Arc chain lightning off the kill if the player picked that card.
   // No-op if chainLightning stack is 0. Fires BEFORE we remove the
   // enemy so the arc can visually originate from their last position.
