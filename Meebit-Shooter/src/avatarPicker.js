@@ -29,6 +29,7 @@ let _onClose = null;
 let _pvScene = null, _pvCamera = null, _pvRenderer = null;
 let _pvModel = null, _pvRaf = 0, _pvCanvas = null;
 const _pvCache = new Map();
+let _pvLights = { ambient: null, key: null, fill: null, rim: null, grid: null };
 
 // Matrix rain state
 let _rainCanvas = null, _rainCtx = null, _rainDrops = null;
@@ -58,16 +59,21 @@ function _initPreview() {
   _pvCamera.lookAt(0, 1.0, 0);
 
   _pvScene.add(new THREE.AmbientLight(0xffffff, 1.2));
+  _pvLights.ambient = _pvScene.children[_pvScene.children.length - 1];
   const key = new THREE.DirectionalLight(0xffffff, 1.5);
   key.position.set(2, 4, 3); _pvScene.add(key);
+  _pvLights.key = key;
   const fill = new THREE.DirectionalLight(0x88ccff, 0.6);
   fill.position.set(-2, 2, -1); _pvScene.add(fill);
+  _pvLights.fill = fill;
   const rim = new THREE.DirectionalLight(0x44ff88, 0.4);
   rim.position.set(0, 1, -3); _pvScene.add(rim);
+  _pvLights.rim = rim;
 
   const grid = new THREE.GridHelper(6, 12, 0x00ff66, 0x003311);
   grid.material.opacity = 0.3; grid.material.transparent = true;
   _pvScene.add(grid);
+  _pvLights.grid = grid;
 }
 
 function _ensureRenderer() {
@@ -162,6 +168,29 @@ function _tickRain() {
 // MODEL LOADING
 // ============================================================
 
+function _setPreviewMood(locked) {
+  if (!_pvLights.ambient) return;
+  if (locked) {
+    // Dark silhouette — barely visible, mysterious shadow
+    _pvLights.ambient.intensity = 0.08;
+    _pvLights.key.intensity = 0.15;
+    _pvLights.fill.intensity = 0.0;
+    _pvLights.rim.intensity = 0.25;  // faint rim light so the silhouette reads
+    _pvLights.rim.color.setHex(0x224444);
+    _pvLights.key.color.setHex(0x112233);
+    if (_pvLights.grid) _pvLights.grid.visible = false;
+  } else {
+    // Full bright — normal preview
+    _pvLights.ambient.intensity = 1.2;
+    _pvLights.key.intensity = 1.5;
+    _pvLights.key.color.setHex(0xffffff);
+    _pvLights.fill.intensity = 0.6;
+    _pvLights.rim.intensity = 0.4;
+    _pvLights.rim.color.setHex(0x44ff88);
+    if (_pvLights.grid) _pvLights.grid.visible = true;
+  }
+}
+
 function _loadModel(av) {
   _updateUI('LOADING...');
   if (_pvModel) { _pvScene.remove(_pvModel); _pvModel = null; }
@@ -246,17 +275,35 @@ function _updateUI(loadText) {
   });
 
   const name = el('ap-name');
-  if (name) { name.textContent = av.name; name.style.color = av.color; }
   const type = el('ap-type');
-  if (type) type.textContent = av.type;
   const idx = el('ap-idx');
-  if (idx) idx.textContent = (_currentIdx+1) + ' / ' + AVATARS.length;
+
+  // Compute lock state early so we can use it for name display
+  const unlocked = isAvatarUnlocked(av.id);
+  const progress = getShardProgress(av.id);
+
+  if (name) {
+    if (unlocked || av.id === 'meebit') {
+      name.textContent = av.name;
+      name.style.color = av.color;
+    } else {
+      name.textContent = '???';
+      name.style.color = '#444';
+    }
+  }
+  if (type) {
+    type.textContent = (unlocked || av.id === 'meebit') ? av.type : '';
+  }
+  if (idx) {
+    idx.textContent = (unlocked || av.id === 'meebit') ? ((_currentIdx+1) + ' / ' + AVATARS.length) : '';
+  }
   const ld = el('ap-loading');
   if (ld) ld.textContent = loadText || '';
 
+  // Set 3D scene lighting mood
+  _setPreviewMood(!unlocked && av.id !== 'meebit');
+
   // Shard progress diamonds
-  const unlocked = isAvatarUnlocked(av.id);
-  const progress = getShardProgress(av.id);
   const shardRow = el('ap-shards');
   if (shardRow) {
     if (av.id === 'meebit') {
@@ -450,8 +497,8 @@ function _buildUI() {
 '.ap-preview canvas{display:block}' +
 '#ap-rain-canvas{position:absolute;inset:0;width:100%!important;height:100%!important;z-index:0;transition:z-index 0s}' +
 '#ap-3d-canvas{position:absolute;inset:0;width:100%!important;height:100%!important;z-index:1}' +
-'.ap-preview.locked #ap-rain-canvas{z-index:2}' +
-'.ap-preview.locked #ap-3d-canvas{z-index:0}' +
+'.ap-preview.locked #ap-rain-canvas{z-index:2;opacity:0.55}' +
+'.ap-preview.locked #ap-3d-canvas{z-index:1}' +
 '.ap-info{position:absolute;bottom:0;left:0;right:0;padding:16px 20px;background:linear-gradient(transparent,rgba(0,0,0,.85));text-align:center;z-index:5}' +
 '.ap-type{font-size:10px;letter-spacing:5px;opacity:.6;margin-bottom:4px}' +
 '.ap-name{font-size:clamp(18px,3vw,26px);letter-spacing:4px;font-weight:bold}' +
