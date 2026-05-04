@@ -13,12 +13,12 @@ import { Audio } from './audio.js';
 
 const AVATARS = [
   { id: 'meebit',          name: 'MEEBIT',         url: 'assets/16801_original.vrm',                    color: '#ffffff', type: 'DEFAULT', anim: null },
-  { id: 'pixlpal-928',     name: 'PIXLPAL #928',   url: 'assets/civilians/pixlpal/voxlpal-928.glb',     color: '#ff8844', type: 'PIXLPAL', anim: 'assets/animations/Jab_Cross.glb' },
-  { id: 'gob-406',         name: 'GOB #406',        url: 'assets/civilians/gobs/406.glb',                color: '#ff3344', type: 'GOB', anim: 'assets/animations/Gunplay.glb' },
-  { id: 'flinger-yellow',  name: 'FLINGER YELLOW',  url: 'assets/civilians/flingers/FlingerYELLOW.glb',  color: '#ffdd44', type: 'FLINGER', anim: 'assets/animations/Shooting_Arrow.glb' },
-  { id: 'gob-1004',        name: 'GOB #1004',       url: 'assets/civilians/gobs/1004.glb',               color: '#44ff66', type: 'GOB', anim: 'assets/animations/Shooting_Gun.glb' },
-  { id: 'pixlpal-108',     name: 'PIXLPAL #108',    url: 'assets/civilians/pixlpal/voxlpal-108.glb',     color: '#44aaff', type: 'PIXLPAL', anim: 'assets/animations/Jab_Cross.glb' },
-  { id: 'flinger-purple',  name: 'FLINGER PURPLE',  url: 'assets/civilians/flingers/FlingerPURPLE.glb',  color: '#bb44ff', type: 'FLINGER', anim: 'assets/animations/Shooting_Arrow.glb' },
+  { id: 'pixlpal-928',     name: 'PIXLPAL #928',   url: 'assets/civilians/pixlpal/voxlpal-928.glb',     color: '#ff8844', type: 'PIXLPAL', anim: 'assets/animations/Standing Idle 03.glb' },
+  { id: 'gob-406',         name: 'GOB #406',        url: 'assets/civilians/gobs/406.glb',                color: '#ff3344', type: 'GOB', anim: 'assets/animations/firing rifle.glb' },
+  { id: 'flinger-yellow',  name: 'FLINGER YELLOW',  url: 'assets/civilians/flingers/FlingerYELLOW.glb',  color: '#ffdd44', type: 'FLINGER', anim: 'assets/animations/rifle aiming idle.glb' },
+  { id: 'gob-1004',        name: 'GOB #1004',       url: 'assets/civilians/gobs/1004.glb',               color: '#44ff66', type: 'GOB', anim: 'assets/animations/Standing Idle 02.glb' },
+  { id: 'pixlpal-108',     name: 'PIXLPAL #108',    url: 'assets/civilians/pixlpal/voxlpal-108.glb',     color: '#44aaff', type: 'PIXLPAL', anim: 'assets/animations/Walking-a.glb' },
+  { id: 'flinger-purple',  name: 'FLINGER PURPLE',  url: 'assets/civilians/flingers/FlingerPURPLE.glb',  color: '#bb44ff', type: 'FLINGER', anim: 'assets/animations/rifle aiming idle.glb' },
 ];
 
 let _overlay = null;
@@ -283,8 +283,86 @@ function _placeModel(model, av) {
   _updateUI('');
 }
 
+// Mixamo → Unreal bone name map for animation retargeting.
+// GLTFLoader strips the ':' from 'mixamorig:Hips' → 'mixamorigHips'.
+const MIXAMO_TO_UNREAL = {
+  'mixamorigHips': 'pelvis',
+  'mixamorigSpine': 'spine_01',
+  'mixamorigSpine1': 'spine_03',
+  'mixamorigSpine2': 'spine_05',
+  'mixamorigNeck': 'neck_01',
+  'mixamorigHead': 'head',
+  'mixamorigLeftShoulder': 'clavicle_l',
+  'mixamorigLeftArm': 'upperarm_l',
+  'mixamorigLeftForeArm': 'lowerarm_l',
+  'mixamorigLeftHand': 'hand_l',
+  'mixamorigLeftHandThumb1': 'thumb_01_l',
+  'mixamorigLeftHandThumb2': 'thumb_02_l',
+  'mixamorigLeftHandThumb3': 'thumb_03_l',
+  'mixamorigLeftHandIndex1': 'index_01_l',
+  'mixamorigLeftHandIndex2': 'index_02_l',
+  'mixamorigLeftHandIndex3': 'index_03_l',
+  'mixamorigLeftHandMiddle1': 'middle_01_l',
+  'mixamorigLeftHandMiddle2': 'middle_02_l',
+  'mixamorigLeftHandMiddle3': 'middle_03_l',
+  'mixamorigLeftHandRing1': 'ring_01_l',
+  'mixamorigLeftHandRing2': 'ring_02_l',
+  'mixamorigLeftHandRing3': 'ring_03_l',
+  'mixamorigRightShoulder': 'clavicle_r',
+  'mixamorigRightArm': 'upperarm_r',
+  'mixamorigRightForeArm': 'lowerarm_r',
+  'mixamorigRightHand': 'hand_r',
+  'mixamorigRightHandThumb1': 'thumb_01_r',
+  'mixamorigRightHandThumb2': 'thumb_02_r',
+  'mixamorigRightHandThumb3': 'thumb_03_r',
+  'mixamorigRightHandIndex1': 'index_01_r',
+  'mixamorigRightHandIndex2': 'index_02_r',
+  'mixamorigRightHandIndex3': 'index_03_r',
+  'mixamorigRightHandMiddle1': 'middle_01_r',
+  'mixamorigRightHandMiddle2': 'middle_02_r',
+  'mixamorigRightHandMiddle3': 'middle_03_r',
+  'mixamorigRightHandRing1': 'ring_01_r',
+  'mixamorigRightHandRing2': 'ring_02_r',
+  'mixamorigRightHandRing3': 'ring_03_r',
+  'mixamorigLeftUpLeg': 'thigh_l',
+  'mixamorigLeftLeg': 'calf_l',
+  'mixamorigLeftFoot': 'foot_l',
+  'mixamorigLeftToeBase': 'ball_l',
+  'mixamorigRightUpLeg': 'thigh_r',
+  'mixamorigRightLeg': 'calf_r',
+  'mixamorigRightFoot': 'foot_r',
+  'mixamorigRightToeBase': 'ball_r',
+};
+
+/**
+ * Retarget a Mixamo animation clip to work with an Unreal skeleton.
+ * Rewrites track names and strips root-motion translation tracks
+ * (hips position) so models don't fly off screen.
+ */
+function _retargetClip(clip) {
+  const newTracks = [];
+  for (const track of clip.tracks) {
+    // Track names are like "mixamorigHips.quaternion" or "mixamorigHips.position"
+    const dotIdx = track.name.indexOf('.');
+    if (dotIdx < 0) { newTracks.push(track); continue; }
+    const boneName = track.name.substring(0, dotIdx);
+    const prop = track.name.substring(dotIdx); // ".quaternion" or ".position"
+
+    const unrealBone = MIXAMO_TO_UNREAL[boneName];
+    if (!unrealBone) continue; // skip unmapped bones
+
+    // Strip root motion: skip position tracks on the hips/pelvis
+    // (keep only rotation). This prevents models from flying around.
+    if (unrealBone === 'pelvis' && prop === '.position') continue;
+
+    const newTrack = track.clone();
+    newTrack.name = unrealBone + prop;
+    newTracks.push(newTrack);
+  }
+  return new THREE.AnimationClip(clip.name + '_retargeted', clip.duration, newTracks);
+}
+
 function _loadAndPlayAnimation(model, animUrl) {
-  // Check cache first
   if (_animCache.has(animUrl)) {
     _bindAnimation(model, _animCache.get(animUrl));
     return;
@@ -292,10 +370,9 @@ function _loadAndPlayAnimation(model, animUrl) {
 
   const loader = new GLTFLoader();
   loader.load(animUrl, (gltf) => {
-    const clips = gltf.animations || [];
+    const clips = (gltf.animations || []).map(_retargetClip);
     if (clips.length > 0) {
       _animCache.set(animUrl, clips);
-      // Only bind if this model is still the current one
       if (_pvModel && _pvModel.children.includes(model)) {
         _bindAnimation(model, clips);
       }
