@@ -426,7 +426,7 @@ function _applyChapterAlly(chapterIdx, playerPos) {
 document.getElementById('game').appendChild(renderer.domElement);
 
 // ASCII Vision post-processing — init once renderer is ready
-try { initAsciiVision(); } catch (e) { console.warn('[ascii] init failed', e); }
+try { initAsciiVision(scene, enemies); } catch (e) { console.warn('[ascii] init failed', e); }
 
 // ---- MATRIX RAIN (title screen only) ----
 function buildMatrixBG(el) {
@@ -6739,6 +6739,8 @@ function killEnemy(idx) {
   }
 
   scene.remove(e.obj);
+  // Clean up ASCII vision sprite if active
+  if (e._asciiSprite) { scene.remove(e._asciiSprite); e._asciiSprite.material.dispose(); e._asciiSprite = null; }
   enemies.splice(idx, 1);
   S.kills++;
   S.score += e.scoreVal;
