@@ -1,134 +1,103 @@
 // ============================================================
-// AVATAR SHARDS — Collectible unlock system for alternate avatars.
+// AVATAR STONES — Universal collectible unlock currency.
 //
-// Each non-default avatar requires 4 "data shards" to unlock.
-// Shards spawn in-game as glowing pickups — one per chapter,
-// easy to miss if you're not exploring. Progress persists in
-// localStorage across sessions.
+// Stones are earned during gameplay runs (sparse, ~1 per chapter
+// cleared, easy to miss). They go into a universal INVENTORY.
+// The player then visits the avatar picker and CHOOSES which
+// avatar to spend them on. Each avatar needs 4 stones to unlock.
+//
+// Two separate persisted values:
+//   - Stone inventory count (how many unspent stones the player has)
+//   - Per-avatar unlock progress (how many stones spent on each)
 //
 // Public API:
-//   getShardProgress(avatarId) → { collected: number, total: 4 }
-//   isAvatarUnlocked(avatarId) → boolean
-//   awardShard(avatarId)       → { newTotal, justUnlocked }
-//   getRunShards()             → [{ avatarId, chapter }...]
-//   clearRunShards()
-//   getAllProgress()           → { [avatarId]: number }
-//   resetAllProgress()        → void (dev/debug)
+//   getStoneInventory()            → number
+//   addStones(n)                   → newTotal
+//   spendStoneOnAvatar(avatarId)   → { success, newProgress, justUnlocked }
+//   getAvatarProgress(avatarId)    → { spent: number, total: 4 }
+//   isAvatarUnlocked(avatarId)     → boolean
+//   getRunStones()                 → number (stones found this run)
+//   clearRunStones()
+//   recordRunStone()
+//   shouldDropStone(chapterIdx)    → boolean
+//   resetAll()                     → void (dev/debug)
 // ============================================================
 
-const LS_KEY = 'mbs_avatar_shards_v1';
-const SHARDS_REQUIRED = 4;
+const LS_KEY = 'mbs_avatar_stones_v2';
+const STONES_REQUIRED = 4;
 
-// Which avatar can drop shards in which chapters (0-indexed).
-// Each avatar has 4 eligible chapters; a shard drops in ONE of
-// those per run (random), so it takes multiple runs to unlock.
-// Meebit (index 0) is always unlocked — no shards needed.
-const SHARD_SCHEDULE = {
-  'pixlpal-928':    [0, 1, 2, 3],   // INFERNO, CRIMSON, SOLAR, TOXIC
-  'gob-406':        [1, 2, 3, 4],   // CRIMSON, SOLAR, TOXIC, ARCTIC
-  'flinger-yellow': [2, 3, 4, 5],   // SOLAR, TOXIC, ARCTIC, PARADISE
-  'gob-1004':       [0, 2, 4, 5],   // INFERNO, SOLAR, ARCTIC, PARADISE
-  'pixlpal-108':    [1, 3, 4, 5],   // CRIMSON, TOXIC, ARCTIC, PARADISE
-  'flinger-purple': [0, 1, 4, 5],   // INFERNO, CRIMSON, ARCTIC, PARADISE
-};
+let _runStones = 0;
 
-// Per-run state — tracks which shards the player found THIS run.
-// Tallied at end-of-run (game over screen) so the player sees
-// what they earned.
-let _runShards = [];
-
-// ---------------------------------------------------------------------------
-// PERSISTENCE
-// ---------------------------------------------------------------------------
-
-function _readAll() {
+function _read() {
   try {
     const raw = localStorage.getItem(LS_KEY);
-    return raw ? JSON.parse(raw) : {};
-  } catch (e) { return {}; }
+    if (!raw) return { inventory: 0, spent: {} };
+    const d = JSON.parse(raw);
+    return { inventory: d.inventory || 0, spent: d.spent || {} };
+  } catch (e) { return { inventory: 0, spent: {} }; }
 }
 
-function _writeAll(data) {
-  try { localStorage.setItem(LS_KEY, JSON.stringify(data)); } catch (e) {}
+function _write(d) {
+  try { localStorage.setItem(LS_KEY, JSON.stringify(d)); } catch (e) {}
 }
 
-// ---------------------------------------------------------------------------
-// PUBLIC API
-// ---------------------------------------------------------------------------
+/** How many unspent stones the player has. */
+export function getStoneInventory() { return _read().inventory; }
 
-/** How many shards the player has collected for this avatar. */
-export function getShardProgress(avatarId) {
-  if (avatarId === 'meebit') return { collected: SHARDS_REQUIRED, total: SHARDS_REQUIRED };
-  const all = _readAll();
-  return { collected: all[avatarId] || 0, total: SHARDS_REQUIRED };
+/** Add stones to inventory. Returns new total. */
+export function addStones(n) {
+  const d = _read();
+  d.inventory = (d.inventory || 0) + n;
+  _write(d);
+  return d.inventory;
 }
 
-/** Whether the avatar is playable (default or fully collected). */
+/** How many stones spent on this avatar + total needed. */
+export function getAvatarProgress(avatarId) {
+  if (avatarId === 'meebit') return { spent: STONES_REQUIRED, total: STONES_REQUIRED };
+  const d = _read();
+  return { spent: d.spent[avatarId] || 0, total: STONES_REQUIRED };
+}
+
+/** Whether the avatar is playable. */
 export function isAvatarUnlocked(avatarId) {
   if (avatarId === 'meebit') return true;
-  const all = _readAll();
-  return (all[avatarId] || 0) >= SHARDS_REQUIRED;
+  const d = _read();
+  return (d.spent[avatarId] || 0) >= STONES_REQUIRED;
 }
 
-/** Award one shard. Returns { newTotal, justUnlocked }. Caps at SHARDS_REQUIRED. */
-export function awardShard(avatarId) {
-  if (avatarId === 'meebit') return { newTotal: SHARDS_REQUIRED, justUnlocked: false };
-  const all = _readAll();
-  const prev = all[avatarId] || 0;
-  if (prev >= SHARDS_REQUIRED) return { newTotal: SHARDS_REQUIRED, justUnlocked: false };
-  const next = Math.min(SHARDS_REQUIRED, prev + 1);
-  all[avatarId] = next;
-  _writeAll(all);
-  return { newTotal: next, justUnlocked: next >= SHARDS_REQUIRED };
+/** Spend 1 stone from inventory on an avatar. */
+export function spendStoneOnAvatar(avatarId) {
+  if (avatarId === 'meebit') return { success: false, newProgress: STONES_REQUIRED, justUnlocked: false };
+  const d = _read();
+  const currentSpent = d.spent[avatarId] || 0;
+  if (currentSpent >= STONES_REQUIRED) return { success: false, newProgress: currentSpent, justUnlocked: false };
+  if ((d.inventory || 0) <= 0) return { success: false, newProgress: currentSpent, justUnlocked: false };
+  d.inventory -= 1;
+  d.spent[avatarId] = currentSpent + 1;
+  _write(d);
+  return { success: true, newProgress: d.spent[avatarId], justUnlocked: d.spent[avatarId] >= STONES_REQUIRED };
 }
 
-/** Get shards found during the current run (for end-of-run screen). */
-export function getRunShards() { return _runShards.slice(); }
+export function getRunStones() { return _runStones; }
+export function clearRunStones() { _runStones = 0; }
+export function recordRunStone() { _runStones++; }
 
-/** Clear per-run state (called at run start). */
-export function clearRunShards() { _runShards = []; }
-
-/** Record a shard pickup during the current run. */
-export function recordRunShard(avatarId, chapterIdx) {
-  _runShards.push({ avatarId, chapter: chapterIdx });
+/** Should a stone drop this chapter? Always on ch1, 50% on others. */
+export function shouldDropStone(chapterIdx) {
+  if (chapterIdx === 0) return true;
+  return Math.random() < 0.50;
 }
 
-/** Full progress map for all avatars. */
-export function getAllProgress() {
-  const all = _readAll();
-  const result = {};
-  for (const id of Object.keys(SHARD_SCHEDULE)) {
-    result[id] = all[id] || 0;
-  }
-  return result;
+/** Backward compat alias for avatarPicker. */
+export function getShardProgress(avatarId) {
+  const p = getAvatarProgress(avatarId);
+  return { collected: p.spent, total: p.total };
 }
 
-/** Dev helper — wipe all shard data. */
-export function resetAllProgress() {
+export function resetAll() {
   try { localStorage.removeItem(LS_KEY); } catch (e) {}
 }
 
-/**
- * Given the current chapter index, pick which avatar shard (if any)
- * should spawn this chapter. Returns avatarId or null.
- *
- * Logic: for each avatar that still needs shards, check if this
- * chapter is in its schedule. If multiple qualify, pick one at
- * random. Returns null ~40% of the time even when eligible (sparse).
- */
-export function pickShardForChapter(chapterIdx) {
-  const all = _readAll();
-  const candidates = [];
-  for (const [avatarId, chapters] of Object.entries(SHARD_SCHEDULE)) {
-    if ((all[avatarId] || 0) >= SHARDS_REQUIRED) continue; // already unlocked
-    if (chapters.includes(chapterIdx)) candidates.push(avatarId);
-  }
-  if (candidates.length === 0) return null;
-  // ~60% chance to spawn when eligible — keeps it sparse
-  if (Math.random() > 0.60) return null;
-  return candidates[Math.floor(Math.random() * candidates.length)];
-}
-
-/** Constants for external use. */
-export const SHARDS_PER_AVATAR = SHARDS_REQUIRED;
-export { SHARD_SCHEDULE };
+export const SHARDS_PER_AVATAR = STONES_REQUIRED;
+export const STONES_PER_AVATAR = STONES_REQUIRED;

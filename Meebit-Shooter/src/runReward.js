@@ -86,9 +86,9 @@ function _computeRewards(stats) {
   const rescueXP = (stats.rescues || 0) * 10;
   if (rescueXP > 0) { lines.push({ label: 'RESCUES', value: String(stats.rescues||0), xp: rescueXP }); totalXP += rescueXP; }
 
-  const shardCount = stats.shards ? stats.shards.length : 0;
-  const shardXP = shardCount * 25;
-  if (shardXP > 0) { lines.push({ label: 'DATA SHARDS', value: String(shardCount), xp: shardXP }); totalXP += shardXP; }
+  const stoneCount = typeof stats.shards === 'number' ? stats.shards : (stats.shards ? stats.shards.length : 0);
+  const stoneXP = stoneCount * 25;
+  if (stoneCount > 0) { lines.push({ label: 'AVATAR STONES', value: '\u2B21 ' + stoneCount, xp: stoneXP }); totalXP += stoneXP; }
 
   let oresEarned = Math.min(3, (stats.chapter || 0) + Math.floor((stats.kills || 0) / 100));
   if (oresEarned > 0) lines.push({ label: 'ORE MINED', value: '\u2B21 ' + oresEarned, xp: 0, isOre: true });

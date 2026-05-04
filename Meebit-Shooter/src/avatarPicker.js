@@ -7,7 +7,7 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { swapAvatarGLB } from './player.js';
 import { S } from './state.js';
-import { getShardProgress, isAvatarUnlocked, SHARDS_PER_AVATAR } from './avatarShards.js';
+import { getShardProgress, isAvatarUnlocked, SHARDS_PER_AVATAR, getStoneInventory, spendStoneOnAvatar } from './avatarShards.js';
 
 const AVATARS = [
   { id: 'meebit',          name: 'MEEBIT',         url: 'assets/16801_original.vrm',                    color: '#ffffff', type: 'DEFAULT' },
@@ -326,6 +326,34 @@ function _updateUI(loadText) {
       selectBtn.textContent = 'LOCKED (' + progress.collected + '/' + progress.total + ')';
     }
   }
+
+  // Inventory display
+  const inv = el('ap-inventory');
+  const stoneCount = getStoneInventory();
+  if (inv) {
+    if (av.id === 'meebit') {
+      inv.textContent = '';
+    } else {
+      inv.textContent = '\u2B21 STONES: ' + stoneCount;
+    }
+  }
+
+  // USE STONE button — show only for locked avatars with stones available
+  const spendBtn = el('ap-spend');
+  if (spendBtn) {
+    if (av.id === 'meebit' || unlocked) {
+      spendBtn.style.display = 'none';
+    } else {
+      spendBtn.style.display = '';
+      if (stoneCount > 0) {
+        spendBtn.disabled = false;
+        spendBtn.textContent = '\u2B21 USE STONE (' + stoneCount + ')';
+      } else {
+        spendBtn.disabled = true;
+        spendBtn.textContent = '\u2B21 NO STONES';
+      }
+    }
+  }
 }
 
 function _navigate(dir) {
@@ -339,6 +367,21 @@ function _navigate(dir) {
   }
   _updateUI('');
   _loadModel(AVATARS[_currentIdx]);
+}
+
+function _spendStone() {
+  const av = AVATARS[_currentIdx];
+  if (av.id === 'meebit') return;
+  const result = spendStoneOnAvatar(av.id);
+  if (!result.success) return;
+
+  // Visual feedback — update the UI to reflect the new stone state
+  _updateUI('');
+
+  // If just unlocked, show a celebratory message
+  if (result.justUnlocked) {
+    _updateUI(av.name + ' UNLOCKED!');
+  }
 }
 
 function _selectCurrent() {
@@ -412,6 +455,10 @@ function _buildUI() {
 '.ap-btn:disabled{cursor:not-allowed}' +
 '.ap-btn-cancel{border-color:#444;color:#888;box-shadow:none}' +
 '.ap-btn-cancel:hover{background:#222;color:#ccc;border-color:#666;box-shadow:none}' +
+'.ap-btn-spend{border-color:#ffd93d;color:#ffd93d;box-shadow:0 0 12px rgba(255,217,61,.3)}' +
+'.ap-btn-spend:hover:not(:disabled){background:#ffd93d;color:#000;box-shadow:0 0 30px rgba(255,217,61,.7);transform:scale(1.05)}' +
+'.ap-btn-spend:disabled{border-color:#555;color:#555;box-shadow:none;cursor:not-allowed;opacity:.4}' +
+'.ap-inventory{font-size:12px;letter-spacing:3px;color:#ffd93d;text-shadow:0 0 6px rgba(255,217,61,.4);margin-top:6px;min-height:18px;text-align:center}' +
 '.ap-loading{font-size:13px;color:#ffdd44;letter-spacing:3px;margin-top:10px;min-height:20px;text-align:center}' +
 '@media(max-width:600px){.ap-main{height:clamp(250px,50vh,400px)}.ap-btn{font-size:14px;padding:10px 24px}}' +
 '</style>' +
@@ -443,14 +490,17 @@ function _buildUI() {
 '</div>' +
 '<div class="ap-actions">' +
 '  <button class="ap-btn ap-btn-cancel" id="ap-cancel">CANCEL</button>' +
+'  <button class="ap-btn ap-btn-spend" id="ap-spend">\u2B21 USE STONE</button>' +
 '  <button class="ap-btn" id="ap-select">SELECT</button>' +
 '</div>' +
+'<div class="ap-inventory" id="ap-inventory"></div>' +
 '<div class="ap-loading" id="ap-loading"></div>';
 
   el.querySelector('#ap-prev').addEventListener('click', () => _navigate(-1));
   el.querySelector('#ap-next').addEventListener('click', () => _navigate(1));
   el.querySelector('#ap-cancel').addEventListener('click', closeAvatarPicker);
   el.querySelector('#ap-select').addEventListener('click', _selectCurrent);
+  el.querySelector('#ap-spend').addEventListener('click', _spendStone);
 
   let tx = 0;
   el.addEventListener('touchstart', e => { tx = e.touches[0].clientX; }, { passive: true });

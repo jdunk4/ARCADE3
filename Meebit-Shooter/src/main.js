@@ -113,7 +113,7 @@ import { Wallet } from './wallet.js';
 import { initArmoryUI } from './armoryUI.js';
 import { openAvatarPicker } from './avatarPicker.js';
 import { showRunReward, hideRunReward } from './runReward.js';
-import { getRunShards, clearRunShards } from './avatarShards.js';
+import { getRunStones, clearRunStones } from './avatarShards.js';
 import {
   beginStratagemInput, endStratagemInput, pushStratagemArrow,
   pushStratagemVariantKey,
@@ -2371,7 +2371,7 @@ initGamepad({
 function startGame() {
   // Tear down the run-reward overlay if still showing from SIGNAL LOST.
   try { hideRunReward(); } catch (_) {}
-  try { clearRunShards(); } catch (_) {}
+  try { clearRunStones(); } catch (_) {}
 
   // Make sure the phone ring + C-drone aren't still playing if we got here
   // via the incoming-call accept path (or any other unusual entry).
@@ -3370,7 +3370,7 @@ function gameOver() {
       wave: S.wave,
       chapter: S.chapter,
       rescues: S.rescuedCount || 0,
-      shards: getRunShards(),
+      shards: getRunStones(),
     }, {
       onReboot: () => {
         document.getElementById('gameover').classList.add('hidden');
