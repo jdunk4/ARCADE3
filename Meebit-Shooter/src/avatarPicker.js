@@ -7,8 +7,8 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { swapAvatarGLB } from './player.js';
 import { S } from './state.js';
-import { getShardProgress, isAvatarUnlocked, SHARDS_PER_AVATAR, getStoneInventory, spendStoneOnAvatar, addStones } from './avatarShards.js';
-import { getOreBalance, spendOre } from './runReward.js';
+import { getShardProgress, isAvatarUnlocked, SHARDS_PER_AVATAR, spendStoneOnAvatar } from './avatarShards.js';
+import { getOreBalance, spendOre, addOre } from './runReward.js';
 
 const AVATARS = [
   { id: 'meebit',          name: 'MEEBIT',         url: 'assets/16801_original.vrm',                    color: '#ffffff', type: 'DEFAULT' },
@@ -375,51 +375,40 @@ function _updateUI(loadText) {
     }
   }
 
-  // Inventory display
+  // Inventory display — just ore balance
   const inv = el('ap-inventory');
-  const stoneCount = getStoneInventory();
   const oreCount = getOreBalance();
   if (inv) {
-    if (av.id === 'meebit') {
+    if (av.id === 'meebit' || unlocked) {
       inv.textContent = '';
     } else {
-      inv.textContent = '\u2B21 STONES: ' + stoneCount + '  \u00B7  ORE: ' + oreCount;
+      inv.innerHTML = '<span class="rr-ore-icon-sm" style="display:inline-block;width:12px;height:12px;background:conic-gradient(#ff6a1a,#ff2e4d,#ffd93d,#00ff66,#4ff7ff,#e63aff,#ff6a1a);clip-path:polygon(50% 0%,100% 25%,100% 75%,50% 100%,0% 75%,0% 25%);vertical-align:middle;margin-right:4px"></span>' + oreCount.toLocaleString() + ' ORE';
     }
   }
 
-  // CRACK ORE button — converts 1 ore into 1 stone
+  // FORGE STONE button — single button with tiered ore cost
   const crackBtn = el('ap-crack');
   if (crackBtn) {
     if (av.id === 'meebit' || unlocked) {
       crackBtn.style.display = 'none';
     } else {
       crackBtn.style.display = '';
-      if (oreCount > 0) {
+      const cost = _getNextForgeCost(av.id);
+      if (cost && oreCount >= cost) {
         crackBtn.disabled = false;
-        crackBtn.textContent = '\u2B21 CRACK ORE (' + oreCount + ')';
-      } else {
+        crackBtn.textContent = '\u2B21 FORGE STONE \u00B7 ' + cost.toLocaleString() + ' ORE';
+      } else if (cost) {
         crackBtn.disabled = true;
-        crackBtn.textContent = '\u2B21 NO ORE';
+        crackBtn.textContent = '\u2B21 FORGE STONE \u00B7 ' + cost.toLocaleString() + ' ORE';
+      } else {
+        crackBtn.style.display = 'none';
       }
     }
   }
 
-  // USE STONE button — show only for locked avatars with stones available
+  // Hide the spend button — forging now does both in one step
   const spendBtn = el('ap-spend');
-  if (spendBtn) {
-    if (av.id === 'meebit' || unlocked) {
-      spendBtn.style.display = 'none';
-    } else {
-      spendBtn.style.display = '';
-      if (stoneCount > 0) {
-        spendBtn.disabled = false;
-        spendBtn.textContent = '\u2B21 USE STONE (' + stoneCount + ')';
-      } else {
-        spendBtn.disabled = true;
-        spendBtn.textContent = '\u2B21 NO STONES';
-      }
-    }
-  }
+  if (spendBtn) spendBtn.style.display = 'none';
 }
 
 function _navigate(dir) {
@@ -435,23 +424,33 @@ function _navigate(dir) {
   _loadModel(AVATARS[_currentIdx]);
 }
 
-function _crackOre() {
-  if (getOreBalance() < 1) return;
-  if (!spendOre(1)) return;
-  addStones(1);
-  _updateUI('ORE CRACKED \u2192 +1 STONE');
+// Ore cost to forge the Nth stone onto an avatar (1-indexed).
+// Stone 1 = 200, Stone 2 = 400, Stone 3 = 1600, Stone 4 = 3200.
+const FORGE_COSTS = [200, 400, 1600, 3200];
+
+function _getNextForgeCost(avatarId) {
+  const progress = getShardProgress(avatarId);
+  if (progress.collected >= progress.total) return null; // already unlocked
+  return FORGE_COSTS[progress.collected] || 3200;
 }
 
-function _spendStone() {
+function _forgeStone() {
   const av = AVATARS[_currentIdx];
   if (av.id === 'meebit') return;
+  const cost = _getNextForgeCost(av.id);
+  if (!cost) return;
+  if (getOreBalance() < cost) return;
+  if (!spendOre(cost)) return;
+
+  // Directly award the stone to this avatar
   const result = spendStoneOnAvatar(av.id);
-  if (!result.success) return;
+  if (!result.success) {
+    // Shouldn't happen since we checked progress, but refund if it does
+    addOre(cost);
+    return;
+  }
 
-  // Visual feedback — update the UI to reflect the new stone state
   _updateUI('');
-
-  // If just unlocked, show a celebratory message
   if (result.justUnlocked) {
     _updateUI(av.name + ' UNLOCKED!');
   }
@@ -577,8 +576,8 @@ function _buildUI() {
   el.querySelector('#ap-next').addEventListener('click', () => _navigate(1));
   el.querySelector('#ap-cancel').addEventListener('click', closeAvatarPicker);
   el.querySelector('#ap-select').addEventListener('click', _selectCurrent);
-  el.querySelector('#ap-spend').addEventListener('click', _spendStone);
-  el.querySelector('#ap-crack').addEventListener('click', _crackOre);
+  el.querySelector('#ap-spend').addEventListener('click', _forgeStone);
+  el.querySelector('#ap-crack').addEventListener('click', _forgeStone);
 
   let tx = 0;
   el.addEventListener('touchstart', e => { tx = e.touches[0].clientX; }, { passive: true });
