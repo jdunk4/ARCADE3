@@ -112,6 +112,8 @@ import {
 import { Wallet } from './wallet.js';
 import { initArmoryUI } from './armoryUI.js';
 import { openAvatarPicker } from './avatarPicker.js';
+import { showRunReward, hideRunReward } from './runReward.js';
+import { getRunShards, clearRunShards } from './avatarShards.js';
 import {
   beginStratagemInput, endStratagemInput, pushStratagemArrow,
   pushStratagemVariantKey,
@@ -2367,6 +2369,10 @@ initGamepad({
 
 // ---- GAME LIFECYCLE ----
 function startGame() {
+  // Tear down the run-reward overlay if still showing from SIGNAL LOST.
+  try { hideRunReward(); } catch (_) {}
+  try { clearRunShards(); } catch (_) {}
+
   // Make sure the phone ring + C-drone aren't still playing if we got here
   // via the incoming-call accept path (or any other unusual entry).
   Audio.stopPhoneRing && Audio.stopPhoneRing();
@@ -2837,6 +2843,7 @@ function startGame() {
 // systems boot identically.
 // ---------------------------------------------------------------------
 function startTutorial() {
+  try { hideRunReward(); } catch (_) {}
   Audio.stopPhoneRing && Audio.stopPhoneRing();
   Audio.stopCDrone && Audio.stopCDrone();
   // Stop the death-screen song (Beyond.mp3) if a prior run's SIGNAL
@@ -3351,6 +3358,39 @@ function gameOver() {
   if (fa) fa.textContent = armoryXPEarned > 0 ? `+${armoryXPEarned}` : '0';
   UI.populateTitleStats(Save.load());
   document.getElementById('gameover').classList.remove('hidden');
+
+  // ---- RUN REWARD PROGRESSION BAR ----
+  // Shows the animated XP tally, segmented progress bar, stars on
+  // level-up, and REBOOT/AVATAR/MAIN MENU buttons on the SIGNAL LOST
+  // screen. Replaces the original gameover children while active.
+  try {
+    showRunReward({
+      score: S.score,
+      kills: S.kills,
+      wave: S.wave,
+      chapter: S.chapter,
+      rescues: S.rescuedCount || 0,
+      shards: getRunShards(),
+    }, {
+      onReboot: () => {
+        document.getElementById('gameover').classList.add('hidden');
+        _exitTutorialIfActive();
+        startGame();
+      },
+      onAvatar: () => {
+        document.getElementById('gameover').classList.add('hidden');
+        openAvatarPicker();
+      },
+      onMainMenu: () => {
+        document.getElementById('gameover').classList.add('hidden');
+        Audio.stopMusic();
+        try { Audio.stopDeathMusic && Audio.stopDeathMusic(); } catch (_) {}
+        _exitTutorialIfActive();
+        document.querySelectorAll('.hidden-ui').forEach(el => el.style.display = 'none');
+        document.getElementById('title').classList.remove('hidden');
+      },
+    });
+  } catch (e) { console.warn('[runReward] show failed', e); }
 }
 
 // Tutorial teardown helper — called from every path that exits a
