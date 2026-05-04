@@ -114,6 +114,7 @@ import { initArmoryUI, openArmory } from './armoryUI.js';
 import { openAvatarPicker } from './avatarPicker.js';
 import { showRunReward, hideRunReward } from './runReward.js';
 import { getRunStones, clearRunStones } from './avatarShards.js';
+import { initAsciiVision, activateAsciiVision, isAsciiActive, updateAsciiVision, renderAsciiPass } from './asciiVision.js';
 import {
   beginStratagemInput, endStratagemInput, pushStratagemArrow,
   pushStratagemVariantKey,
@@ -423,6 +424,9 @@ function _applyChapterAlly(chapterIdx, playerPos) {
 
 // ---- ATTACH RENDERER ----
 document.getElementById('game').appendChild(renderer.domElement);
+
+// ASCII Vision post-processing — init once renderer is ready
+try { initAsciiVision(); } catch (e) { console.warn('[ascii] init failed', e); }
 
 // ---- MATRIX RAIN (title screen only) ----
 function buildMatrixBG(el) {
@@ -1943,6 +1947,13 @@ window.addEventListener('keydown', e => {
   if (e.key.toLowerCase() === 'g') {
     // Grenade throw — available on every level, 3 charges per wave.
     tryThrowGrenade();
+  }
+  if (e.key.toLowerCase() === 'v') {
+    // ASCII Vision — toggle matrix-style ASCII rendering for 15 seconds
+    if (!isAsciiActive()) {
+      activateAsciiVision(15);
+      UI.toast('ASCII VISION', '#00ff66', 1500);
+    }
   }
   if (e.key === 'F8') {
     // DEBUG: toggle enemy spawning. Useful for testing chapter mechanics
@@ -4161,6 +4172,7 @@ function animate() {
     updateHealingProjectiles(worldDt);
     updatePickups(worldDt);
     updateBlocks(worldDt);
+    updateAsciiVision(worldDt);
     // Chapter 1 reflow — animate cannon (reticle spin, hum, fire flash)
     // and queen-hive shield domes (pulse + pop). Both are no-ops when
     // their entities don't exist (chapters 2-7).
@@ -4557,7 +4569,10 @@ function animate() {
     updateObjectiveArrows(S, camera, getWaveDef_current(), player.pos);
   }
 
+  // Render the scene normally
   renderer.render(scene, camera);
+  // ASCII Vision overlay — draws colored ASCII on a 2D canvas on top
+  if (isAsciiActive()) renderAsciiPass();
 
   // Long-frame probe (see top of animate). If this frame took longer
   // than 80ms — well above 16ms target — log a single line with
