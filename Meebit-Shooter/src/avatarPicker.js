@@ -12,13 +12,13 @@ import { getOreBalance, spendOre, addOre } from './runReward.js';
 import { Audio } from './audio.js';
 
 const AVATARS = [
-  { id: 'meebit',          name: 'MEEBIT',         url: 'assets/16801_original.vrm',                    color: '#ffffff', type: 'DEFAULT' },
-  { id: 'pixlpal-928',     name: 'PIXLPAL #928',   url: 'assets/civilians/pixlpal/voxlpal-928.glb',     color: '#ff8844', type: 'PIXLPAL' },
-  { id: 'gob-406',         name: 'GOB #406',        url: 'assets/civilians/gobs/406.glb',                color: '#ff3344', type: 'GOB' },
-  { id: 'flinger-yellow',  name: 'FLINGER YELLOW',  url: 'assets/civilians/flingers/FlingerYELLOW.glb',  color: '#ffdd44', type: 'FLINGER' },
-  { id: 'gob-1004',        name: 'GOB #1004',       url: 'assets/civilians/gobs/1004.glb',               color: '#44ff66', type: 'GOB' },
-  { id: 'pixlpal-108',     name: 'PIXLPAL #108',    url: 'assets/civilians/pixlpal/voxlpal-108.glb',     color: '#44aaff', type: 'PIXLPAL' },
-  { id: 'flinger-purple',  name: 'FLINGER PURPLE',  url: 'assets/civilians/flingers/FlingerPURPLE.glb',  color: '#bb44ff', type: 'FLINGER' },
+  { id: 'meebit',          name: 'MEEBIT',         url: 'assets/16801_original.vrm',                    color: '#ffffff', type: 'DEFAULT', anim: null },
+  { id: 'pixlpal-928',     name: 'PIXLPAL #928',   url: 'assets/civilians/pixlpal/voxlpal-928.glb',     color: '#ff8844', type: 'PIXLPAL', anim: 'assets/animations/Jab_Cross.glb' },
+  { id: 'gob-406',         name: 'GOB #406',        url: 'assets/civilians/gobs/406.glb',                color: '#ff3344', type: 'GOB', anim: 'assets/animations/Gunplay.glb' },
+  { id: 'flinger-yellow',  name: 'FLINGER YELLOW',  url: 'assets/civilians/flingers/FlingerYELLOW.glb',  color: '#ffdd44', type: 'FLINGER', anim: 'assets/animations/Shooting_Arrow.glb' },
+  { id: 'gob-1004',        name: 'GOB #1004',       url: 'assets/civilians/gobs/1004.glb',               color: '#44ff66', type: 'GOB', anim: 'assets/animations/Shooting_Gun.glb' },
+  { id: 'pixlpal-108',     name: 'PIXLPAL #108',    url: 'assets/civilians/pixlpal/voxlpal-108.glb',     color: '#44aaff', type: 'PIXLPAL', anim: 'assets/animations/Jab_Cross.glb' },
+  { id: 'flinger-purple',  name: 'FLINGER PURPLE',  url: 'assets/civilians/flingers/FlingerPURPLE.glb',  color: '#bb44ff', type: 'FLINGER', anim: 'assets/animations/Shooting_Arrow.glb' },
 ];
 
 let _overlay = null;
@@ -31,6 +31,11 @@ let _pvScene = null, _pvCamera = null, _pvRenderer = null;
 let _pvModel = null, _pvRaf = 0, _pvCanvas = null;
 const _pvCache = new Map();
 let _pvLights = { ambient: null, key: null, fill: null, rim: null, grid: null };
+
+// Animation mixer for preview
+let _pvMixer = null;
+let _pvClock = null;
+const _animCache = new Map(); // cache loaded animation clips
 
 // Matrix rain state
 let _rainCanvas = null, _rainCtx = null, _rainDrops = null;
@@ -265,7 +270,49 @@ function _placeModel(model, av) {
   wrapper.add(model);
   _pvScene.add(wrapper);
   _pvModel = wrapper;
+
+  // Stop any previous animation
+  if (_pvMixer) { _pvMixer.stopAllAction(); _pvMixer = null; }
+
+  // Load and play animation if this avatar has one
+  if (av.anim) {
+    _loadAndPlayAnimation(model, av.anim);
+  }
+  if (!_pvClock) _pvClock = new THREE.Clock();
+
   _updateUI('');
+}
+
+function _loadAndPlayAnimation(model, animUrl) {
+  // Check cache first
+  if (_animCache.has(animUrl)) {
+    _bindAnimation(model, _animCache.get(animUrl));
+    return;
+  }
+
+  const loader = new GLTFLoader();
+  loader.load(animUrl, (gltf) => {
+    const clips = gltf.animations || [];
+    if (clips.length > 0) {
+      _animCache.set(animUrl, clips);
+      // Only bind if this model is still the current one
+      if (_pvModel && _pvModel.children.includes(model)) {
+        _bindAnimation(model, clips);
+      }
+    }
+  }, undefined, (err) => {
+    console.warn('[avatar] anim load fail:', animUrl, err);
+  });
+}
+
+function _bindAnimation(model, clips) {
+  if (_pvMixer) { _pvMixer.stopAllAction(); }
+  _pvMixer = new THREE.AnimationMixer(model);
+  for (const clip of clips) {
+    const action = _pvMixer.clipAction(clip);
+    action.setLoop(THREE.LoopRepeat);
+    action.play();
+  }
 }
 
 // ============================================================
@@ -277,6 +324,10 @@ function _renderLoop() {
   _tickRain();
   if (!_pvRenderer) return;
   if (_pvModel) _pvModel.rotation.y += 0.008;
+  // Tick animation mixer for preview animations
+  if (_pvMixer && _pvClock) {
+    _pvMixer.update(_pvClock.getDelta());
+  }
   _pvRenderer.render(_pvScene, _pvCamera);
 }
 
@@ -674,6 +725,9 @@ export function closeAvatarPicker() {
   if (!_isOpen || !_overlay) return;
   _isOpen = false;
   cancelAnimationFrame(_pvRaf);
+  // Stop animation mixer
+  if (_pvMixer) { _pvMixer.stopAllAction(); _pvMixer = null; }
+  _pvClock = null;
   _rainCanvas = null; _rainCtx = null; _rainDrops = null;
   window.removeEventListener('resize', _resizePreview);
   _overlay.classList.remove('visible');
