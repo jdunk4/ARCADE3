@@ -5778,25 +5778,20 @@ function explodeRocket(r) {
 }
 
 // ============================================================================
-// CHARGE ARROW — directional piercing energy bolt
+// GRENADE -- ballistic arc throw, fuse detonate, big AoE
 // ============================================================================
-// Fires a glowing green arrow from the avatar's facing direction. The arrow
-// travels in a straight line at high speed, passing THROUGH enemies (up to
-// 10), dealing damage to each one it pierces. Replaces the old grenade's
-// ballistic-arc AoE with a skill-shot line-pierce mechanic.
-//
-// Visual: elongated emissive green prism with a trailing point light.
-// Mechanic: flat trajectory at y=1.2, no gravity, no bouncing. Pierces
-// enemies, spawners, and blocks. Despawns after lifetime or max pierces.
+// Reuses explodeRocket for the AoE payload (same enemy/civilian/spawner/block
+// damage lists — grenades and rockets both boom the same way). The only
+// thing that differs is the physics and visuals: a grenade is a tumbling
+// sphere on a gravity arc, a rocket is a guided missile on a flat path.
 
-const _chargeArrows = [];
-
-// Shared geometry: elongated octahedron (arrow shape)
-const _chargeGeo = new THREE.ConeGeometry(0.15, 2.5, 4);
-_chargeGeo.rotateX(Math.PI / 2); // point along +Z
-const _chargeMat = new THREE.MeshStandardMaterial({
-  color: 0x003311, emissive: 0x00ff66, emissiveIntensity: 2.5,
-  roughness: 0.2, metalness: 0.5, transparent: true, opacity: 0.9,
+const GRENADE_GRAVITY = 22;    // m/s^2 — snappy feel
+const _grenades = [];
+// Shared geometry + material for all grenades.
+const _grenadeGeo = new THREE.IcosahedronGeometry(0.22, 0);
+const _grenadeMat = new THREE.MeshStandardMaterial({
+  color: 0x2b3d1e, emissive: 0x88ff55, emissiveIntensity: 1.4,
+  roughness: 0.5, metalness: 0.3,
 });
 
 function tryThrowGrenade() {
@@ -5805,7 +5800,7 @@ function tryThrowGrenade() {
   if (!player.ready) return;
   if (S.grenadeCooldown > 0) return;
   if ((S.grenadeCharges || 0) <= 0) {
-    UI.toast('NO CHARGES', '#ff2e4d', 900);
+    UI.toast('NO GRENADES', '#ff2e4d', 900);
     return;
   }
   const w = WEAPONS.grenade;
@@ -5814,135 +5809,110 @@ function tryThrowGrenade() {
   if (S.tutorialMode) tutorialOnGrenadeThrown();
   _syncGrenadeHUD();
 
-  const facing = player.facing;
   const origin = new THREE.Vector3(
-    player.pos.x + Math.sin(facing) * 1.2,
-    1.2,
-    player.pos.z + Math.cos(facing) * 1.2,
+    player.pos.x + Math.sin(player.facing) * 0.8,
+    1.5,
+    player.pos.z + Math.cos(player.facing) * 0.8,
   );
-
-  const mesh = new THREE.Mesh(_chargeGeo, _chargeMat.clone());
+  // Reuse shared geometry + material (defined at module level).
+  const mesh = new THREE.Mesh(_grenadeGeo, _grenadeMat);
   mesh.castShadow = true;
   mesh.position.copy(origin);
-  // Orient the arrow along the facing direction
-  mesh.rotation.y = -facing;
+  // NO per-grenade PointLight — adding/removing lights changes the
+  // scene's light count which invalidates ALL shader caches. Instead
+  // we use a single persistent _grenadeLight (see updateGrenades).
 
-  const dirX = Math.sin(facing);
-  const dirZ = Math.cos(facing);
-
+  const vx = Math.sin(player.facing) * w.speed;
+  const vz = Math.cos(player.facing) * w.speed;
+  const vy = w.arc;
   mesh.userData = {
-    vel: new THREE.Vector3(dirX * w.speed, 0, dirZ * w.speed),
-    life: w.lifetime || 1.8,
-    damage: w.damage,
+    vel: new THREE.Vector3(vx, vy, vz),
+    life: w.fuse,
+    bounces: 0,
     color: w.color,
-    pierceCount: 0,
-    maxPierce: w.maxPierce || 10,
-    hitSet: new Set(), // track which enemies we've already hit
+    explosionRadius: w.explosionRadius,
+    explosionDamage: w.explosionDamage,
+    spin: new THREE.Vector3(
+      Math.random() * 6 - 3,
+      Math.random() * 6 - 3,
+      Math.random() * 6 - 3,
+    ),
   };
   scene.add(mesh);
-  _chargeArrows.push(mesh);
-
-  // Green flash + trail burst at origin
-  hitBurst(origin, 0x00ff66, 6);
-  Audio.shot && Audio.shot('raygun');   // energy zap sfx
-  shake(0.15, 0.1);
+  _grenades.push(mesh);
+  Audio.shot && Audio.shot('shotgun');   // throwing thump — reuses shotgun sfx
 }
 
 function updateGrenades(dt) {
   if (S.grenadeCooldown > 0) S.grenadeCooldown = Math.max(0, S.grenadeCooldown - dt);
 
-  for (let i = _chargeArrows.length - 1; i >= 0; i--) {
-    const a = _chargeArrows[i];
-    const ud = a.userData;
+  for (let i = _grenades.length - 1; i >= 0; i--) {
+    const g = _grenades[i];
+    const ud = g.userData;
     ud.life -= dt;
 
-    // Move
-    a.position.x += ud.vel.x * dt;
-    a.position.z += ud.vel.z * dt;
+    // Tumble visual
+    g.rotation.x += ud.spin.x * dt;
+    g.rotation.y += ud.spin.y * dt;
+    g.rotation.z += ud.spin.z * dt;
 
-    // Trail sparkle every few frames
-    if (Math.random() < 0.3) {
-      hitBurst(a.position, 0x00ff66, 1);
+    // Gravity + integrate
+    ud.vel.y -= GRENADE_GRAVITY * dt;
+    g.position.x += ud.vel.x * dt;
+    g.position.y += ud.vel.y * dt;
+    g.position.z += ud.vel.z * dt;
+
+    // Ground bounce (up to 2 bounces, then detonate on next contact)
+    if (g.position.y < 0.22) {
+      g.position.y = 0.22;
+      if (ud.bounces < 2 && ud.life > 0.15) {
+        ud.vel.y = Math.abs(ud.vel.y) * 0.45;       // lose energy
+        ud.vel.x *= 0.55;
+        ud.vel.z *= 0.55;
+        ud.bounces += 1;
+      } else {
+        _detonateGrenade(g);
+        scene.remove(g);
+        _grenades.splice(i, 1);
+        continue;
+      }
     }
 
-    // Arena bounds — despawn
+    // Arena clamp (explode if we'd leave)
     const lim = ARENA - 0.5;
-    if (Math.abs(a.position.x) > lim || Math.abs(a.position.z) > lim || ud.life <= 0) {
-      // Final burst on despawn
-      hitBurst(a.position, 0x00ff66, 4);
-      scene.remove(a);
-      if (a.material !== _chargeMat) a.material.dispose();
-      _chargeArrows.splice(i, 1);
+    if (g.position.x > lim || g.position.x < -lim || g.position.z > lim || g.position.z < -lim) {
+      _detonateGrenade(g);
+      scene.remove(g);
+      _grenades.splice(i, 1);
       continue;
     }
 
-    // Pierce enemies
-    const PIERCE_R2 = 1.8 * 1.8; // hit radius squared
-    for (let j = enemies.length - 1; j >= 0; j--) {
-      const e = enemies[j];
-      if (!e || !e.pos || ud.hitSet.has(e)) continue;
-      const dx = e.pos.x - a.position.x;
-      const dz = e.pos.z - a.position.z;
-      if (dx * dx + dz * dz < PIERCE_R2) {
-        ud.hitSet.add(e);
-        ud.pierceCount++;
-        // Damage — bosses take reduced
-        const dmg = e.isBoss ? ud.damage * 0.4 : ud.damage;
-        e.hp -= dmg;
-        e.hitFlash = 0.2;
-        hitBurst(new THREE.Vector3(e.pos.x, 1.2, e.pos.z), 0x00ff66, 4);
-        if (e.hp <= 0) killEnemy(j);
-        // Max pierces reached — despawn
-        if (ud.pierceCount >= ud.maxPierce) {
-          hitBurst(a.position, 0x00ff66, 8);
-          scene.remove(a);
-          if (a.material !== _chargeMat) a.material.dispose();
-          _chargeArrows.splice(i, 1);
-          break;
-        }
-      }
-    }
-
-    // Also pierce spawners (hives)
-    if (S.spawnerWaveActive || (S.bossRef && S.bossRef.shielded) || S.tutorialMode) {
-      for (const s of spawners) {
-        if (s.destroyed || ud.hitSet.has(s)) continue;
-        const dx = s.pos.x - a.position.x;
-        const dz = s.pos.z - a.position.z;
-        if (dx * dx + dz * dz < 4) {
-          ud.hitSet.add(s);
-          damageSpawner(s, 15);
-        }
-      }
-    }
-
-    // Pierce mining blocks
-    if (S.miningActive) {
-      for (let b = blocks.length - 1; b >= 0; b--) {
-        const block = blocks[b];
-        if (block.falling || ud.hitSet.has(block)) continue;
-        const dx = block.pos.x - a.position.x;
-        const dz = block.pos.z - a.position.z;
-        if (dx * dx + dz * dz < 2.5) {
-          ud.hitSet.add(block);
-          const hit = damageBlockAt(block.pos.x, block.pos.z, 30);
-          if (hit && hit.destroyed) onBlockMined();
-        }
-      }
+    // Fuse expired — detonate mid-air
+    if (ud.life <= 0) {
+      _detonateGrenade(g);
+      scene.remove(g);
+      _grenades.splice(i, 1);
+      continue;
     }
   }
 }
 
+function _detonateGrenade(g) {
+  // Reuse explodeRocket's AoE by shaping the grenade's userData the same
+  // way. explodeRocket reads `explosionRadius`, `explosionDamage`, `color`.
+  explodeRocket(g);
+}
+
 function _syncGrenadeHUD() {
   const el = document.querySelector('.slot[data-slot="grenade"] .label');
-  if (el) el.textContent = `CHARGE (${S.grenadeCharges || 0})`;
+  if (el) el.textContent = `GRENADE (${S.grenadeCharges || 0})`;
   const slot = document.querySelector('.slot[data-slot="grenade"]');
   if (slot) {
     slot.classList.toggle('owned', (S.grenadeCharges || 0) > 0);
   }
 }
 
-// Restock charges on every new wave (and on game start).
+// Restock grenades on every new wave (and on game start).
 export function refillGrenades() {
   S.grenadeCharges = WEAPONS.grenade.maxCharges;
   S.grenadeCooldown = 0;

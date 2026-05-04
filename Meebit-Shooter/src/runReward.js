@@ -325,8 +325,7 @@ function _fillSegments(xp, xpNext) {
 
 // Rainbow ore colors matching the 6 chapter palette, spread across 10 segments
 function _segColor(i) {
-  const colors = ['#ff6a1a','#ff2e4d','#ff2e4d','#ffd93d','#ffd93d','#00ff66','#00ff66','#4ff7ff','#4ff7ff','#e63aff'];
-  return colors[i % colors.length];
+  return '#ffd93d';
 }
 
 function _animateBarTo(before, addedOre) {
@@ -422,7 +421,7 @@ function _injectStyles() {
 .rr-level-badge{background:linear-gradient(135deg,#ffd93d,#ffaa00);color:#000;box-shadow:0 0 12px rgba(255,217,61,.6);transition:transform .3s}
 .rr-level-badge.rr-level-pop{animation:rr-pop .5s ease-out}
 .rr-next-badge{background:rgba(255,255,255,.12);color:#666;border:1px solid #444}
-.rr-bar-track{flex:1;height:22px;display:flex;gap:3px;background:rgba(0,0,0,.5);border:2px solid #333;border-radius:6px;padding:3px;box-shadow:inset 0 2px 6px rgba(0,0,0,.6)}
+.rr-bar-track{flex:1;height:22px;display:flex;gap:3px;background:rgba(0,0,0,.5);border:2px solid #665520;border-radius:6px;padding:3px;box-shadow:inset 0 2px 6px rgba(0,0,0,.6)}
 .rr-seg{flex:1;border-radius:3px;background:rgba(255,255,255,.06);transition:background .5s ease-out,box-shadow .5s ease-out}
 .rr-xp-text{font-size:11px;letter-spacing:3px;color:#888;margin-top:-4px}
 .rr-balance{font-size:14px;letter-spacing:4px;color:#ffd93d;text-shadow:0 0 8px rgba(255,217,61,.4);display:flex;align-items:center;gap:6px}
