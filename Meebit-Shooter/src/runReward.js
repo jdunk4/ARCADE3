@@ -240,7 +240,9 @@ export function showRunReward(stats, callbacks = {}) {
     else { const orig = document.getElementById('restart-btn'); if (orig) orig.click(); }
   });
   el.querySelector('#rr-btn-avatar').addEventListener('click', () => {
-    _teardownAndRestore();
+    // Don't teardown — keep the reward overlay in the DOM. The callback
+    // hides #gameover; when the avatar picker closes it re-shows gameover
+    // and the reward overlay is still there.
     if (callbacks.onAvatar) callbacks.onAvatar();
   });
   el.querySelector('#rr-btn-menu').addEventListener('click', () => {

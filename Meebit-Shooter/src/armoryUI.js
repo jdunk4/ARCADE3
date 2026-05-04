@@ -17,6 +17,7 @@
 
 import { Save } from './save.js';
 import { getOreBalance } from './runReward.js';
+import { S } from './state.js';
 import {
   ARMORY_WEAPON_IDS,
   ARMORY_WEAPON_META,
@@ -128,6 +129,39 @@ export function openArmory() {
   }
 
   _render();
+  // Inject chapter-tinted matrix rain into the armory background
+  try {
+    const rainEl = overlay.querySelector('.matrix-bg');
+    if (rainEl) {
+      const chapterIdx = (typeof S !== 'undefined' && S.chapter) ? S.chapter : 0;
+      const chapterColors = ['#ff6a1a','#ff2e4d','#ffd93d','#00ff66','#4ff7ff','#e63aff','#eeeeee'];
+      const tintColor = chapterColors[chapterIdx % chapterColors.length] || '#00ff66';
+      rainEl.style.opacity = '0.12';
+      if (!rainEl.dataset.populated) {
+        rainEl.dataset.populated = '1';
+        const RAIN_CHARS = '\u30A2\u30A4\u30A6\u30A8\u30AA\u30AB\u30AD\u30AF\u30B1\u30B3\u30B5\u30B7\u30B9\u30BB\u30BD01234ORE';
+        const colCount = Math.max(12, Math.floor((overlay.clientWidth || 800) / 16));
+        for (let i = 0; i < colCount; i++) {
+          const col = document.createElement('div');
+          col.className = 'matrix-col';
+          col.style.left = (i * 16) + 'px';
+          col.style.animationDuration = (2.5 + Math.random() * 4) + 's';
+          col.style.animationDelay = (-Math.random() * 4) + 's';
+          col.style.color = tintColor;
+          col.style.textShadow = '0 0 4px ' + tintColor;
+          let text = '';
+          for (let j = 0; j < 30 + Math.random() * 20; j++) text += RAIN_CHARS[Math.floor(Math.random() * RAIN_CHARS.length)] + '\n';
+          col.textContent = text;
+          rainEl.appendChild(col);
+        }
+      } else {
+        for (const col of rainEl.querySelectorAll('.matrix-col')) {
+          col.style.color = tintColor;
+          col.style.textShadow = '0 0 4px ' + tintColor;
+        }
+      }
+    }
+  } catch (_) {}
   // Audio cue — repurpose the level-up chime as a "screen open" sound.
   // No dedicated armory open SFX yet; this is close enough sonically.
   try { Audio.levelup && Audio.levelup(); } catch (_) {}
@@ -177,7 +211,7 @@ function _render() {
 
   // Header XP.
   const xpEl = document.getElementById('armory-xp-amount');
-  if (xpEl) xpEl.textContent = (getOreBalance() || 0).toLocaleString();
+  if (xpEl) xpEl.innerHTML = '<span style="display:inline-block;width:16px;height:16px;background:conic-gradient(#ff6a1a,#ff2e4d,#ffd93d,#00ff66,#4ff7ff,#e63aff,#ff6a1a);clip-path:polygon(50% 0%,100% 25%,100% 75%,50% 100%,0% 75%,0% 25%);vertical-align:middle;margin-right:6px"></span>' + (getOreBalance() || 0).toLocaleString();
 
   // Player tracks.
   const playerEl = document.getElementById('armory-player-tracks');

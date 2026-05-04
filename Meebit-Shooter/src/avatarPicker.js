@@ -299,6 +299,8 @@ function _updateUI(loadText) {
   }
   const ld = el('ap-loading');
   if (ld) ld.textContent = loadText || '';
+  const oreHeader = el('ap-ore-header');
+  if (oreHeader) oreHeader.textContent = getOreBalance().toLocaleString() + ' ORE';
 
   // Set 3D scene lighting mood
   _setPreviewMood(!unlocked && av.id !== 'meebit');
@@ -538,7 +540,7 @@ function _buildUI() {
 '@media(max-width:600px){.ap-main{height:clamp(250px,50vh,400px)}.ap-btn{font-size:14px;padding:10px 24px}}' +
 '</style>' +
 '<div class="ap-title">SWITCH AVATAR</div>' +
-'<div class="ap-sub">:: SELECT YOUR OPERATIVE ::</div>' +
+'<div class="ap-sub">:: SELECT YOUR OPERATIVE ::  <span style="display:inline-block;width:12px;height:12px;background:conic-gradient(#ff6a1a,#ff2e4d,#ffd93d,#00ff66,#4ff7ff,#e63aff,#ff6a1a);clip-path:polygon(50% 0%,100% 25%,100% 75%,50% 100%,0% 75%,0% 25%);vertical-align:middle;margin:0 4px"></span><span id="ap-ore-header" style="color:#ffd93d;letter-spacing:2px"></span></div>' +
 '<div class="ap-main">' +
 '  <div class="ap-arrow" id="ap-prev">\u25C0</div>' +
 '  <div class="ap-preview" id="ap-preview">' +
