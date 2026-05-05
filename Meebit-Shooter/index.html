@@ -477,9 +477,17 @@
   if (soloBtn) {
     soloBtn.addEventListener('click', function() {
       if (modal) modal.classList.remove('open');
-      // Hide title screen — ID is 'title', not 'title-screen'
+      // Hide ALL possible overlays
       var ts = document.getElementById('title');
       if (ts) { ts.classList.add('hidden'); ts.style.display = 'none'; }
+      var ld = document.getElementById('loading');
+      if (ld) ld.style.display = 'none';
+      var md = document.getElementById('matrix-dive');
+      if (md) md.remove();
+      var hp = document.getElementById('hyperdrive-overlay');
+      if (hp) hp.remove();
+      var ip = document.getElementById('initiate-protocol');
+      if (ip) ip.remove();
       // Start endless glyphs via the module bridge
       if (window.__startEndlessGlyphs) {
         window.__startEndlessGlyphs(1);
