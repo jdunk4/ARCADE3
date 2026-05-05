@@ -116,6 +116,7 @@ export function startEndlessGlyphs(playerCount = 1) {
   // resetGame() clears S.endlessGlyphs — re-seed our flags AFTER reset.
   // (Same trick startTutorial uses for S.tutorialMode.)
   S.endlessGlyphs = true;
+  S.running = true;  // CRITICAL: game loop gates everything behind S.running
   S.endlessPlayerCount = Math.max(1, Math.min(3, playerCount | 0));
   S.endlessWave = 0;
   S.endlessPhase = 'LOBBY_PREP';
