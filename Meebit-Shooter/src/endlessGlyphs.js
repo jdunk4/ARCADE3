@@ -341,26 +341,19 @@ let _pendingWaveNum = 1;
  */
 function _prepareWave(waveNum) {
   _pendingWaveNum = waveNum;
-  // Wave 1 = 18 enemies, +2 per subsequent wave (rough escalation).
-  // Caps at 60 by wave 22+ so the screen doesn't completely fill.
-  const count = Math.min(60, 18 + (waveNum - 1) * 2);
+  // Use maze config for enemy count — wave 1 has 0, scaling up through 10
+  const mazeConfig = getMazeConfig(waveNum);
+  const count = mazeConfig.enemyCount;
   _waveTotalCount = count;
   _waveSpawnQueue = count;
   _waveSpawnedSoFar = 0;
-  // Spawn cadence — early waves are slow drip, later waves stack
-  // pressure. ~2.5s/spawn at wave 1, down to 0.6s by wave 30.
-  let cadence = Math.max(0.6, 2.5 - (waveNum - 1) * 0.07);
-  // Per playtester: "For waves 4 & 5 can we make the enemies spawn a
-  // bit faster? We need to overwhelm the player." Apply a 0.65× multi
-  // (35% faster) to those specific waves so the chapter-1 cap
-  // (waves 1-5 share the INFERNO mix) ends with real pressure before
-  // the chapter-2 transition. After wave 5 the natural curve takes
-  // over again.
-  if (waveNum === 4 || waveNum === 5) {
-    cadence *= 0.65;
-  }
+  // Spawn cadence — enemies drip in slowly at first, faster later.
+  // Wave 1 has 0 enemies so cadence doesn't matter. Later waves
+  // get faster spawns as the maze gets harder.
+  const localWave = mazeConfig.localWave;
+  let cadence = Math.max(0.8, 3.0 - localWave * 0.2);
   _waveSpawnGap = cadence;
-  _waveSpawnTimer = 0.5;          // first spawn after a short delay
+  _waveSpawnTimer = 1.5;  // delay before first spawn — give player time to orient
 }
 
 /**
@@ -433,34 +426,39 @@ function _enterWave(waveNum) {
 
 function _tickWave(dt) {
   // ---- MAZE PUZZLE TICK ----
-  // Update glyph bobbing animation
   updateMazeGlyphs(dt);
 
-  // Check player proximity to glyphs and exit
   if (player && player.pos) {
     const result = tickMazePuzzle(player.pos, dt);
     if (result.collected !== null) {
-      // Glyph collected — show toast
-      Audio.shot && Audio.shot('pickaxe');
-      UI.toast('GLYPH ' + (result.found) + '/' + result.total, '#00ff66', 1200);
+      try { Audio.shot && Audio.shot('pickaxe'); } catch (_) {}
+      UI.toast('GLYPH ' + result.found + '/' + result.total, '#00ff66', 1200);
     }
-    if (result.allFound && !result.exitReached) {
-      // All glyphs found — show hint to find exit
-      _setWaveHUD('WAVE ' + S.endlessWave, 'EXIT OPEN — FIND THE PORTAL');
+    // HUD — show glyph progress + enemy count
+    const aliveCount = enemies.length;
+    if (result.total > 0) {
+      const glyphStatus = result.found + '/' + result.total + ' GLYPHS';
+      const exitHint = result.allFound ? ' · EXIT OPEN' : '';
+      _setWaveHUD(
+        'WAVE ' + S.endlessWave,
+        glyphStatus + exitHint + (aliveCount > 0 ? ' · ' + aliveCount + ' ENEMIES' : ''),
+      );
+    } else {
+      // Boss wave (no glyphs) — show enemy count only
+      _setWaveHUD('WAVE ' + S.endlessWave, aliveCount + ' ENEMIES');
     }
     if (result.exitReached) {
-      // Wave cleared! Save progress and advance.
       saveMazeProgress(S.endlessWave);
       clearMaze(scene);
-      Audio.shot && Audio.shot('raygun');
+      try { Audio.shot && Audio.shot('raygun'); } catch (_) {}
       UI.toast('WAVE ' + S.endlessWave + ' CLEARED', '#4ff7ff', 2000);
       _enterWaveDissolve();
       return;
     }
   }
 
-  // Spawn loop — drip-feed enemies from the arena edge until the
-  // queue is empty.
+  // Enemy spawn loop — drip-feed enemies into the maze corridors.
+  // Wave 1 has 0 enemies (maze config), so this loop is a no-op.
   if (_waveSpawnQueue > 0) {
     _waveSpawnTimer -= dt;
     if (_waveSpawnTimer <= 0) {
@@ -471,25 +469,14 @@ function _tickWave(dt) {
     }
   }
 
-  // HUD: show remaining alive count when spawning is done, otherwise
-  // show "spawned/total" + alive count.
-  const aliveCount = enemies.length;
-  _setWaveHUD(
-    'WAVE ' + S.endlessWave,
-    _waveSpawnQueue > 0
-      ? aliveCount + ' ALIVE · ' + _waveSpawnQueue + ' INCOMING'
-      : aliveCount + ' LEFT',
-  );
-
-  // Wave-end check: all spawned + nothing alive → enter dissolve
-  // animation phase. The dissolve animation transforms the wave's
-  // walls into an autoglyph pattern on the floor (Ship 3 of 3 from
-  // playtester: "at the end of the wave the floorplan goes into the
-  // floor and disassembles into the autoglyph example formats").
-  // After the animation completes, _tickWaveDissolve advances to
-  // next wave / intermission / victory.
-  if (_waveSpawnQueue === 0 && aliveCount === 0) {
-    _enterWaveDissolve();
+  // Boss wave special: if no glyphs, wave ends when boss is dead
+  const mazeConfig = getMazeConfig(S.endlessWave);
+  if (mazeConfig.isBoss && mazeConfig.glyphCount === 0) {
+    if (_waveSpawnQueue === 0 && enemies.length === 0) {
+      clearMaze(scene);
+      UI.toast('BOSS DEFEATED · CHAPTER CLEAR', '#ffd93d', 3000);
+      _enterWaveDissolve();
+    }
   }
 }
 
@@ -515,17 +502,16 @@ function _enterWaveDissolve() {
 function _tickWaveDissolve(dt) {
   const stillAnimating = tickDissolve(dt);
   if (stillAnimating) return;
-  // Animation finished — advance the run state machine to whatever
-  // would have happened if we'd skipped the dissolve.
-  if (S.endlessWave >= 30) {
+  // Animation finished — advance the run state machine.
+  // Intermission every 10 waves (end of chapter). Victory at wave 60.
+  // After 60, cycles endlessly (no victory cap).
+  if (S.endlessWave >= 60) {
     _enterVictory();
-  } else if (S.endlessWave % 5 === 0) {
+  } else if (S.endlessWave % 10 === 0) {
+    // Chapter complete — intermission with ore reward
     _enterIntermission();
   } else {
-    // Roll directly into the next wave WITHOUT a tile transition
-    // (transitions are reserved for the 5-wave intermission boundary).
-    // _enterWaveAssemble runs the construction animation; the actual
-    // WAVE phase begins when assembly completes.
+    // Next wave in the same chapter — roll directly into assembly.
     S.endlessWave += 1;
     _prepareWave(S.endlessWave);
     _enterWaveAssemble(S.endlessWave);
@@ -533,21 +519,23 @@ function _tickWaveDissolve(dt) {
 }
 
 /**
- * Endless Glyphs wave → chapter mapping. Waves 1-5 mirror chapter 1
- * (INFERNO orange, pumpkinheads + ants), 6-10 chapter 2 (CRIMSON red,
- * vampires/devils), and so on through to waves 26-30 = chapter 6.
- * Per playtester: "I think I want to mirror chapter color and enemy
- * types in the main game for the waves in Endless glyphs... for
- * waves 1-5 we need pumpkin heads. for waves 6-10 we need vampires
- * devils zomeebs mummies. so on and so forth until wave 30."
+ * Endless Glyphs wave → chapter mapping. 10 waves per chapter:
+ *   waves  1-10  → ch0 INFERNO (orange, tetris, zomeebs + sprinters)
+ *   waves 11-20  → ch1 CRIMSON (red, galaga, + vampires + red_devils)
+ *   waves 21-30  → ch2 SOLAR   (yellow, minesweeper, + wizards)
+ *   waves 31-40  → ch3 TOXIC   (green, pacman, + goospitters)
+ *   waves 41-50  → ch4 ARCTIC  (blue, pong, + ghosts)
+ *   waves 51-60  → ch5 PARADISE(purple, donkey kong, + mixed)
+ * After wave 60, cycles back to ch0 with scaled-up difficulty.
  *
  * @param {number} waveNum  endless wave number, 1-30
  * @returns {number}        chapter index 0-5 for use with CHAPTERS
  *                           and waveEnemyMix
  */
 function _waveToChapterIdx(waveNum) {
-  // waves 1-5 → 0, 6-10 → 1, ..., 26-30 → 5
-  return Math.max(0, Math.min(5, Math.floor((waveNum - 1) / 5)));
+  // 10 waves per chapter: waves 1-10 → 0, 11-20 → 1, ..., 51-60 → 5
+  // Cycles back after 60 for infinite play
+  return Math.floor((waveNum - 1) / 10) % 6;
 }
 
 /**
