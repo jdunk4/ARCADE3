@@ -138,6 +138,14 @@
       </div>
     </div>
   </div>
+  <script>
+  // Force-unlock Endless Glyphs — no prerequisite needed
+  (function() {
+    var g = document.getElementById('mode-card-glyphs');
+    if (g) g.classList.remove('locked');
+    try { localStorage.setItem('mbs_attack_completed_v1', '1'); } catch(e) {}
+  })();
+  </script>
 
   <!-- Real CTAs (hidden — clicked programmatically by the cards above). -->
   <button class="cta" id="start-btn" style="display:none;">ATTACK THE AI</button>
