@@ -477,9 +477,9 @@
   if (soloBtn) {
     soloBtn.addEventListener('click', function() {
       if (modal) modal.classList.remove('open');
-      // Hide title screen
-      var ts = document.getElementById('title-screen');
-      if (ts) ts.style.display = 'none';
+      // Hide title screen — ID is 'title', not 'title-screen'
+      var ts = document.getElementById('title');
+      if (ts) { ts.classList.add('hidden'); ts.style.display = 'none'; }
       // Start endless glyphs via the module bridge
       if (window.__startEndlessGlyphs) {
         window.__startEndlessGlyphs(1);
