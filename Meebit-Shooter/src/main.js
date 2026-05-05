@@ -116,6 +116,7 @@ import { showRunReward, hideRunReward } from './runReward.js';
 import { getRunStones, clearRunStones } from './avatarShards.js';
 import { initAsciiVision, activateAsciiVision, isAsciiActive, updateAsciiVision, renderAsciiPass, onAsciiEnemyKill, asciiDamageOverride } from './asciiVision.js';
 import { playVO, tickVO, playRandomVO } from './vo.js';
+import { startEndlessGlyphs, updateEndlessGlyphs, exitEndlessGlyphs } from './endlessGlyphs.js';
 import {
   beginStratagemInput, endStratagemInput, pushStratagemArrow,
   pushStratagemVariantKey,
@@ -3663,6 +3664,36 @@ document.getElementById('restart-btn').addEventListener('click', () => {
   startGame();
 });
 
+// ---- ENDLESS GLYPHS ----
+// Wire the glyphs-btn to open the player-count modal, and the SOLO
+// button inside the modal to start the run.
+{
+  const glyphsBtn = document.getElementById('glyphs-btn');
+  const modal = document.getElementById('glyphs-player-modal');
+  if (glyphsBtn && modal) {
+    glyphsBtn.addEventListener('click', () => {
+      modal.style.display = 'flex';
+    });
+    // SOLO button
+    const soloBtn = modal.querySelector('.glyphs-pcount-btn[data-count="1"]');
+    if (soloBtn) {
+      soloBtn.addEventListener('click', () => {
+        modal.style.display = 'none';
+        Audio.init();
+        _exitTutorialIfActive();
+        startEndlessGlyphs(1);
+      });
+    }
+    // Cancel button
+    const cancelBtn = document.getElementById('glyphs-modal-cancel');
+    if (cancelBtn) {
+      cancelBtn.addEventListener('click', () => {
+        modal.style.display = 'none';
+      });
+    }
+  }
+}
+
 // ---- ARMORY UI ----
 // Wires the title-screen ⚙ ARMORY button + close handlers. The
 // armoryUI module is purely DOM-side (no game-loop participation),
@@ -4186,6 +4217,7 @@ function animate() {
     updateBlocks(worldDt);
     updateAsciiVision(worldDt);
     tickVO(worldDt);
+    updateEndlessGlyphs(worldDt);
     // Chapter 1 reflow — animate cannon (reticle spin, hum, fire flash)
     // and queen-hive shield domes (pulse + pop). Both are no-ops when
     // their entities don't exist (chapters 2-7).
