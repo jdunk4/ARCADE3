@@ -436,56 +436,67 @@
      works; co-op is a future feature." Solo button starts the run;
      2P/3P buttons are visibly listed but disabled with a "COMING
      SOON" caption so the multiplayer story is clearly future-work. -->
-<div id="glyphs-player-modal" style="display:none; position:fixed; inset:0; z-index:9000; background:rgba(0,0,0,0.85); align-items:center; justify-content:center; flex-direction:column;">
-  <div style="font-family:'Impact','Arial Black',sans-serif; font-size:48px; letter-spacing:6px; color:#4aa8ff; text-shadow:0 0 20px rgba(74,168,255,0.6); margin-bottom:8px;">ENDLESS GLYPHS</div>
-  <div style="font-family:'Courier New',monospace; font-size:13px; letter-spacing:3px; color:#88c0ff; margin-bottom:36px;">▸ SELECT SQUAD SIZE ◂</div>
-  <div style="display:flex; gap:18px;">
-    <button class="glyphs-pcount-btn" data-count="1" style="min-width:140px; padding:18px 12px; background:rgba(20,30,60,0.8); border:2px solid #4aa8ff; border-radius:6px; color:#fff; font-family:'Impact','Arial Black',sans-serif; font-size:18px; letter-spacing:3px; cursor:pointer; transition:background 0.15s, border-color 0.15s;">SOLO</button>
-    <button class="glyphs-pcount-btn" data-count="2" disabled style="min-width:140px; padding:18px 12px; background:rgba(15,15,15,0.7); border:2px solid #444; border-radius:6px; color:#666; font-family:'Impact','Arial Black',sans-serif; font-size:18px; letter-spacing:3px; cursor:not-allowed; opacity:0.55;">2 PLAYERS<br><span style="font-size:9px; letter-spacing:2px; color:#888;">COMING SOON</span></button>
-    <button class="glyphs-pcount-btn" data-count="3" disabled style="min-width:140px; padding:18px 12px; background:rgba(15,15,15,0.7); border:2px solid #444; border-radius:6px; color:#666; font-family:'Impact','Arial Black',sans-serif; font-size:18px; letter-spacing:3px; cursor:not-allowed; opacity:0.55;">3 PLAYERS<br><span style="font-size:9px; letter-spacing:2px; color:#888;">COMING SOON</span></button>
-  </div>
-  <button id="glyphs-modal-cancel" style="margin-top:36px; padding:10px 24px; background:transparent; border:1px solid #666; color:#aaa; font-family:'Courier New',monospace; font-size:11px; letter-spacing:3px; cursor:pointer;">CANCEL</button>
+<div id="glyphs-player-modal" style="display:none;">
+  <style>
+    #glyphs-player-modal {
+      position: fixed; inset: 0; z-index: 999999;
+      background: rgba(0,0,0,0.95);
+      display: none;
+      align-items: center; justify-content: center; flex-direction: column;
+    }
+    #glyphs-player-modal.open { display: flex !important; }
+    #glyphs-player-modal h1 { font-family:'Impact','Arial Black',sans-serif; font-size:48px; letter-spacing:6px; color:#4aa8ff; text-shadow:0 0 20px rgba(74,168,255,0.6); margin:0 0 8px 0; }
+    #glyphs-player-modal .sub { font-family:'Courier New',monospace; font-size:13px; letter-spacing:3px; color:#88c0ff; margin-bottom:36px; }
+    #glyphs-player-modal .solo-btn { min-width:180px; padding:20px 16px; background:rgba(20,30,60,0.8); border:2px solid #4aa8ff; border-radius:6px; color:#fff; font-family:'Impact','Arial Black',sans-serif; font-size:20px; letter-spacing:4px; cursor:pointer; }
+    #glyphs-player-modal .solo-btn:hover { background:#4aa8ff; color:#000; }
+    #glyphs-player-modal .cancel-btn { margin-top:36px; padding:10px 24px; background:transparent; border:1px solid #666; color:#aaa; font-family:'Courier New',monospace; font-size:11px; letter-spacing:3px; cursor:pointer; }
+    #glyphs-player-modal .cancel-btn:hover { border-color:#aaa; color:#fff; }
+  </style>
+  <h1>ENDLESS GLYPHS</h1>
+  <div class="sub">▸ MAZE ESCAPE MODE ◂</div>
+  <button class="solo-btn" id="glyphs-solo-btn">▶ SOLO</button>
+  <button class="cancel-btn" id="glyphs-cancel-btn">CANCEL</button>
 </div>
 <script>
-// Wire Endless Glyphs modal — inline so it works regardless of module load order
 (function() {
-  var btn = document.getElementById('glyphs-btn');
   var modal = document.getElementById('glyphs-player-modal');
-  var cancel = document.getElementById('glyphs-modal-cancel');
+  var glyphsBtn = document.getElementById('glyphs-btn');
+  var soloBtn = document.getElementById('glyphs-solo-btn');
+  var cancelBtn = document.getElementById('glyphs-cancel-btn');
 
-  if (btn && modal) {
-    btn.addEventListener('click', function(e) {
-      e.stopPropagation(); // prevent any parent handlers
-      // Only open the modal — don't start the game, don't fade the title
-      modal.style.display = 'flex';
+  // Open modal when the hidden glyphs-btn is clicked (forwarded from card)
+  if (glyphsBtn) {
+    glyphsBtn.addEventListener('click', function(e) {
+      e.preventDefault();
+      e.stopPropagation();
+      if (modal) modal.classList.add('open');
     });
   }
-  if (cancel && modal) {
-    cancel.addEventListener('click', function() {
-      modal.style.display = 'none';
-    });
-  }
-  // SOLO button — waits for the module bridge to be ready
-  var solo = modal && modal.querySelector('.glyphs-pcount-btn[data-count="1"]');
-  if (solo) {
-    solo.addEventListener('click', function() {
-      modal.style.display = 'none';
-      // Hide the title screen
-      var title = document.getElementById('title-screen');
-      if (title) title.style.display = 'none';
+
+  // SOLO — start the game
+  if (soloBtn) {
+    soloBtn.addEventListener('click', function() {
+      if (modal) modal.classList.remove('open');
+      // Hide title screen
+      var ts = document.getElementById('title-screen');
+      if (ts) ts.style.display = 'none';
+      // Start endless glyphs via the module bridge
       if (window.__startEndlessGlyphs) {
         window.__startEndlessGlyphs(1);
       } else {
-        // Module not loaded yet — retry after a short delay
-        console.warn('[glyphs] waiting for module load...');
+        // Module still loading — retry
         setTimeout(function() {
-          if (window.__startEndlessGlyphs) {
-            window.__startEndlessGlyphs(1);
-          } else {
-            alert('Endless Glyphs is still loading. Please try again.');
-          }
-        }, 1000);
+          if (window.__startEndlessGlyphs) window.__startEndlessGlyphs(1);
+          else alert('Still loading — please try again.');
+        }, 2000);
       }
+    });
+  }
+
+  // Cancel — close modal
+  if (cancelBtn) {
+    cancelBtn.addEventListener('click', function() {
+      if (modal) modal.classList.remove('open');
     });
   }
 })();
