@@ -4217,7 +4217,7 @@ function animate() {
     updateBlocks(worldDt);
     updateAsciiVision(worldDt);
     tickVO(worldDt);
-    updateEndlessGlyphs(worldDt);
+    if (S.endlessGlyphs) updateEndlessGlyphs(worldDt);
     // Chapter 1 reflow — animate cannon (reticle spin, hum, fire flash)
     // and queen-hive shield domes (pulse + pop). Both are no-ops when
     // their entities don't exist (chapters 2-7).
