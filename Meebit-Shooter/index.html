@@ -452,21 +452,39 @@
   var btn = document.getElementById('glyphs-btn');
   var modal = document.getElementById('glyphs-player-modal');
   var cancel = document.getElementById('glyphs-modal-cancel');
+
   if (btn && modal) {
-    btn.addEventListener('click', function() { modal.style.display = 'flex'; });
+    btn.addEventListener('click', function(e) {
+      e.stopPropagation(); // prevent any parent handlers
+      // Only open the modal — don't start the game, don't fade the title
+      modal.style.display = 'flex';
+    });
   }
   if (cancel && modal) {
-    cancel.addEventListener('click', function() { modal.style.display = 'none'; });
+    cancel.addEventListener('click', function() {
+      modal.style.display = 'none';
+    });
   }
+  // SOLO button — waits for the module bridge to be ready
   var solo = modal && modal.querySelector('.glyphs-pcount-btn[data-count="1"]');
   if (solo) {
     solo.addEventListener('click', function() {
       modal.style.display = 'none';
-      // Bridge to endlessGlyphs.js — the module sets this on load
+      // Hide the title screen
+      var title = document.getElementById('title-screen');
+      if (title) title.style.display = 'none';
       if (window.__startEndlessGlyphs) {
         window.__startEndlessGlyphs(1);
       } else {
-        console.warn('[glyphs] startEndlessGlyphs not available yet');
+        // Module not loaded yet — retry after a short delay
+        console.warn('[glyphs] waiting for module load...');
+        setTimeout(function() {
+          if (window.__startEndlessGlyphs) {
+            window.__startEndlessGlyphs(1);
+          } else {
+            alert('Endless Glyphs is still loading. Please try again.');
+          }
+        }, 1000);
       }
     });
   }
