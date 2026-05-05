@@ -117,9 +117,32 @@ export function startEndlessGlyphs(playerCount = 1) {
   if (ipEl) { ipEl.style.display = 'none'; ipEl.remove(); }
 
   // UNDER CONSTRUCTION — show the placeholder and return early.
-  // Remove this block when the maze mode is ready to play.
+  _savedPlayerCount = playerCount;
   _showConstructionOverlay();
   return;
+}
+
+let _savedPlayerCount = 1;
+
+/** The real game startup — called when the hidden code is entered. */
+function _realStartEndlessGlyphs(playerCount) {
+  S.endlessPlayerCount = Math.max(1, Math.min(3, playerCount | 0));
+  S.endlessGlyphs = true;
+  S.endlessWave = 0;
+  S.endlessPhase = 'LOBBY_PREP';
+  S.endlessPhaseT = 0;
+  S.endlessKills = 0;
+  S.endlessVictory = false;
+  if (S.tutorialMode) { S.tutorialMode = false; setTutorialActive(false); }
+  Audio.stopPhoneRing && Audio.stopPhoneRing();
+  Audio.stopCDrone && Audio.stopCDrone();
+  Audio.stopDeathMusic && Audio.stopDeathMusic();
+  Audio.setMusicSection && Audio.setMusicSection('endless_glyphs');
+  try { Audio.startMusic && Audio.startMusic(1); } catch (e) {}
+  // Hide ALL overlays
+  ['title','loading'].forEach(id => { const e = document.getElementById(id); if (e) { e.classList.add('hidden'); e.style.display = 'none'; } });
+  ['matrix-dive','hyperdrive-overlay','initiate-protocol'].forEach(id => { const e = document.getElementById(id); if (e) e.remove(); });
+
   document.querySelectorAll('.hidden-ui').forEach(el => el.style.display = '');
   // Endless Glyphs hides the chapter/wave/kills HUD top bar (those
   // numbers don't apply here; we'll show our own wave indicator).
@@ -323,6 +346,30 @@ function _showConstructionOverlay() {
   document.getElementById('ec-back-btn').addEventListener('click', () => {
     exitEndlessGlyphs();
   });
+
+  // Hidden stratagem code: ↑ ↑ ↓ ↓ ← → (arrow keys)
+  // No visible hint — only devs/testers who know the code can bypass.
+  const SECRET_SEQ = ['ArrowUp', 'ArrowUp', 'ArrowDown', 'ArrowDown', 'ArrowLeft', 'ArrowRight'];
+  let seqIdx = 0;
+
+  function _onCodeKey(e) {
+    if (e.key === SECRET_SEQ[seqIdx]) {
+      seqIdx++;
+      if (seqIdx >= SECRET_SEQ.length) {
+        // Code entered — bypass!
+        document.removeEventListener('keydown', _onCodeKey);
+        _removeConstructionOverlay();
+        _realStartEndlessGlyphs(_savedPlayerCount || 1);
+      }
+    } else {
+      // Wrong key — reset sequence silently
+      seqIdx = 0;
+      // But check if this key starts the sequence
+      if (e.key === SECRET_SEQ[0]) seqIdx = 1;
+    }
+  }
+  document.addEventListener('keydown', _onCodeKey);
+  el._cleanupCode = () => document.removeEventListener('keydown', _onCodeKey);
 }
 
 function _removeConstructionOverlay() {
