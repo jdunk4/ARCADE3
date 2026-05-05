@@ -24,6 +24,7 @@ import {
 } from './meebits.js';
 import { spawnBlock, clearAllBlocks, blocks } from './blocks.js';
 import { spawnEggsInDepotWedge, clearAllEggs } from './eggs.js';
+import { playVO, playRandomVO } from './vo.js';
 import {
   hasCannon, getCannonOrigin, getCannonCooldown,
   loadChargeSlot, armCannon, aimCannonAt, tryFireCannon, forceFireCannon, setCannonChargeProgress,
@@ -340,6 +341,8 @@ export function startWave(waveNum) {
     const herdDef = chapterForHerd.bonusHerd;
     S.bonusWaveActive = true;
     S.bonusCaughtThisWave = 0;
+    // VO — bonus wave callout
+    playVO('whats_shaking', 0.5);
     startBonusWave(S.chapter, chapterForHerd.full.grid1, _onBonusCaught)
       .catch(err => console.warn('[waves] bonus wave start failed:', err));
     UI.toast(
@@ -365,6 +368,7 @@ export function startWave(waveNum) {
       const chapterTint = CHAPTERS[S.chapter % CHAPTERS.length].full.grid1;
       UI.showBossBar(label, chapterTint);
       UI.toast(label + ' APPROACHES', '#ff2e4d', 2000);
+      playRandomVO(['god_speed', 'five_four'], 0.8);
     }
   } else if (waveDef.type === 'mining') {
     // WAVE 1 — MINING. Depot is ALREADY spawned by prepareChapter — just
@@ -552,6 +556,7 @@ export function startWave(waveNum) {
       _lbl.destroyDesc
     );
     UI.toast(_lbl.exposeToast, '#ff3cac', 2500);
+    playVO('shields_collapsing', 0.3);
   } else if (waveDef.type === 'cannon-load') {
     // WAVE 2 (chapter 1 reflow) — charge delivery + cannon barrage.
     // Player picks up 4 charges from depot in one trip, walks to
@@ -1605,6 +1610,7 @@ export function updateWaves(dt) {
       triggerCannonSink();
       setCh1Wave2PropsRemoved(true);
       UI.toast('SHIELDS DOWN — QUEEN EXPOSED', '#ff3cac', 2200);
+      playVO('shields_down', 0.5);
       endWave();
       return;
     }

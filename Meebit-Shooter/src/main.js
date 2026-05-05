@@ -115,6 +115,7 @@ import { openAvatarPicker } from './avatarPicker.js';
 import { showRunReward, hideRunReward } from './runReward.js';
 import { getRunStones, clearRunStones } from './avatarShards.js';
 import { initAsciiVision, activateAsciiVision, isAsciiActive, updateAsciiVision, renderAsciiPass, onAsciiEnemyKill, asciiDamageOverride } from './asciiVision.js';
+import { playVO, tickVO, playRandomVO } from './vo.js';
 import {
   beginStratagemInput, endStratagemInput, pushStratagemArrow,
   pushStratagemVariantKey,
@@ -2363,7 +2364,11 @@ function _cycleWeapon(dir) {
 function _togglePauseKey() {
   if (!S.running) return;
   S.paused = !S.paused;
-  if (S.paused) PauseMenu.show();
+  if (S.paused) {
+    PauseMenu.show();
+    // 20% chance of snarky pause VO
+    playRandomVO(['are_you_pausing'], 0.2);
+  }
   else PauseMenu.hide();
 }
 
@@ -3358,6 +3363,12 @@ function gameOver() {
     }
   }
   document.getElementById('final-score').textContent = S.score.toLocaleString();
+  // VO — announce SIGNAL LOST. High-kill games get the special line.
+  if (S.kills >= 200) {
+    playVO('never_seen', 0.5, true);
+  } else {
+    playVO('signal_lost', 0.3, true);
+  }
   document.getElementById('final-wave').textContent = S.wave;
   document.getElementById('final-kills').textContent = S.kills;
   const fr = document.getElementById('final-rescues');
@@ -4174,6 +4185,7 @@ function animate() {
     updatePickups(worldDt);
     updateBlocks(worldDt);
     updateAsciiVision(worldDt);
+    tickVO(worldDt);
     // Chapter 1 reflow — animate cannon (reticle spin, hum, fire flash)
     // and queen-hive shield domes (pulse + pop). Both are no-ops when
     // their entities don't exist (chapters 2-7).
@@ -6456,6 +6468,10 @@ function bumpKillstreak() {
   if (S.killstreak > (S.killstreakBest || 0)) {
     S.killstreakBest = S.killstreak;
   }
+  // VO killstreak callouts
+  if (S.killstreak === 10) playVO('cluster_clear');
+  else if (S.killstreak === 25) playVO('rampage');
+  else if (S.killstreak === 50) playVO('god_like');
   // Overdrive trigger — one-shot per streak. The triggered flag is
   // reset when the streak drops back to 0, so breaking and rebuilding
   // a 100-streak earns another overdrive.
@@ -6525,6 +6541,7 @@ function enterOverdrive() {
   shake(0.8, 0.5);
   try { Audio.shot('rocket'); } catch (e) {}
   UI.toast('⚡ OVERDRIVE ⚡', '#ffd060', 2500);
+  playVO('overdrive', 0.3);
 }
 
 function exitOverdrive() {
