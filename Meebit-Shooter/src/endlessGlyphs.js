@@ -43,6 +43,10 @@ import { generateWallsForWave, clearWalls, getWalls } from './endlessWalls.js';
 import { startDissolve, tickDissolve, cancelDissolve } from './endlessDissolve.js';
 import { startAssemble, tickAssemble, cancelAssemble } from './endlessAssemble.js';
 import { grantArtifact } from './stratagems.js';
+import { generateMaze, getMazeConfig, cellToWorld } from './mazeGenerator.js';
+import { buildMaze, clearMaze, updateMazeGlyphs, getGlyphWorldPositions, isNearExit, areAllGlyphsCollected, getCollectedCount, getGlyphCount } from './mazeRenderer.js';
+import { initMazePuzzle, tickMazePuzzle, saveMazeProgress, getMazeWave } from './mazePuzzles.js';
+import { UI } from './ui.js';
 
 // =====================================================================
 // PUBLIC API
@@ -225,6 +229,7 @@ export function exitEndlessGlyphs() {
   // the title screen would inherit the dim ambient.
   _exitDarkMode();
   clearWalls();
+  clearMaze(scene);  // Clean up maze geometry
   _disposeLocker();
   _disposeWaveHUD();
   clearAllEnemies();
@@ -389,6 +394,24 @@ function _enterWaveAssemble(waveNum) {
   // the active chapter even though no chapter props spawn.
   generateWallsForWave(waveNum, _waveTrimColor(waveNum));
   startAssemble(getWalls());
+
+  // ---- MAZE PUZZLE ----
+  // Generate and render the maze for this wave. The maze walls coexist
+  // with the existing endless walls — the maze is the puzzle overlay,
+  // the endless walls are the arena boundary.
+  const chapterIdx = Math.floor((waveNum - 1) / 10) % CHAPTERS.length;
+  const chapterTint = CHAPTERS[chapterIdx].full.grid1;
+  const mazeData = generateMaze(waveNum);
+  buildMaze(mazeData, scene, chapterTint);
+  initMazePuzzle(mazeData);
+
+  // Teleport player to maze spawn
+  const spawnWorld = cellToWorld(mazeData.spawn.col, mazeData.spawn.row, mazeData.cols, mazeData.rows);
+  if (player && player.pos) {
+    player.pos.x = spawnWorld.x;
+    player.pos.z = spawnWorld.z;
+  }
+
   _setWaveHUD('WAVE ' + waveNum, 'ASSEMBLING');
 }
 
@@ -409,6 +432,33 @@ function _enterWave(waveNum) {
 }
 
 function _tickWave(dt) {
+  // ---- MAZE PUZZLE TICK ----
+  // Update glyph bobbing animation
+  updateMazeGlyphs(dt);
+
+  // Check player proximity to glyphs and exit
+  if (player && player.pos) {
+    const result = tickMazePuzzle(player.pos, dt);
+    if (result.collected !== null) {
+      // Glyph collected — show toast
+      Audio.shot && Audio.shot('pickaxe');
+      UI.toast('GLYPH ' + (result.found) + '/' + result.total, '#00ff66', 1200);
+    }
+    if (result.allFound && !result.exitReached) {
+      // All glyphs found — show hint to find exit
+      _setWaveHUD('WAVE ' + S.endlessWave, 'EXIT OPEN — FIND THE PORTAL');
+    }
+    if (result.exitReached) {
+      // Wave cleared! Save progress and advance.
+      saveMazeProgress(S.endlessWave);
+      clearMaze(scene);
+      Audio.shot && Audio.shot('raygun');
+      UI.toast('WAVE ' + S.endlessWave + ' CLEARED', '#4ff7ff', 2000);
+      _enterWaveDissolve();
+      return;
+    }
+  }
+
   // Spawn loop — drip-feed enemies from the arena edge until the
   // queue is empty.
   if (_waveSpawnQueue > 0) {
@@ -1211,3 +1261,24 @@ function _disposeLocker() {
   // Hide + dispose the proximity UI panel too.
   _disposeLockerPanel();
 }
+
+// =====================================================================
+// DEV CHEAT — unlock Endless Glyphs from the browser console.
+// Type: window.__unlockGlyphs() in the console, then refresh.
+// Also: press Shift+G on the title screen to unlock instantly.
+// =====================================================================
+window.__unlockGlyphs = function () {
+  try {
+    localStorage.setItem('mbs_attack_completed_v1', '1');
+    const card = document.getElementById('mode-card-glyphs');
+    if (card) card.classList.remove('locked');
+    console.log('[DEV] Endless Glyphs UNLOCKED. Refresh if the card is still locked.');
+  } catch (e) { console.warn(e); }
+};
+
+// Shift+G shortcut on title screen
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'G' && e.shiftKey) {
+    window.__unlockGlyphs();
+  }
+});
