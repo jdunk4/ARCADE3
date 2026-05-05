@@ -97,7 +97,7 @@ let _scratchScale = new THREE.Vector3();
 /**
  * Begin the dissolve animation.
  *
- * @param {Array<{x,z,w,h}>} walls   wall AABBs from endlessWalls.js
+ * @param {Array<{x,z,w,h}>} walls   wall AABBs from mazeRenderer.getMazeWallEntries()
  * @param {number} waveSeed          seed for autoglyph generation
  *                                   (typically waveNum * some prime)
  */

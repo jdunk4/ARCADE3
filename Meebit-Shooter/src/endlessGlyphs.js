@@ -39,13 +39,13 @@ import { hitBurst } from './effects.js';
 import { enemies, makeEnemy, clearAllEnemies } from './enemies.js';
 import { player } from './player.js';
 import { WEAPONS, CHAPTERS } from './config.js';
-import { generateWallsForWave, clearWalls, getWalls } from './endlessWalls.js';
 import { startDissolve, tickDissolve, cancelDissolve } from './endlessDissolve.js';
 import { startAssemble, tickAssemble, cancelAssemble } from './endlessAssemble.js';
 import { grantArtifact } from './stratagems.js';
 import { generateMaze, getMazeConfig, cellToWorld } from './mazeGenerator.js';
-import { buildMaze, clearMaze, updateMazeGlyphs, getGlyphWorldPositions, isNearExit, areAllGlyphsCollected, getCollectedCount, getGlyphCount } from './mazeRenderer.js';
+import { buildMaze, clearMaze, updateMazeGlyphs, getGlyphWorldPositions, isNearExit, areAllGlyphsCollected, getCollectedCount, getGlyphCount, getMazeWallEntries } from './mazeRenderer.js';
 import { initMazePuzzle, tickMazePuzzle, saveMazeProgress, getMazeWave } from './mazePuzzles.js';
+import { spawnPortal, clearAllPortals, spawners } from './spawners.js';
 import { UI } from './ui.js';
 
 // =====================================================================
@@ -288,8 +288,8 @@ export function exitEndlessGlyphs() {
   cancelDissolve();
   cancelAssemble();
   _exitDarkMode();
-  clearWalls();
   clearMaze(scene);
+  try { clearAllPortals(); } catch (_) {}
   _disposeLocker();
   _disposeWaveHUD();
   clearAllEnemies();
@@ -535,6 +535,10 @@ let _waveTotalCount = 0;
 let _waveSpawnedSoFar = 0;
 let _pendingWaveNum = 1;
 let _mazeBuilt = false;
+// Module-scope ref to the current wave's MazeData so _spawnWaveEnemy
+// can place enemies at the maze cells the generator chose. Cleared
+// when the maze dissolves.
+let _activeMazeData = null;
 
 /**
  * Compute the spawn config for a wave. Called by tile-transition
@@ -575,37 +579,42 @@ function _prepareWave(waveNum) {
 function _enterWaveAssemble(waveNum) {
   S.endlessPhase = 'WAVE_ASSEMBLE';
   S.endlessPhaseT = 0;
-  // Dark mode on — the assemble particles read better against a dim
-  // arena (the cyan emissive really pops), and gameplay phases all
-  // share the chapter-7-style ambience. _enterDarkMode is idempotent
-  // so calling between back-to-back wave assembles is harmless.
+  // Dark mode on — the assemble particles read against a dim arena.
   _enterDarkMode();
-  // Generate the walls now — they'll be visually invisible until the
-  // assemble animation fades them in. The wall meshes need to exist
-  // in the scene before startAssemble runs because the assemble code
-  // grabs material refs from them.
-  // Trim color reflects the wave's mapped chapter — orange for waves
-  // 1-5, red for 6-10, etc. Reads as the floorplan being themed for
-  // the active chapter even though no chapter props spawn.
-  generateWallsForWave(waveNum, _waveTrimColor(waveNum));
-  startAssemble(getWalls());
 
-  // ---- MAZE PUZZLE ----
-  // Generate and render the maze for this wave. The maze walls coexist
-  // with the existing endless walls — the maze is the puzzle overlay,
-  // the endless walls are the arena boundary.
-  const chapterIdx = Math.floor((waveNum - 1) / 10) % CHAPTERS.length;
+  // ---- MAZE BUILD ----
+  // Generate the maze and render it before kicking off the assembly.
+  // The assemble animation flips every wall material's opacity to 0
+  // and fades them in over ~2s, so the meshes need to be in the
+  // scene first.
+  const chapterIdx = _waveToChapterIdx(waveNum);
   const chapterTint = CHAPTERS[chapterIdx].full.grid1;
   const mazeData = generateMaze(waveNum);
   buildMaze(mazeData, scene, chapterTint);
   initMazePuzzle(mazeData);
   _mazeBuilt = true;
+  _activeMazeData = mazeData;
 
-  // Teleport player to maze spawn
+  // Particles assemble onto every maze wall (regular + mining).
+  startAssemble(getMazeWallEntries());
+
+  // Teleport player to maze spawn cell.
   const spawnWorld = cellToWorld(mazeData.spawn.col, mazeData.spawn.row, mazeData.cols, mazeData.rows);
   if (player && player.pos) {
     player.pos.x = spawnWorld.x;
     player.pos.z = spawnWorld.z;
+  }
+
+  // Spawn hives at the cells the generator chose for this wave (only
+  // wave 7+). Existing main-loop updateSpawners() drips enemies out
+  // of these portals; the wave clears when the player collects every
+  // glyph and walks to the exit.
+  try { clearAllPortals(); } catch (_) {}
+  if (mazeData.hiveSpawns && mazeData.hiveSpawns.length > 0) {
+    for (const h of mazeData.hiveSpawns) {
+      const w = cellToWorld(h.col, h.row, mazeData.cols, mazeData.rows);
+      try { spawners.push(spawnPortal(w.x, w.z, chapterIdx)); } catch (_) {}
+    }
   }
 
   _setWaveHUD('WAVE ' + waveNum, 'ASSEMBLING');
@@ -628,9 +637,7 @@ function _enterWave(waveNum) {
 }
 
 function _tickWave(dt) {
-  // Guard — maze must exist before ticking puzzle
   if (!_mazeBuilt) return;
-  // ---- MAZE PUZZLE TICK ----
   updateMazeGlyphs(dt);
 
   if (player && player.pos) {
@@ -639,22 +646,20 @@ function _tickWave(dt) {
       try { Audio.shot && Audio.shot('pickaxe'); } catch (_) {}
       UI.toast('GLYPH ' + result.found + '/' + result.total, '#00ff66', 1200);
     }
-    // HUD — show glyph progress + enemy count
+    // HUD — glyph progress is the win condition. Enemy count + hive
+    // count are flavor; the wave ends only when the player reaches
+    // the exit with every glyph collected.
     const aliveCount = enemies.length;
-    if (result.total > 0) {
-      const glyphStatus = result.found + '/' + result.total + ' GLYPHS';
-      const exitHint = result.allFound ? ' · EXIT OPEN' : '';
-      _setWaveHUD(
-        'WAVE ' + S.endlessWave,
-        glyphStatus + exitHint + (aliveCount > 0 ? ' · ' + aliveCount + ' ENEMIES' : ''),
-      );
-    } else {
-      // Boss wave (no glyphs) — show enemy count only
-      _setWaveHUD('WAVE ' + S.endlessWave, aliveCount + ' ENEMIES');
-    }
+    const liveHives = spawners.filter(s => !s.destroyed).length;
+    const glyphStatus = result.found + '/' + result.total + ' GLYPHS';
+    const exitHint = result.allFound ? ' · EXIT OPEN' : '';
+    let suffix = '';
+    if (aliveCount > 0) suffix += ' · ' + aliveCount + ' ENEMIES';
+    if (liveHives > 0) suffix += ' · ' + liveHives + (liveHives === 1 ? ' HIVE' : ' HIVES');
+    _setWaveHUD('WAVE ' + S.endlessWave, glyphStatus + exitHint + suffix);
+
     if (result.exitReached) {
       saveMazeProgress(S.endlessWave);
-      clearMaze(scene);
       try { Audio.shot && Audio.shot('raygun'); } catch (_) {}
       UI.toast('WAVE ' + S.endlessWave + ' CLEARED', '#4ff7ff', 2000);
       _enterWaveDissolve();
@@ -662,8 +667,9 @@ function _tickWave(dt) {
     }
   }
 
-  // Enemy spawn loop — drip-feed enemies into the maze corridors.
-  // Wave 1 has 0 enemies (maze config), so this loop is a no-op.
+  // Enemy spawn drip — pre-placed patrol enemies (mazeData.enemySpawns)
+  // come in at their authored cells. Wave 1 has 0 enemies; later
+  // waves drip them at _waveSpawnGap intervals.
   if (_waveSpawnQueue > 0) {
     _waveSpawnTimer -= dt;
     if (_waveSpawnTimer <= 0) {
@@ -671,16 +677,6 @@ function _tickWave(dt) {
       _waveSpawnQueue--;
       _waveSpawnedSoFar++;
       _waveSpawnTimer = _waveSpawnGap;
-    }
-  }
-
-  // Boss wave special: if no glyphs, wave ends when boss is dead
-  const mazeConfig = getMazeConfig(S.endlessWave);
-  if (mazeConfig.isBoss && mazeConfig.glyphCount === 0) {
-    if (_waveSpawnQueue === 0 && enemies.length === 0) {
-      clearMaze(scene);
-      UI.toast('BOSS DEFEATED · CHAPTER CLEAR', '#ffd93d', 3000);
-      _enterWaveDissolve();
     }
   }
 }
@@ -694,12 +690,16 @@ function _tickWave(dt) {
 function _enterWaveDissolve() {
   S.endlessPhase = 'WAVE_DISSOLVE';
   S.endlessPhaseT = 0;
-  // Capture the wall list BEFORE clearing — startDissolve uses the
-  // AABBs to seed particle origins. The walls then immediately vanish
-  // (their meshes are gone) and the particle cloud takes over the
-  // visual representation.
-  const wallSnapshot = getWalls().map(w => ({ x: w.x, z: w.z, w: w.w, h: w.h }));
-  clearWalls();
+  // Snapshot the maze wall AABBs for the particle source, then clear
+  // the meshes — startDissolve does its own particle pass independent
+  // of the wall meshes' lifetime.
+  const wallSnapshot = getMazeWallEntries().map(w => ({ x: w.x, z: w.z, w: w.w, h: w.h }));
+  clearMaze(scene);
+  _mazeBuilt = false;
+  _activeMazeData = null;
+  // Hives go away with the maze.
+  try { clearAllPortals(); } catch (_) {}
+  clearAllEnemies();
   startDissolve(wallSnapshot, S.endlessWave);
   _setWaveHUD('WAVE ' + S.endlessWave + ' COMPLETE', 'DISSOLVING');
 }
@@ -794,25 +794,33 @@ function _pickFromMix(mix) {
 }
 
 /**
- * Spawn a single wave enemy at the arena edge. Uses the wave→chapter
- * mix for type selection and the chapter's enemyTint for color.
+ * Spawn a single wave enemy at one of the maze cells the generator
+ * picked for patrol. Falls back to a near-player ring spawn if no
+ * maze data is available (defensive — shouldn't happen in normal
+ * flow). Each spawn drains the next entry from mazeData.enemySpawns
+ * so each cell is used at most once per drip pass.
  */
 function _spawnWaveEnemy() {
   if (!player || !player.pos) return;
-  const angle = Math.random() * Math.PI * 2;
-  const dist = 16 + Math.random() * 6;
-  const ARENA = 50;
-  const px = player.pos.x;
-  const pz = player.pos.z;
-  const x = Math.max(-(ARENA - 2), Math.min(ARENA - 2, px + Math.cos(angle) * dist));
-  const z = Math.max(-(ARENA - 2), Math.min(ARENA - 2, pz + Math.sin(angle) * dist));
-  // Pick type from chapter-mapped mix.
-  const mix = _endlessEnemyMix(S.endlessWave);
-  const type = _pickFromMix(mix);
-  // Use the mapped chapter's tint for visual identity.
   const chapterIdx = _waveToChapterIdx(S.endlessWave);
   const tint = CHAPTERS[chapterIdx].full.enemyTint;
-  // HP scaling: ×1.05^(wave-1).
+  const mix = _endlessEnemyMix(S.endlessWave);
+  const type = _pickFromMix(mix);
+
+  let x, z;
+  if (_activeMazeData && _activeMazeData.enemySpawns && _activeMazeData.enemySpawns.length > 0) {
+    const cell = _activeMazeData.enemySpawns.shift();
+    const w = cellToWorld(cell.col, cell.row, _activeMazeData.cols, _activeMazeData.rows);
+    x = w.x; z = w.z;
+  } else {
+    // Fallback ring around the player.
+    const angle = Math.random() * Math.PI * 2;
+    const dist = 16 + Math.random() * 6;
+    const ARENA = 50;
+    x = Math.max(-(ARENA - 2), Math.min(ARENA - 2, player.pos.x + Math.cos(angle) * dist));
+    z = Math.max(-(ARENA - 2), Math.min(ARENA - 2, player.pos.z + Math.sin(angle) * dist));
+  }
+
   const e = makeEnemy(type, tint, new THREE.Vector3(x, 0, z));
   if (e) {
     const hpMul = Math.pow(1.05, S.endlessWave - 1);
@@ -820,18 +828,6 @@ function _spawnWaveEnemy() {
     e.hpMax = Math.round(e.hpMax * hpMul);
     hitBurst(new THREE.Vector3(x, 1.4, z), tint, 6);
   }
-}
-
-/**
- * Get the chapter trim color for the current endless wave's walls
- * + dissolve/assemble particle emissive. Per playtester: "Can we
- * color the top of the walls from cyan to match the chapter tint?
- * Waves 1-5 orange." Reads off CHAPTERS[chapterIdx].full.enemyTint
- * which already encodes the chapter's signature color.
- */
-function _waveTrimColor(waveNum) {
-  const idx = _waveToChapterIdx(waveNum);
-  return CHAPTERS[idx].full.enemyTint;
 }
 
 /**
@@ -844,12 +840,12 @@ function _waveTrimColor(waveNum) {
 function _enterIntermission() {
   S.endlessPhase = 'INTERMISSION';
   S.endlessPhaseT = 0;
-  // Walls already cleared by _enterWaveDissolve. Cancel any lingering
-  // dissolve / assemble particles in case the animation was still
-  // mid-flight when the wave-5 boundary triggered intermission.
+  // Maze meshes already cleared by _enterWaveDissolve. Cancel any
+  // lingering dissolve / assemble particles in case the animation
+  // was still mid-flight when the wave-10 boundary triggered.
   cancelDissolve();
   cancelAssemble();
-  clearWalls();
+  try { clearAllPortals(); } catch (_) {}
   // Dark mode off — intermission returns to the bright tutorial
   // lobby aesthetic so the player can comfortably scan the locker
   // and weapon options.

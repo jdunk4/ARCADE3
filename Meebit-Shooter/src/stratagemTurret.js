@@ -48,7 +48,7 @@ import { S } from './state.js';
 import { PARADISE_FALLEN_CHAPTER_IDX } from './config.js';
 import { player } from './player.js';
 import { isPiloting } from './mech.js';
-import { segmentBlockedByWall } from './endlessWalls.js';
+import { segmentBlockedByMazeWall } from './mazeRenderer.js';
 
 // =====================================================================
 // TUNING
@@ -578,7 +578,7 @@ export function updateTurrets(dt) {
         if (dx * dx + dz * dz > t.cfg.range * t.cfg.range) {
           t.target = null;
         } else if (S.endlessGlyphs &&
-                   segmentBlockedByWall(t.pos.x, t.pos.z,
+                   segmentBlockedByMazeWall(t.pos.x, t.pos.z,
                                         t.target.pos.x, t.target.pos.z)) {
           // Endless Glyphs — target ducked behind a wall since lock-on.
           // Drop the target so the turret stops streaming shots into
@@ -656,7 +656,7 @@ function _findClosestEnemy(pos, range) {
       // onto an enemy on the other side and stream shots into
       // the wall.
       if (checkLOS &&
-          segmentBlockedByWall(pos.x, pos.z, e.pos.x, e.pos.z)) {
+          segmentBlockedByMazeWall(pos.x, pos.z, e.pos.x, e.pos.z)) {
         continue;
       }
       bestD2 = d2;

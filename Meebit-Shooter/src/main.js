@@ -115,7 +115,7 @@ import { openAvatarPicker } from './avatarPicker.js';
 import { showRunReward, hideRunReward } from './runReward.js';
 import { getRunStones, clearRunStones } from './avatarShards.js';
 import { initAsciiVision, activateAsciiVision, isAsciiActive, updateAsciiVision, renderAsciiPass, onAsciiEnemyKill, asciiDamageOverride } from './asciiVision.js';
-import { isBlockedByWall } from './mazeRenderer.js';
+import { isBlockedByWall, segmentBlockedByMazeWall, resolveMazeCollision, damageMiningWallAt } from './mazeRenderer.js';
 import { playVO, tickVO, playRandomVO } from './vo.js';
 import { startEndlessGlyphs, updateEndlessGlyphs, exitEndlessGlyphs } from './endlessGlyphs.js';
 import {
@@ -4750,6 +4750,10 @@ function updatePlayer(dt) {
   player.pos.x = Math.max(-ARENA + 1.5, Math.min(ARENA - 1.5, player.pos.x));
   player.pos.z = Math.max(-ARENA + 1.5, Math.min(ARENA - 1.5, player.pos.z));
   resolveCollision(player.pos, 0.8);
+  // Endless Glyphs maze — corner-case safety net for when the
+  // axis-separated isBlockedByWall preflight allows a sliver of
+  // overlap (e.g. diagonal grazes near corners).
+  resolveMazeCollision(player.pos, 0.8);
   // Silo + turrets act as solid obstacles — push the player out if they'd
   // overlap either. No-ops when the compound isn't built or has retracted.
   resolveCompoundCollision(player.pos, 0.8);
@@ -6224,6 +6228,12 @@ function updateEnemies(dt) {
         if (S.hp <= 0) { S.hp = 0; UI.updateHUD(); gameOver(); return; }
       }
     }
+
+    // Endless Glyphs maze — push enemies out of any wall they're
+    // overlapping. The per-enemy AI does not know about maze walls,
+    // so this post-step resolution is what actually keeps them in
+    // the corridors. No-op when the maze isn't active.
+    resolveMazeCollision(e.pos, 0.55);
   }
 }
 
@@ -6247,6 +6257,17 @@ function updateBullets(dt) {
         if (hit && hit.destroyed) onBlockMined();
       }
       hitBurst(b.position, 0xffffff, 3);
+      scene.remove(b); bullets.splice(i, 1); continue;
+    }
+    // Endless Glyphs maze walls — block all projectiles. Mining gates
+    // take damage on hit; regular walls just absorb the shot.
+    if (segmentBlockedByMazeWall(prevX, prevZ, b.position.x, b.position.z)) {
+      const mineHit = damageMiningWallAt(b.position.x, b.position.z, MINING_CONFIG.bulletDamageToBlock);
+      if (mineHit.hit) {
+        hitBurst(b.position, mineHit.color || 0xffffff, mineHit.destroyed ? 14 : 4);
+      } else {
+        hitBurst(b.position, 0xffffff, 3);
+      }
       scene.remove(b); bullets.splice(i, 1); continue;
     }
     // Prop block — bullets despawn on silo/turret/depot/powerplant/radio
@@ -6852,7 +6873,8 @@ function updateEnemyProjectiles(dt) {
     }
 
     if (segmentBlocked(prevX, prevZ, p.position.x, p.position.z)
-        || segmentBlockedByProp(prevX, prevZ, p.position.x, p.position.z, /*isEnemy*/ true)) {
+        || segmentBlockedByProp(prevX, prevZ, p.position.x, p.position.z, /*isEnemy*/ true)
+        || segmentBlockedByMazeWall(prevX, prevZ, p.position.x, p.position.z)) {
       hitBurst(p.position, p.userData.color || 0x00ff66, 4);
       scene.remove(p); enemyProjectiles.splice(i, 1); continue;
     }
