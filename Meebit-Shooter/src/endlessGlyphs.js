@@ -115,7 +115,11 @@ export function startEndlessGlyphs(playerCount = 1) {
   // Initiate protocol ("SIMVOID >> BEGIN <<")
   const ipEl = document.getElementById('initiate-protocol');
   if (ipEl) { ipEl.style.display = 'none'; ipEl.remove(); }
-  // Show the game HUD.
+
+  // UNDER CONSTRUCTION — show the placeholder and return early.
+  // Remove this block when the maze mode is ready to play.
+  _showConstructionOverlay();
+  return;
   document.querySelectorAll('.hidden-ui').forEach(el => el.style.display = '');
   // Endless Glyphs hides the chapter/wave/kills HUD top bar (those
   // numbers don't apply here; we'll show our own wave indicator).
@@ -227,33 +231,107 @@ export function updateEndlessGlyphs(dt) {
 export function exitEndlessGlyphs() {
   if (!S.endlessGlyphs) return;
   S.endlessGlyphs = false;
+  S.running = false;
   S.endlessPhase = null;
   S.endlessWave = 0;
   S.endlessKills = 0;
   S.endlessVictory = false;
 
   restoreNormalFloor();
-  _restoreWaveFloor();             // also restore in case wave was active
+  _restoreWaveFloor();
   setTutorialActive(false);
   cancelDissolve();
   cancelAssemble();
-  // Defensive — atmosphere stays on between waves but gets explicitly
-  // turned off when leaving the mode. Without this, dropping back to
-  // the title screen would inherit the dim ambient.
   _exitDarkMode();
   clearWalls();
-  clearMaze(scene);  // Clean up maze geometry
+  clearMaze(scene);
   _disposeLocker();
   _disposeWaveHUD();
   clearAllEnemies();
+  _removeConstructionOverlay();
 
-  // Restore fog / shadows / lighting so the next mode the player
-  // picks doesn't inherit the lobby's flat no-fog look. Helper
-  // exposed by main.js — see _teardownEndlessCleanArena.
   if (typeof window.__teardownEndlessCleanArena === 'function') {
     try { window.__teardownEndlessCleanArena(); }
     catch (e) { console.warn('[glyphs] teardown', e); }
   }
+
+  // Return to main menu — show the title screen
+  const titleEl = document.getElementById('title');
+  if (titleEl) { titleEl.classList.remove('hidden'); titleEl.style.display = ''; }
+  // Stop music
+  Audio.stopPhoneRing && Audio.stopPhoneRing();
+  Audio.stopCDrone && Audio.stopCDrone();
+  try { Audio.stopMusic && Audio.stopMusic(); } catch (_) {}
+}
+
+// ---- UNDER CONSTRUCTION OVERLAY ----
+let _constructionEl = null;
+
+function _showConstructionOverlay() {
+  _removeConstructionOverlay();
+  const el = document.createElement('div');
+  el.id = 'endless-construction';
+  el.innerHTML = `
+    <style>
+      #endless-construction {
+        position: fixed; inset: 0; z-index: 99998;
+        background: rgba(0,0,0,0.88);
+        display: flex; align-items: center; justify-content: center;
+        flex-direction: column; font-family: 'Courier New', monospace;
+      }
+      #endless-construction .ec-icon { font-size: 80px; margin-bottom: 20px; }
+      #endless-construction h1 {
+        font-family: 'Impact','Arial Black',sans-serif;
+        font-size: 42px; letter-spacing: 6px; color: #ffd93d;
+        text-shadow: 0 0 20px rgba(255,217,61,0.5);
+        margin: 0 0 12px 0;
+      }
+      #endless-construction .ec-sub {
+        font-size: 14px; letter-spacing: 3px; color: #88c0ff;
+        margin-bottom: 8px; text-align: center; max-width: 500px;
+      }
+      #endless-construction .ec-detail {
+        font-size: 11px; letter-spacing: 2px; color: #666;
+        margin-bottom: 40px; text-align: center; max-width: 440px; line-height: 1.6;
+      }
+      #endless-construction .ec-btn {
+        font-family: 'Impact','Arial Black',sans-serif;
+        font-size: 18px; letter-spacing: 4px; padding: 16px 48px;
+        background: transparent; color: #4ff7ff; border: 2px solid #4ff7ff;
+        cursor: pointer; box-shadow: 0 0 12px rgba(79,247,255,0.3);
+        transition: all 0.15s;
+      }
+      #endless-construction .ec-btn:hover {
+        background: #4ff7ff; color: #000;
+        box-shadow: 0 0 30px rgba(79,247,255,0.6);
+      }
+    </style>
+    <div class="ec-icon">🚧</div>
+    <h1>UNDER CONSTRUCTION</h1>
+    <div class="ec-sub">ENDLESS GLYPHS — MAZE ESCAPE MODE</div>
+    <div class="ec-detail">
+      60 PROCEDURAL MAZE WAVES · 6 CHAPTERS<br>
+      COLLECT GLYPHS · SOLVE PUZZLES · ESCAPE THE MAZE<br>
+      ENEMIES PATROL · BOSSES EVERY 10 WAVES<br>
+      PROGRESS SAVES AFTER EACH WAVE
+    </div>
+    <button class="ec-btn" id="ec-back-btn">↩ MAIN MENU</button>
+  `;
+  document.body.appendChild(el);
+  _constructionEl = el;
+
+  document.getElementById('ec-back-btn').addEventListener('click', () => {
+    exitEndlessGlyphs();
+  });
+}
+
+function _removeConstructionOverlay() {
+  if (_constructionEl) {
+    _constructionEl.remove();
+    _constructionEl = null;
+  }
+  const stale = document.getElementById('endless-construction');
+  if (stale) stale.remove();
 }
 
 // =====================================================================
