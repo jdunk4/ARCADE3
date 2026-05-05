@@ -1,0 +1,443 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>MEEBIT :: SURVIVAL PROTOCOL</title>
+<link rel="stylesheet" href="src/styles.css" />
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🤖</text></svg>" />
+</head>
+<body>
+
+<!-- LOADING -->
+<div id="loading">
+  <div class="matrix-bg" id="matrix-bg-load"></div>
+  <div class="title">MEEBIT</div>
+  <div class="bar2"><div id="loadbar"></div></div>
+  <div class="log" id="loadlog">INITIALIZING PROTOCOL...</div>
+</div>
+
+<!-- INCOMING CALL SCREEN -->
+<div id="incoming-call" class="overlay hidden">
+  <div class="call-phone">
+    <div class="call-ring"></div>
+    <div class="call-ring"></div>
+    <div class="call-icon">📞</div>
+  </div>
+  <div class="call-name">THE SOURCE</div>
+  <div class="call-sub">:: INCOMING TRANSMISSION ::</div>
+  <div class="call-timer" id="call-timer">00:00</div>
+  <div class="call-buttons">
+    <button class="call-btn decline" id="call-decline">IGNORE</button>
+    <button class="call-btn accept" id="call-accept">ANSWER</button>
+  </div>
+</div>
+
+<!-- TITLE -->
+<div id="title" class="overlay hidden">
+  <div class="matrix-bg" id="matrix-bg-title"></div>
+
+  <!-- THREE-COLUMN ROW: tutorial card on the left, the title block
+       in the middle (title text + intro + save panel), ATTACK THE AI
+       on the right. This matches the Fortnite-style mode-select
+       layout the user requested where the chosen mode card flanks
+       the central artwork on either side.
+
+       Updated layout (v3 — three-card right stack):
+       Per playtester: "Can we make the cards on the main screen sit
+       on top of one another. The tutorial should be top card on
+       right. The main game ATTACK THE AI should be underneath it.
+       The Endless GLYPHS should be underneath that... We move the
+       title and information to the left. Armory connect wallet
+       underneath left side."
+
+       Left column (#title-left-col): title H1 + subtitle + control
+       hints + save panel — all the informational text. The ARMORY
+       and CONNECT WALLET buttons sit at the bottom of this column.
+
+       Right column (#title-right-stack): three landscape cards
+       stacked vertically — TUTORIAL on top, ATTACK THE AI middle,
+       ENDLESS GLYPHS bottom. -->
+  <div id="title-row">
+    <div id="title-left-col">
+      <!-- SIMVOID — game title. Per playtester: "SIMVOID. Can we
+           create a really cool graphic for this and place it on the
+           main page in place of Extinguish the Virus?"
+           
+           Two-part structure splits the word into SIM (sharper, brighter
+           green, reads as the synthetic / computational half) and VOID
+           (heavier, darker, recessed — reads as the emptiness it
+           describes). Per-letter spans inside each half allow individual
+           glitch animation. The 'simvoid-glyph' class on the O in VOID
+           triggers an overlay ring treatment turning it into a glyph
+           portal. All visual treatment is in CSS — see #simvoid-title
+           in styles.css. -->
+      <h1 id="simvoid-title" aria-label="SIMVOID">
+        <span class="simvoid-half simvoid-sim" aria-hidden="true">
+          <span class="simvoid-char">S</span><span class="simvoid-char">I</span><span class="simvoid-char">M</span>
+        </span>
+        <span class="simvoid-half simvoid-void" aria-hidden="true">
+          <span class="simvoid-char">V</span><span class="simvoid-char simvoid-glyph">O</span><span class="simvoid-char">I</span><span class="simvoid-char">D</span>
+        </span>
+      </h1>
+      <h2>:: OTHERSIDE DEPLOYMENT ::</h2>
+      <p>
+        THE GRID IS BREACHED. THE ZOMEEBS APPROACH.<br>
+        <b>MOVE</b> WASD <span class="mobile-only">/ JOYSTICK</span> &nbsp;|&nbsp; <b>AIM</b> MOUSE <span class="mobile-only">/ AUTO</span><br>
+        <b>FIRE</b> HOLD LMB &nbsp;|&nbsp; <b>Q</b> TOGGLE PICKAXE &nbsp;|&nbsp; <b>SPACE</b> DASH<br>
+        FREE CAGED MEEBITS · MINE FALLING BLOCKS · SURVIVE EACH CHAPTER
+      </p>
+
+      <!-- Saved progress -->
+      <div id="title-save-panel">
+        <div class="save-row"><span>HIGH SCORE</span><b id="title-highscore">0</b></div>
+        <div class="save-row"><span>FURTHEST</span><b id="title-highchap">1 · Wave 1</b></div>
+      </div>
+
+      <div id="mode-picker-hint">SELECT A GAME MODE</div>
+      <div id="mode-picker-desc"></div>
+
+      <!-- ARMORY + CONNECT WALLET buttons — moved into the left column
+           per playtester redesign. ARMORY opens the persistent upgrade
+           screen (overlay markup is below at #armory-overlay; wired by
+           armoryUI.js). CONNECT WALLET handles the Meebit linking flow
+           (canonical id is #link-meebits-btn; main.js also accepts the
+           legacy #connect-wallet-btn id as a fallback). -->
+      <div id="title-left-buttons">
+        <button class="wallet-btn" id="armory-btn" style="background:linear-gradient(135deg, #ff8800 0%, #ff3cac 100%); border-color:#ff8800;">⚙ ARMORY</button>
+        <button class="wallet-btn" id="avatar-btn" style="margin-top:8px; background:linear-gradient(135deg, #00ff66 0%, #6dff95 100%); border-color:#00ff66; color:#000;">👤 AVATAR</button>
+        <button class="wallet-btn" id="link-meebits-btn" style="margin-top:8px;">🦊 CONNECT WALLET</button>
+        <div style="font-size:10px; letter-spacing:2px; color:#888; margin-top:10px;">
+          OWN A MEEBIT? CONNECT TO PLAY AS YOUR OWN AVATAR
+        </div>
+      </div>
+    </div>
+
+    <div id="title-right-stack">
+      <!-- TUTORIAL — top of the stack. Always unlocked. Shape /
+           layout matches its siblings (landscape, ~1.6:1) so the
+           three cards read as one consistent column. -->
+      <div class="mode-card mode-card-landscape" id="mode-card-tutorial" data-target="tutorial-btn">
+        <div class="mode-card-img" style="background-image:url('assets/title_card_tutorial.png');"></div>
+        <div class="mode-card-rain"></div>
+        <div class="mode-card-label">TUTORIAL</div>
+      </div>
+      <!-- ATTACK THE AI — middle. Locked behind tutorial completion. -->
+      <div class="mode-card mode-card-landscape" id="mode-card-game" data-target="start-btn">
+        <div class="mode-card-img" style="background-image:url('assets/title_card_game.png');"></div>
+        <div class="mode-card-rain"></div>
+        <div class="mode-card-label">ATTACK THE AI</div>
+      </div>
+      <!-- ENDLESS GLYPHS — bottom. Locked behind ATTACK THE AI
+           completion. localStorage flag mbs_attack_completed_v1 = '1'
+           is set by main.js when the player beats chapter 6 wave 5. -->
+      <div class="mode-card mode-card-landscape" id="mode-card-glyphs" data-target="glyphs-btn">
+        <div class="mode-card-img mode-card-img-glyphs"></div>
+        <div class="mode-card-rain"></div>
+        <div class="mode-card-label">ENDLESS GLYPHS</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Real CTAs (hidden — clicked programmatically by the cards above). -->
+  <button class="cta" id="start-btn" style="display:none;">ATTACK THE AI</button>
+  <button class="cta cta-tutorial" id="tutorial-btn" style="display:none;">START TUTORIAL</button>
+  <!-- Glyphs CTA — clicked when the ENDLESS GLYPHS card is selected.
+       Opens the player-count picker modal (#glyphs-player-modal). -->
+  <button class="cta" id="glyphs-btn" style="display:none;">ENDLESS GLYPHS</button>
+
+  <script>
+  // Wire the mode-picker cards to the hidden CTA buttons. Hover sets
+  // the selected card; click forwards to the matching real button.
+  // Selection model: at most one card is .selected at a time. The
+  // description panel below shows that card's text.
+  (function () {
+    const cards = document.querySelectorAll('#title-row .mode-card');
+    const desc = document.getElementById('mode-picker-desc');
+    const DESCRIPTIONS = {
+      'tutorial-btn': 'TUTORIAL · LEARN THE GRID. NO DEATH. NO PRESSURE.',
+      'start-btn':    'ATTACK THE AI · 6 CHAPTERS. WAVES OF ZOMEEBS. NO MERCY.',
+      'glyphs-btn':   'ENDLESS GLYPHS · 30 WAVES OF ESCALATING SWARMS. SOLO OR SQUAD.',
+    };
+    function select(card) {
+      cards.forEach(c => c.classList.toggle('selected', c === card));
+      const target = card && card.dataset.target;
+      desc.textContent = target ? DESCRIPTIONS[target] : '';
+    }
+    cards.forEach(card => {
+      card.addEventListener('mouseenter', () => select(card));
+      card.addEventListener('click', () => {
+        select(card);
+        const target = card.dataset.target;
+        const btn = target && document.getElementById(target);
+        // Tiny visual delay so the selection highlight registers
+        // before the title screen fades.
+        setTimeout(() => { if (btn) btn.click(); }, 90);
+      });
+    });
+    // Default selection: ATTACK THE AI (the production game) is the
+    // featured card, mirroring Fortnite's BATTLE ROYALE focus.
+    const def = document.getElementById('mode-card-game');
+    if (def) select(def);
+
+    // -------------------------------------------------------------
+    // First-hover matrix rain on each card.
+    // -------------------------------------------------------------
+    // The first time the player hovers a card, we cascade bright
+    // green matrix-style columns through the .mode-card-rain container
+    // for ~1.6 seconds (the BURST), then the rain dims and stays
+    // running quietly forever (the AMBIENT). Re-hovering the same
+    // card later just re-triggers the rain ambient state — the
+    // bright burst only fires once per card per page-load, so it
+    // reads as a "discovery" moment, not a recurring effect.
+    const _firstHoverFired = new Set();
+    const RAIN_CHARS = 'アイウエオカキクケコサシスセソタチツテト01MEEBIT';
+    function _populateCardRain(rainEl, cardWidth) {
+      // Roughly one column every 18px — denser than the global
+      // backdrop rain (which uses 16px) since the foreground rain
+      // sits inside a much smaller box and needs to read clearly.
+      const colCount = Math.max(8, Math.floor(cardWidth / 18));
+      for (let i = 0; i < colCount; i++) {
+        const col = document.createElement('div');
+        col.className = 'matrix-col';
+        col.style.left = (i * 18) + 'px';
+        col.style.animationDuration = (2.5 + Math.random() * 4) + 's';
+        col.style.animationDelay = (-Math.random() * 4) + 's';
+        let text = '';
+        for (let j = 0; j < 25 + Math.random() * 18; j++) {
+          text += RAIN_CHARS[Math.floor(Math.random() * RAIN_CHARS.length)] + '\n';
+        }
+        col.textContent = text;
+        rainEl.appendChild(col);
+      }
+    }
+    cards.forEach(card => {
+      card.addEventListener('mouseenter', () => {
+        if (_firstHoverFired.has(card)) return;
+        _firstHoverFired.add(card);
+        const rainEl = card.querySelector('.mode-card-rain');
+        if (!rainEl) return;
+        // Build columns matched to the card's actual width so the
+        // density is correct on every viewport size (PC has wider
+        // cards than laptop/tablet).
+        _populateCardRain(rainEl, card.clientWidth || 480);
+        // Bright cascade burst — opacity 0.85 for ~1.6s, then dim
+        // to ambient (opacity 0.22) and stay there. Two-step CSS
+        // class transition is smoother than a single keyframe and
+        // lets us tweak each level independently.
+        rainEl.classList.add('active');
+        setTimeout(() => {
+          rainEl.classList.remove('active');
+          rainEl.classList.add('ambient');
+        }, 1600);
+      });
+    });
+  })();
+  </script>
+</div>
+
+<!-- ============================================================== -->
+<!-- ARMORY OVERLAY                                                   -->
+<!-- ============================================================== -->
+<!-- Persistent upgrade screen accessed from the title screen via the
+     ⚙ ARMORY button. armoryUI.js wires open/close + render. The grid
+     of weapon cards is built in JS from ARMORY_WEAPON_IDS so the layout
+     stays in sync with the data layer. The static markup below is just
+     the chrome (header + scaffolding). -->
+<div id="armory-overlay" class="overlay hidden" style="display:none;">
+  <div class="matrix-bg"></div>
+  <div id="armory-frame">
+    <div id="armory-header">
+      <div id="armory-title-block">
+        <h1>ARMORY</h1>
+        <div id="armory-sub">PERMANENT UPGRADES · SPEND ORE TO IMPROVE YOUR LOADOUT</div>
+      </div>
+      <div id="armory-xp-pill">
+        <div class="armory-xp-label">TOTAL ORE</div>
+        <div id="armory-xp-amount">0</div>
+      </div>
+      <button id="armory-close-btn" type="button">✕ CLOSE</button>
+    </div>
+
+    <!-- PLAYER UPGRADES STRIP — at top so the player is the first
+         thing they see. 2 tracks: HEALTH, SPEED. Each track has 5 pip
+         lights + a +UPGRADE button. -->
+    <div id="armory-player-section">
+      <div class="armory-section-title">PLAYER</div>
+      <div id="armory-player-tracks"></div>
+    </div>
+
+    <!-- WEAPONS GRID — 6 cards (chapter 1-6). Locked weapons show a
+         single UNLOCK button + their cost; unlocked weapons show 3
+         stat tracks (DAMAGE / FIRE RATE / CAPACITY). -->
+    <div id="armory-weapons-section">
+      <div class="armory-section-title">WEAPONS</div>
+      <div id="armory-weapons-grid"></div>
+    </div>
+
+    <div id="armory-footer-hint">
+      ORE IS EARNED AT THE END OF EACH RUN · UPGRADES PERSIST FOREVER
+    </div>
+  </div>
+</div>
+
+<!-- Persistent matrix rain -->
+<div id="matrix-rain-persistent"></div>
+
+<!-- GAME CANVAS -->
+<div id="game"></div>
+
+<!-- HUD -->
+<div id="hud-top" class="hidden-ui">
+  <div id="score-wrap">
+    <div id="score">0</div>
+    <div id="stats-row">
+      <span>CH: <b id="chap-num">1</b></span>
+      <span>WAVE: <b id="wave-num">1</b></span>
+      <span>TIME: <b id="time-num">0:00</b></span>
+      <span>KILLS: <b id="kill-num">0</b></span>
+    </div>
+  </div>
+</div>
+
+<div id="player-panel" class="hidden-ui">
+  <div id="avatar"><div class="glasses"></div></div>
+  <div id="player-info">
+    <div id="player-name">MEEBIT #16801</div>
+    <div class="bar-wrap">
+      <span class="bar-label">HP</span>
+      <div class="bar"><div class="bar-fill" id="hp-fill" style="width:100%"></div></div>
+    </div>
+    <div class="bar-wrap">
+      <span class="bar-label">XP</span>
+      <div class="bar"><div class="bar-fill" id="xp-fill" style="width:0%"></div></div>
+    </div>
+    <div style="font-size:11px; letter-spacing:2px; margin-top:2px;">
+      LVL <span id="lvl-num" style="color:var(--xp-yellow); font-weight:900;">1</span>
+      &nbsp;|&nbsp; WEAPON: <span id="weapon-name" style="color:var(--neon-cyan); font-weight:900;">PISTOL</span>
+    </div>
+    <!-- AMMO + RELOAD readout. The reload bar (#ammo-reload-bar) is
+         hidden by default and shown by ui.js while S.reloading is
+         true; the inner fill sweeps left→right over the reload
+         duration. The numeric counter (#ammo-count) shows e.g.
+         "12/12" — for non-reloadable weapons (lifedrainer, pickaxe)
+         ui.js hides the entire #ammo-row. -->
+    <div id="ammo-row" style="font-size:11px; letter-spacing:2px; margin-top:3px; display:flex; align-items:center; gap:8px; min-height:14px;">
+      <span style="opacity:0.7;">AMMO</span>
+      <span id="ammo-count" style="color:var(--neon-cyan); font-weight:900; min-width:46px;">--/--</span>
+      <span id="ammo-reload-label" style="display:none; color:var(--xp-yellow); font-weight:900;">RELOADING</span>
+      <div id="ammo-reload-bar" style="display:none; flex:1; height:6px; background:rgba(255,217,61,0.18); border:1px solid rgba(255,217,61,0.55); border-radius:3px; overflow:hidden;">
+        <div id="ammo-reload-fill" style="height:100%; width:0%; background:var(--xp-yellow); box-shadow:0 0 6px var(--xp-yellow);"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- BOSS HEALTH BAR -->
+<div id="boss-bar" class="hidden">
+  <div class="boss-name" id="boss-name">MEGA ZOMEEB</div>
+  <div class="boss-bar-outer">
+    <div class="boss-bar-fill" id="boss-bar-fill"></div>
+  </div>
+</div>
+
+<div id="inventory" class="hidden-ui">
+  <div class="slot active" data-slot="pistol">🔫<span class="label">PISTOL</span></div>
+  <div class="slot" data-slot="shotgun">💥<span class="label">SHOTGUN</span></div>
+  <div class="slot" data-slot="smg">⚡<span class="label">SMG</span></div>
+  <div class="slot" data-slot="rocket">🚀<span class="label">ROCKET</span></div>
+  <div class="slot" data-slot="raygun">🎯<span class="label">RAYGUN</span></div>
+  <div class="slot" data-slot="flamethrower">🔥<span class="label">FLAME</span></div>
+  <div class="slot owned" data-slot="pickaxe">⛏️<span class="label">PICKAXE [Q]</span></div>
+  <div class="slot owned" data-slot="grenade">💣<span class="label">GRENADE (3)</span></div>
+</div>
+
+<!-- WAVE BANNER -->
+<div id="wave-banner" class="hidden">
+  <div id="wave-banner-title">NEXT WAVE IN</div>
+  <div id="wave-banner-countdown">3</div>
+  <div id="wave-banner-sub">PREPARE YOURSELF</div>
+</div>
+
+<!-- OBJECTIVE -->
+<div id="objective" class="hidden">
+  <div class="obj-icon">📍</div>
+  <div class="obj-text">
+    <div class="obj-title" id="obj-title">CAPTURE THE DROP</div>
+    <div class="obj-sub" id="obj-sub">Navigate to the glowing zone</div>
+  </div>
+</div>
+
+<div id="toast"></div>
+<div id="levelup">LEVEL UP!</div>
+<div id="damage-flash"></div>
+
+<!-- MOBILE -->
+<div id="joystick" class="mobile-only"><div class="knob" id="knob"></div></div>
+<div id="fire-btn" class="mobile-only">FIRE</div>
+<div id="pick-btn" class="mobile-only">⛏</div>
+<div id="pal-btn" class="mobile-only">🤝</div>
+
+<div id="controls">
+  <b>WASD</b> MOVE<br>
+  <b>MOUSE</b> AIM<br>
+  <b>HOLD LMB</b> FIRE<br>
+  <b>SPACE</b> DASH<br>
+  <b>Q</b> PICKAXE<br>
+  <b>G</b> GRENADE<br>
+  <b>V</b> ASCII VISION<br>
+  <b>E</b> PIXL PAL<br>
+  <b>1/2/3/4/5/6</b> WEAPONS<br>
+  <b>ESC</b> PAUSE<br>
+  <b>🎮</b> CONTROLLER OK<br>
+  <div class="sound" id="sound-toggle">🔊 SOUND: ON</div>
+</div>
+
+<div id="gameover" class="overlay hidden">
+  <h1>SIGNAL LOST</h1>
+  <h2>:: CONNECTION TERMINATED ::</h2>
+  <div class="stats-final">
+    FINAL SCORE: <span id="final-score">0</span><br>
+    WAVE REACHED: <span id="final-wave">1</span><br>
+    KILLS: <span id="final-kills">0</span><br>
+    MEEBITS FREED THIS RUN: <span id="final-rescues">0</span><br>
+    <span style="color:var(--xp-yellow);">ORE EARNED: <span id="final-armory-xp" style="color:var(--xp-yellow); font-weight:900;">0</span></span>
+  </div>
+  <button class="cta" id="restart-btn">REBOOT</button>
+  <!-- Shortcut to spend the XP just earned without going back to the
+       title screen. armoryUI.js handles open() — we also hide the
+       game-over overlay first so the armory renders cleanly on top. -->
+  <button class="cta" id="gameover-armory-btn" style="margin-top:10px; background:linear-gradient(135deg, #ff8800 0%, #ff3cac 100%); border-color:#ff8800; color:#fff;">⚙ ARMORY</button>
+</div>
+
+<audio id="phone-ring" src="assets/phone_ring.mp3" loop preload="auto"></audio>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.module.min.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.184.0/examples/jsm/"
+  }
+}
+</script>
+<script type="module" src="src/main.js"></script>
+
+<!-- ENDLESS GLYPHS player-count picker. Opened when the player
+     clicks the ENDLESS GLYPHS card. Hot-seat UI per playtester:
+     "the UI shows the '1-3 players' choice, but only solo actually
+     works; co-op is a future feature." Solo button starts the run;
+     2P/3P buttons are visibly listed but disabled with a "COMING
+     SOON" caption so the multiplayer story is clearly future-work. -->
+<div id="glyphs-player-modal" style="display:none; position:fixed; inset:0; z-index:9000; background:rgba(0,0,0,0.85); align-items:center; justify-content:center; flex-direction:column;">
+  <div style="font-family:'Impact','Arial Black',sans-serif; font-size:48px; letter-spacing:6px; color:#4aa8ff; text-shadow:0 0 20px rgba(74,168,255,0.6); margin-bottom:8px;">ENDLESS GLYPHS</div>
+  <div style="font-family:'Courier New',monospace; font-size:13px; letter-spacing:3px; color:#88c0ff; margin-bottom:36px;">▸ SELECT SQUAD SIZE ◂</div>
+  <div style="display:flex; gap:18px;">
+    <button class="glyphs-pcount-btn" data-count="1" style="min-width:140px; padding:18px 12px; background:rgba(20,30,60,0.8); border:2px solid #4aa8ff; border-radius:6px; color:#fff; font-family:'Impact','Arial Black',sans-serif; font-size:18px; letter-spacing:3px; cursor:pointer; transition:background 0.15s, border-color 0.15s;">SOLO</button>
+    <button class="glyphs-pcount-btn" data-count="2" disabled style="min-width:140px; padding:18px 12px; background:rgba(15,15,15,0.7); border:2px solid #444; border-radius:6px; color:#666; font-family:'Impact','Arial Black',sans-serif; font-size:18px; letter-spacing:3px; cursor:not-allowed; opacity:0.55;">2 PLAYERS<br><span style="font-size:9px; letter-spacing:2px; color:#888;">COMING SOON</span></button>
+    <button class="glyphs-pcount-btn" data-count="3" disabled style="min-width:140px; padding:18px 12px; background:rgba(15,15,15,0.7); border:2px solid #444; border-radius:6px; color:#666; font-family:'Impact','Arial Black',sans-serif; font-size:18px; letter-spacing:3px; cursor:not-allowed; opacity:0.55;">3 PLAYERS<br><span style="font-size:9px; letter-spacing:2px; color:#888;">COMING SOON</span></button>
+  </div>
+  <button id="glyphs-modal-cancel" style="margin-top:36px; padding:10px 24px; background:transparent; border:1px solid #666; color:#aaa; font-family:'Courier New',monospace; font-size:11px; letter-spacing:3px; cursor:pointer;">CANCEL</button>
+</div>
+
+</body>
+</html>
