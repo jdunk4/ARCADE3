@@ -115,6 +115,7 @@ import { openAvatarPicker } from './avatarPicker.js';
 import { showRunReward, hideRunReward } from './runReward.js';
 import { getRunStones, clearRunStones } from './avatarShards.js';
 import { initAsciiVision, activateAsciiVision, isAsciiActive, updateAsciiVision, renderAsciiPass, onAsciiEnemyKill, asciiDamageOverride } from './asciiVision.js';
+import { isBlockedByWall } from './mazeRenderer.js';
 import { playVO, tickVO, playRandomVO } from './vo.js';
 import { startEndlessGlyphs, updateEndlessGlyphs, exitEndlessGlyphs } from './endlessGlyphs.js';
 import {
@@ -4732,8 +4733,20 @@ function updatePlayer(dt) {
   // full strength but standing still or kiting away is harder. No-op
   // outside the telegraph phase.
   applySuctionToVelocity(player.pos, player.vel);
-  player.pos.x += player.vel.x * dt;
-  player.pos.z += player.vel.z * dt;
+  // Maze wall collision — check X and Z independently for wall sliding
+  if (S.endlessGlyphs) {
+    const dx = player.vel.x * dt;
+    const dz = player.vel.z * dt;
+    if (!isBlockedByWall(player.pos.x, player.pos.z, dx, 0)) {
+      player.pos.x += dx;
+    }
+    if (!isBlockedByWall(player.pos.x, player.pos.z, 0, dz)) {
+      player.pos.z += dz;
+    }
+  } else {
+    player.pos.x += player.vel.x * dt;
+    player.pos.z += player.vel.z * dt;
+  }
   player.pos.x = Math.max(-ARENA + 1.5, Math.min(ARENA - 1.5, player.pos.x));
   player.pos.z = Math.max(-ARENA + 1.5, Math.min(ARENA - 1.5, player.pos.z));
   resolveCollision(player.pos, 0.8);

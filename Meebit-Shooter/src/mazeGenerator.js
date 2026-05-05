@@ -22,7 +22,7 @@
 // }
 // ============================================================
 
-const CELL_SIZE = 2.5;  // world units per cell, matches arena grid
+const CELL_SIZE = 5.0;  // world units per cell — wide corridors for combat
 
 // Wall flags (bitmask)
 const WALL_N = 1;  // top
@@ -59,38 +59,34 @@ export function getMazeConfig(waveNum) {
   let cols, rows, glyphCount, enemyCount, hasRooms;
 
   if (localWave === 1) {
-    // Tutorial wave — no enemies, small maze
-    cols = 8 + sizeBonus;
-    rows = 8 + sizeBonus;
+    cols = 4 + sizeBonus;
+    rows = 4 + sizeBonus;
     glyphCount = 3;
     enemyCount = 0;
     hasRooms = false;
   } else if (localWave <= 4) {
-    // Add enemies, slightly bigger
-    cols = 10 + sizeBonus;
-    rows = 10 + sizeBonus;
+    cols = 5 + sizeBonus;
+    rows = 5 + sizeBonus;
     glyphCount = 3;
-    enemyCount = 2 + (localWave - 2) * 2;  // 2, 4, 6
+    enemyCount = 2 + (localWave - 2) * 2;
     hasRooms = false;
   } else if (localWave <= 9) {
-    // Multi-room dungeons
-    cols = 12 + (localWave - 5) + sizeBonus;  // 12→16
-    rows = 12 + (localWave - 5) + sizeBonus;
-    glyphCount = 3 + Math.floor((localWave - 5) / 2);  // 3→5
-    enemyCount = 3 + (localWave - 5) * 2;  // 3→11
+    cols = 6 + Math.floor((localWave - 5) / 2) + sizeBonus;
+    rows = 6 + Math.floor((localWave - 5) / 2) + sizeBonus;
+    glyphCount = 3 + Math.floor((localWave - 5) / 2);
+    enemyCount = 3 + (localWave - 5) * 2;
     hasRooms = true;
   } else {
-    // Wave 10: boss wave
-    cols = 16 + sizeBonus;
-    rows = 16 + sizeBonus;
-    glyphCount = 0;  // no glyphs — just reach the boss room
+    cols = 8 + sizeBonus;
+    rows = 8 + sizeBonus;
+    glyphCount = 0;
     enemyCount = 8;
     hasRooms = true;
   }
 
-  // Cap maze size to fit in arena (ARENA=50, cell=2.5 → max 40 cells)
-  cols = Math.min(cols, 38);
-  rows = Math.min(rows, 38);
+  // Cap maze size to fit in arena (ARENA=50, cell=5 → max 19 cells)
+  cols = Math.min(cols, 19);
+  rows = Math.min(rows, 19);
 
   return {
     cols, rows, glyphCount, enemyCount, hasRooms,

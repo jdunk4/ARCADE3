@@ -126,22 +126,44 @@ let _savedPlayerCount = 1;
 
 /** The real game startup — called when the hidden code is entered. */
 function _realStartEndlessGlyphs(playerCount) {
-  S.endlessPlayerCount = Math.max(1, Math.min(3, playerCount | 0));
-  S.endlessGlyphs = true;
-  S.endlessWave = 0;
-  S.endlessPhase = 'LOBBY_PREP';
-  S.endlessPhaseT = 0;
-  S.endlessKills = 0;
-  S.endlessVictory = false;
+  // Clear any other mode
   if (S.tutorialMode) { S.tutorialMode = false; setTutorialActive(false); }
+
   Audio.stopPhoneRing && Audio.stopPhoneRing();
   Audio.stopCDrone && Audio.stopCDrone();
   Audio.stopDeathMusic && Audio.stopDeathMusic();
   Audio.setMusicSection && Audio.setMusicSection('endless_glyphs');
   try { Audio.startMusic && Audio.startMusic(1); } catch (e) {}
+
   // Hide ALL overlays
   ['title','loading'].forEach(id => { const e = document.getElementById(id); if (e) { e.classList.add('hidden'); e.style.display = 'none'; } });
   ['matrix-dive','hyperdrive-overlay','initiate-protocol'].forEach(id => { const e = document.getElementById(id); if (e) e.remove(); });
+
+  // Reset game state (weapons, HP, ammo, etc.)
+  resetGame();
+
+  // resetGame() clears our flags — re-seed AFTER reset
+  S.endlessGlyphs = true;
+  S.running = true;
+  S.endlessPlayerCount = Math.max(1, Math.min(3, playerCount | 0));
+  S.endlessWave = 0;
+  S.endlessPhase = 'LOBBY_PREP';
+  S.endlessPhaseT = 0;
+  S.endlessKills = 0;
+  S.endlessVictory = false;
+
+  // Clean arena
+  if (typeof window.__setupEndlessCleanArena === 'function') {
+    try { window.__setupEndlessCleanArena(); } catch (e) {}
+  }
+
+  // Grant all stratagems
+  try {
+    grantArtifact('turret', 99);
+    grantArtifact('mines', 99);
+    grantArtifact('mech', 99);
+    grantArtifact('thermonuclear', 99);
+  } catch (e) {}
 
   document.querySelectorAll('.hidden-ui').forEach(el => el.style.display = '');
   // Endless Glyphs hides the chapter/wave/kills HUD top bar (those
@@ -348,28 +370,69 @@ function _showConstructionOverlay() {
   });
 
   // Hidden stratagem code: ↑ ↑ ↓ ↓ ← → (arrow keys)
-  // No visible hint — only devs/testers who know the code can bypass.
+  // Visual feedback appears at bottom when player starts entering arrows,
+  // same style as the in-game stratagem code display.
   const SECRET_SEQ = ['ArrowUp', 'ArrowUp', 'ArrowDown', 'ArrowDown', 'ArrowLeft', 'ArrowRight'];
+  const ARROW_DISPLAY = { ArrowUp: '↑', ArrowDown: '↓', ArrowLeft: '←', ArrowRight: '→' };
   let seqIdx = 0;
 
+  // Create the arrow display element (hidden until first arrow press)
+  const arrowDisplay = document.createElement('div');
+  arrowDisplay.style.cssText = 'position:fixed;bottom:60px;left:50%;transform:translateX(-50%);' +
+    'font-family:"Courier New",monospace;font-size:28px;letter-spacing:12px;color:#333;' +
+    'z-index:999999;display:none;text-align:center;';
+  document.body.appendChild(arrowDisplay);
+
+  function _updateArrowDisplay() {
+    let html = '';
+    for (let i = 0; i < SECRET_SEQ.length; i++) {
+      const arrow = ARROW_DISPLAY[SECRET_SEQ[i]];
+      if (i < seqIdx) {
+        html += '<span style="color:#00ff66;text-shadow:0 0 8px #00ff66;">' + arrow + '</span>';
+      } else {
+        html += '<span style="color:#333;">' + arrow + '</span>';
+      }
+    }
+    arrowDisplay.innerHTML = html;
+  }
+
   function _onCodeKey(e) {
+    // Only respond to arrow keys
+    if (!ARROW_DISPLAY[e.key]) return;
+
+    // Show the display on first arrow press
+    if (arrowDisplay.style.display === 'none') {
+      arrowDisplay.style.display = 'block';
+      _updateArrowDisplay();
+    }
+
     if (e.key === SECRET_SEQ[seqIdx]) {
       seqIdx++;
+      _updateArrowDisplay();
       if (seqIdx >= SECRET_SEQ.length) {
-        // Code entered — bypass!
-        document.removeEventListener('keydown', _onCodeKey);
-        _removeConstructionOverlay();
-        _realStartEndlessGlyphs(_savedPlayerCount || 1);
+        // Code complete — flash green then bypass
+        arrowDisplay.style.color = '#00ff66';
+        setTimeout(() => {
+          document.removeEventListener('keydown', _onCodeKey);
+          arrowDisplay.remove();
+          _removeConstructionOverlay();
+          _realStartEndlessGlyphs(_savedPlayerCount || 1);
+        }, 400);
       }
     } else {
-      // Wrong key — reset sequence silently
+      // Wrong key — flash red, reset
       seqIdx = 0;
-      // But check if this key starts the sequence
-      if (e.key === SECRET_SEQ[0]) seqIdx = 1;
+      arrowDisplay.style.transition = 'none';
+      for (const span of arrowDisplay.querySelectorAll('span')) {
+        span.style.color = '#ff2e4d';
+      }
+      setTimeout(() => {
+        _updateArrowDisplay();
+      }, 300);
     }
   }
   document.addEventListener('keydown', _onCodeKey);
-  el._cleanupCode = () => document.removeEventListener('keydown', _onCodeKey);
+  el._cleanupCode = () => { document.removeEventListener('keydown', _onCodeKey); if (arrowDisplay.parentNode) arrowDisplay.remove(); };
 }
 
 function _removeConstructionOverlay() {
@@ -471,6 +534,7 @@ let _waveSpawnGap = 2.5;
 let _waveTotalCount = 0;
 let _waveSpawnedSoFar = 0;
 let _pendingWaveNum = 1;
+let _mazeBuilt = false;
 
 /**
  * Compute the spawn config for a wave. Called by tile-transition
@@ -535,6 +599,7 @@ function _enterWaveAssemble(waveNum) {
   const mazeData = generateMaze(waveNum);
   buildMaze(mazeData, scene, chapterTint);
   initMazePuzzle(mazeData);
+  _mazeBuilt = true;
 
   // Teleport player to maze spawn
   const spawnWorld = cellToWorld(mazeData.spawn.col, mazeData.spawn.row, mazeData.cols, mazeData.rows);
@@ -563,6 +628,8 @@ function _enterWave(waveNum) {
 }
 
 function _tickWave(dt) {
+  // Guard — maze must exist before ticking puzzle
+  if (!_mazeBuilt) return;
   // ---- MAZE PUZZLE TICK ----
   updateMazeGlyphs(dt);
 
