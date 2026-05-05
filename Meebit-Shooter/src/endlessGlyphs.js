@@ -36,16 +36,20 @@ import { S, resetGame } from './state.js';
 import { Audio } from './audio.js';
 import { applyTutorialFloor, restoreNormalFloor, setTutorialActive, boostTutorialLighting, restoreTutorialLighting } from './tutorial.js';
 import { hitBurst } from './effects.js';
-import { enemies, makeEnemy, clearAllEnemies } from './enemies.js';
+import { clearAllEnemies } from './enemies.js';
 import { player } from './player.js';
 import { WEAPONS, CHAPTERS } from './config.js';
 import { startDissolve, tickDissolve, cancelDissolve } from './endlessDissolve.js';
 import { startAssemble, tickAssemble, cancelAssemble } from './endlessAssemble.js';
 import { grantArtifact } from './stratagems.js';
-import { generateMaze, getMazeConfig, cellToWorld } from './mazeGenerator.js';
-import { buildMaze, clearMaze, updateMazeGlyphs, getGlyphWorldPositions, isNearExit, areAllGlyphsCollected, getCollectedCount, getGlyphCount, getMazeWallEntries } from './mazeRenderer.js';
-import { initMazePuzzle, tickMazePuzzle, saveMazeProgress, getMazeWave } from './mazePuzzles.js';
-import { spawnPortal, clearAllPortals, spawners } from './spawners.js';
+import { generateMaze, getMazeConfig, cellToWorld, worldToCell } from './mazeGenerator.js';
+import {
+  buildMaze, clearMaze, updateMazeFx,
+  markCellVisited, getCoverage, isKillZoneCell,
+  getMazeWallEntries, isBlockedByWall as mazeIsBlocked,
+  damageMiningWallAt,
+} from './mazeRenderer.js';
+import { saveMazeProgress, getMazeWave } from './mazePuzzles.js';
 import { UI } from './ui.js';
 
 // =====================================================================
@@ -276,11 +280,15 @@ export function updateEndlessGlyphs(dt) {
 export function exitEndlessGlyphs() {
   if (!S.endlessGlyphs) return;
   S.endlessGlyphs = false;
+  S.endlessTopDown = false;
   S.running = false;
   S.endlessPhase = null;
   S.endlessWave = 0;
   S.endlessKills = 0;
   S.endlessVictory = false;
+  _slide = null;
+  _mazeBuilt = false;
+  _activeMazeData = null;
 
   restoreNormalFloor();
   _restoreWaveFloor();
@@ -289,7 +297,7 @@ export function exitEndlessGlyphs() {
   cancelAssemble();
   _exitDarkMode();
   clearMaze(scene);
-  try { clearAllPortals(); } catch (_) {}
+  // (no spawners/portals in slide-fill mode)
   _disposeLocker();
   _disposeWaveHUD();
   clearAllEnemies();
@@ -504,62 +512,28 @@ function _tickTilesTransition(dt) {
 }
 
 // =====================================================================
-// WAVE RUNNER
+// WAVE RUNNER (slide-fill)
 // =====================================================================
-// Per playtester: "we need to spawn enemies for wave 1." For Phase 3b
-// I'm shipping a straightforward wave spawn loop. Per the design:
-//
-//   • Waves 1-5 use chapter 1 enemies (zomeeb / sprinter — visually
-//     rendered as procedural box ants because S.chapter === 0)
-//   • HP scales ×1.05 per wave (geometric)
-//   • Spawns drip in from the arena edge at intervals
-//   • Wave ends when all queued enemies are spawned AND killed
-//
-// Wave→chapter mapping for waves 6-30 is future work — for now only
-// wave 1 actually runs, and after wave 1 we advance to the next
-// (which will spawn the same wave-1 config again, scaled). Real
-// chapter mapping comes in the next pass.
-//
-// Per-wave config:
-//   _waveSpawnQueue   — number of enemies still to spawn
-//   _waveSpawnTimer   — countdown to next spawn
-//   _waveSpawnGap     — seconds between spawns (computed per wave)
-//   _waveTotalCount   — how many total this wave (for HUD display)
-//   _waveSpawnedSoFar — how many actually spawned (for HUD)
-//   _pendingWaveNum   — wave number to enter on transition complete
+// Each wave generates a maze that fills the arena, places mining
+// gates and kill zones per the wave config, and gives the player one
+// minute to slide-cover every cell. Hitting a kill zone or running
+// out of time retries the wave with the same seed.
 
-let _waveSpawnQueue = 0;
-let _waveSpawnTimer = 0;
-let _waveSpawnGap = 2.5;
-let _waveTotalCount = 0;
-let _waveSpawnedSoFar = 0;
 let _pendingWaveNum = 1;
 let _mazeBuilt = false;
-// Module-scope ref to the current wave's MazeData so _spawnWaveEnemy
-// can place enemies at the maze cells the generator chose. Cleared
-// when the maze dissolves.
 let _activeMazeData = null;
 
-/**
- * Compute the spawn config for a wave. Called by tile-transition
- * preparation so the wave is fully configured before the WAVE phase
- * begins.
- */
+// Slide-fill state.
+const SLIDE_CELLS_PER_SEC = 12;
+const WAVE_TIME_LIMIT = 60;          // seconds per wave
+
+let _slide = null;                   // { startX, startZ, tx, tz, t, duration, cells, idx, willKill }
+let _facingDir = { dx: 1, dz: 0 };   // last move direction (used for fire aim)
+let _waveTimer = WAVE_TIME_LIMIT;
+
 function _prepareWave(waveNum) {
   _pendingWaveNum = waveNum;
-  // Use maze config for enemy count — wave 1 has 0, scaling up through 10
-  const mazeConfig = getMazeConfig(waveNum);
-  const count = mazeConfig.enemyCount;
-  _waveTotalCount = count;
-  _waveSpawnQueue = count;
-  _waveSpawnedSoFar = 0;
-  // Spawn cadence — enemies drip in slowly at first, faster later.
-  // Wave 1 has 0 enemies so cadence doesn't matter. Later waves
-  // get faster spawns as the maze gets harder.
-  const localWave = mazeConfig.localWave;
-  let cadence = Math.max(0.8, 3.0 - localWave * 0.2);
-  _waveSpawnGap = cadence;
-  _waveSpawnTimer = 1.5;  // delay before first spawn — give player time to orient
+  _waveTimer = WAVE_TIME_LIMIT;
 }
 
 /**
@@ -579,45 +553,38 @@ function _prepareWave(waveNum) {
 function _enterWaveAssemble(waveNum) {
   S.endlessPhase = 'WAVE_ASSEMBLE';
   S.endlessPhaseT = 0;
-  // Dark mode on — the assemble particles read against a dim arena.
   _enterDarkMode();
 
-  // ---- MAZE BUILD ----
-  // Generate the maze and render it before kicking off the assembly.
-  // The assemble animation flips every wall material's opacity to 0
-  // and fades them in over ~2s, so the meshes need to be in the
+  // Generate + render the maze. The assemble animation fades the
+  // wall materials in over ~2s; the meshes have to exist in the
   // scene first.
   const chapterIdx = _waveToChapterIdx(waveNum);
-  const chapterTint = CHAPTERS[chapterIdx].full.grid1;
+  const fillTint = _waveFillTint(waveNum);
   const mazeData = generateMaze(waveNum);
-  buildMaze(mazeData, scene, chapterTint);
-  initMazePuzzle(mazeData);
+  buildMaze(mazeData, scene, fillTint);
   _mazeBuilt = true;
   _activeMazeData = mazeData;
 
-  // Particles assemble onto every maze wall (regular + mining).
   startAssemble(getMazeWallEntries());
 
-  // Teleport player to maze spawn cell.
+  // Teleport player to spawn cell, mark that cell as visited.
   const spawnWorld = cellToWorld(mazeData.spawn.col, mazeData.spawn.row, mazeData.cols, mazeData.rows);
   if (player && player.pos) {
     player.pos.x = spawnWorld.x;
     player.pos.z = spawnWorld.z;
   }
-
-  // Spawn hives at the cells the generator chose for this wave (only
-  // wave 7+). Existing main-loop updateSpawners() drips enemies out
-  // of these portals; the wave clears when the player collects every
-  // glyph and walks to the exit.
-  try { clearAllPortals(); } catch (_) {}
-  if (mazeData.hiveSpawns && mazeData.hiveSpawns.length > 0) {
-    for (const h of mazeData.hiveSpawns) {
-      const w = cellToWorld(h.col, h.row, mazeData.cols, mazeData.rows);
-      try { spawners.push(spawnPortal(w.x, w.z, chapterIdx)); } catch (_) {}
-    }
-  }
+  markCellVisited(mazeData.spawn.col, mazeData.spawn.row);
+  _slide = null;
+  _facingDir = { dx: 1, dz: 0 };
+  S.endlessTopDown = true;
 
   _setWaveHUD('WAVE ' + waveNum, 'ASSEMBLING');
+}
+
+/** Chapter fill-tint follows the wave's mapped chapter. */
+function _waveFillTint(waveNum) {
+  const idx = _waveToChapterIdx(waveNum);
+  return CHAPTERS[idx].full.enemyTint;
 }
 
 function _tickWaveAssemble(dt) {
@@ -638,46 +605,33 @@ function _enterWave(waveNum) {
 
 function _tickWave(dt) {
   if (!_mazeBuilt) return;
-  updateMazeGlyphs(dt);
+  updateMazeFx(dt);
 
-  if (player && player.pos) {
-    const result = tickMazePuzzle(player.pos, dt);
-    if (result.collected !== null) {
-      try { Audio.shot && Audio.shot('pickaxe'); } catch (_) {}
-      UI.toast('GLYPH ' + result.found + '/' + result.total, '#00ff66', 1200);
-    }
-    // HUD — glyph progress is the win condition. Enemy count + hive
-    // count are flavor; the wave ends only when the player reaches
-    // the exit with every glyph collected.
-    const aliveCount = enemies.length;
-    const liveHives = spawners.filter(s => !s.destroyed).length;
-    const glyphStatus = result.found + '/' + result.total + ' GLYPHS';
-    const exitHint = result.allFound ? ' · EXIT OPEN' : '';
-    let suffix = '';
-    if (aliveCount > 0) suffix += ' · ' + aliveCount + ' ENEMIES';
-    if (liveHives > 0) suffix += ' · ' + liveHives + (liveHives === 1 ? ' HIVE' : ' HIVES');
-    _setWaveHUD('WAVE ' + S.endlessWave, glyphStatus + exitHint + suffix);
+  // Slide animation tick.
+  _tickSlide(dt);
 
-    if (result.exitReached) {
-      saveMazeProgress(S.endlessWave);
-      try { Audio.shot && Audio.shot('raygun'); } catch (_) {}
-      UI.toast('WAVE ' + S.endlessWave + ' CLEARED', '#4ff7ff', 2000);
-      _enterWaveDissolve();
-      return;
-    }
+  // 1-minute wave timer. Running out is treated as a kill — the wave
+  // restarts from a clean state.
+  _waveTimer = Math.max(0, _waveTimer - dt);
+  if (_waveTimer <= 0) {
+    _retryWave('TIME OUT');
+    return;
   }
 
-  // Enemy spawn drip — pre-placed patrol enemies (mazeData.enemySpawns)
-  // come in at their authored cells. Wave 1 has 0 enemies; later
-  // waves drip them at _waveSpawnGap intervals.
-  if (_waveSpawnQueue > 0) {
-    _waveSpawnTimer -= dt;
-    if (_waveSpawnTimer <= 0) {
-      _spawnWaveEnemy();
-      _waveSpawnQueue--;
-      _waveSpawnedSoFar++;
-      _waveSpawnTimer = _waveSpawnGap;
-    }
+  // HUD — coverage % + timer.
+  const cov = getCoverage();
+  const pct = cov.total > 0 ? Math.floor((cov.filled / cov.total) * 100) : 0;
+  const t = Math.ceil(_waveTimer);
+  const mm = Math.floor(t / 60), ss = t - mm * 60;
+  const timeStr = mm + ':' + (ss < 10 ? '0' + ss : ss);
+  _setWaveHUD('WAVE ' + S.endlessWave, pct + '% · ' + timeStr);
+
+  // Win check — every cell visited.
+  if (cov.total > 0 && cov.filled >= cov.total) {
+    saveMazeProgress(S.endlessWave);
+    try { Audio.shot && Audio.shot('raygun'); } catch (_) {}
+    UI.toast('WAVE ' + S.endlessWave + ' CLEARED', '#4ff7ff', 1800);
+    _enterWaveDissolve();
   }
 }
 
@@ -691,15 +645,13 @@ function _enterWaveDissolve() {
   S.endlessPhase = 'WAVE_DISSOLVE';
   S.endlessPhaseT = 0;
   // Snapshot the maze wall AABBs for the particle source, then clear
-  // the meshes — startDissolve does its own particle pass independent
-  // of the wall meshes' lifetime.
+  // the meshes.
   const wallSnapshot = getMazeWallEntries().map(w => ({ x: w.x, z: w.z, w: w.w, h: w.h }));
   clearMaze(scene);
   _mazeBuilt = false;
   _activeMazeData = null;
-  // Hives go away with the maze.
-  try { clearAllPortals(); } catch (_) {}
-  clearAllEnemies();
+  _slide = null;
+  S.endlessTopDown = false;
   startDissolve(wallSnapshot, S.endlessWave);
   _setWaveHUD('WAVE ' + S.endlessWave + ' COMPLETE', 'DISSOLVING');
 }
@@ -743,91 +695,136 @@ function _waveToChapterIdx(waveNum) {
   return Math.floor((waveNum - 1) / 10) % 6;
 }
 
+// =====================================================================
+// SLIDE-FILL MOVEMENT
+// =====================================================================
+//
+// On a directional input, walk cells in that direction until either a
+// wall stops us or a kill zone is the next cell. Enqueue an animation
+// that moves the player through those cells at SLIDE_CELLS_PER_SEC,
+// marking each cell visited as we cross it. If the slide ends in a
+// kill zone the wave is retried.
+
 /**
- * Get the enemy type roll table for an endless wave. Mirrors the
- * main game's chapter mix per the wave→chapter mapping. Returns a
- * { typeKey: weight } object summing to ~1.0.
+ * Begin a slide. dx, dz must each be -1, 0, or +1 (and exactly one
+ * non-zero). No-op when not in WAVE phase, the maze isn't built, or
+ * a slide is already in progress.
  */
-function _endlessEnemyMix(waveNum) {
-  const chapterIdx = _waveToChapterIdx(waveNum);
-  // Inline replicas of waves.js / config.js's waveEnemyMix per
-  // chapter. Could be shared via export, but inlining is safer —
-  // changes to the main-game mix shouldn't accidentally rebalance
-  // endless. Per-chapter intent:
-  //   ch0 INFERNO  — pumpkinheads + ants (zomeeb/sprinter)
-  //   ch1 CRIMSON  — vampires + devils + zomeebs + mummies
-  //   ch2 SOLAR    — wizards
-  //   ch3 TOXIC    — goospitters
-  //   ch4 ARCTIC   — ghosts
-  //   ch5 PARADISE — ghosts (final-chapter signature)
-  switch (chapterIdx) {
-    case 0:
-      return { zomeeb: 0.45, sprinter: 0.25, pumpkin: 0.20, brute: 0.10 };
-    case 1:
-      return { zomeeb: 0.30, sprinter: 0.15, vampire: 0.30, red_devil: 0.20, brute: 0.05 };
-    case 2:
-      return { zomeeb: 0.30, sprinter: 0.20, wizard: 0.30, brute: 0.15, phantom: 0.05 };
-    case 3:
-      return { zomeeb: 0.30, sprinter: 0.20, goospitter: 0.30, brute: 0.15, phantom: 0.05 };
-    case 4:
-      return { zomeeb: 0.25, sprinter: 0.20, ghost: 0.40, brute: 0.10, phantom: 0.05 };
-    case 5:
-      return { zomeeb: 0.25, sprinter: 0.20, ghost: 0.30, vampire: 0.10, wizard: 0.10, brute: 0.05 };
-    default:
-      return { zomeeb: 0.7, sprinter: 0.3 };
+export function endlessSlide(dx, dz) {
+  if (!S.endlessGlyphs || S.endlessPhase !== 'WAVE') return;
+  if (!_mazeBuilt || !_activeMazeData) return;
+  if (_slide) return;
+  if ((dx === 0) === (dz === 0)) return;   // require exactly one axis
+
+  _facingDir = { dx, dz };
+  if (player && player.obj) {
+    player.obj.rotation.y = Math.atan2(dx, dz);
+  }
+
+  const md = _activeMazeData;
+  const start = worldToCell(player.pos.x, player.pos.z, md.cols, md.rows);
+  const cells = [];
+  let col = start.col, row = start.row;
+  let willKill = false;
+
+  // Walk forward until wall blocks, OR until the next cell is a kill
+  // zone (we still slide INTO it, then die).
+  while (true) {
+    const dir = dx > 0 ? 'E' : dx < 0 ? 'W' : dz > 0 ? 'S' : 'N';
+    if (_isCellBlockedToward(col, row, dir)) break;
+    const nc = col + dx;
+    const nr = row + dz;
+    if (nc < 0 || nc >= md.cols || nr < 0 || nr >= md.rows) break;
+    col = nc; row = nr;
+    cells.push({ col, row });
+    if (isKillZoneCell(col, row)) { willKill = true; break; }
+  }
+
+  if (cells.length === 0) {
+    // Nothing to do — player tapped into a wall. Soft thud feedback.
+    try { Audio.shot && Audio.shot('shieldHit'); } catch (_) {}
+    return;
+  }
+
+  const last = cells[cells.length - 1];
+  const target = cellToWorld(last.col, last.row, md.cols, md.rows);
+  const duration = cells.length / SLIDE_CELLS_PER_SEC;
+  _slide = {
+    startX: player.pos.x, startZ: player.pos.z,
+    tx: target.x, tz: target.z,
+    t: 0, duration,
+    cells, idx: 0, willKill,
+  };
+}
+
+function _isCellBlockedToward(col, row, dir) {
+  if (!_activeMazeData) return true;
+  const { cols, cells } = _activeMazeData;
+  const cell = cells[row * cols + col];
+  if (!cell) return true;
+  const flag =
+    dir === 'N' ? 1 :         // WALL_N
+    dir === 'E' ? 2 :         // WALL_E
+    dir === 'S' ? 4 :         // WALL_S
+                  8;          // WALL_W
+  return (cell.walls & flag) !== 0;
+}
+
+function _tickSlide(dt) {
+  if (!_slide) return;
+  _slide.t += dt;
+  const u = Math.min(1, _slide.t / _slide.duration);
+  player.pos.x = _slide.startX + (_slide.tx - _slide.startX) * u;
+  player.pos.z = _slide.startZ + (_slide.tz - _slide.startZ) * u;
+
+  // Mark cells as we cross them.
+  const md = _activeMazeData;
+  if (md) {
+    while (_slide.idx < _slide.cells.length) {
+      const targetU = (_slide.idx + 1) / _slide.cells.length;
+      if (u < targetU) break;
+      const c = _slide.cells[_slide.idx];
+      markCellVisited(c.col, c.row);
+      _slide.idx++;
+    }
+  }
+
+  if (u >= 1) {
+    const willKill = _slide.willKill;
+    _slide = null;
+    if (willKill) _retryWave('KILLED');
   }
 }
 
 /**
- * Pick a single enemy type from a mix table (weighted random).
+ * Fire a bullet from the player in the current facing direction. Used
+ * by the main.js input handlers (mouse / space) when in WAVE phase.
+ * Aimed at the next mining gate / wall so the bullet either damages
+ * the gate or splashes against the wall.
  */
-function _pickFromMix(mix) {
-  const entries = Object.entries(mix);
-  let total = 0;
-  for (const [, w] of entries) total += w;
-  let r = Math.random() * total;
-  for (const [type, w] of entries) {
-    r -= w;
-    if (r <= 0) return type;
+export function endlessFire() {
+  if (!S.endlessGlyphs || S.endlessPhase !== 'WAVE') return;
+  if (typeof window.__endlessFireBullet === 'function') {
+    try { window.__endlessFireBullet(_facingDir.dx, _facingDir.dz); } catch (_) {}
   }
-  return entries[0][0];
 }
 
 /**
- * Spawn a single wave enemy at one of the maze cells the generator
- * picked for patrol. Falls back to a near-player ring spawn if no
- * maze data is available (defensive — shouldn't happen in normal
- * flow). Each spawn drains the next entry from mazeData.enemySpawns
- * so each cell is used at most once per drip pass.
+ * Retry the current wave from a clean state. Triggered by hitting a
+ * kill zone or running out the 1-minute timer.
  */
-function _spawnWaveEnemy() {
-  if (!player || !player.pos) return;
-  const chapterIdx = _waveToChapterIdx(S.endlessWave);
-  const tint = CHAPTERS[chapterIdx].full.enemyTint;
-  const mix = _endlessEnemyMix(S.endlessWave);
-  const type = _pickFromMix(mix);
-
-  let x, z;
-  if (_activeMazeData && _activeMazeData.enemySpawns && _activeMazeData.enemySpawns.length > 0) {
-    const cell = _activeMazeData.enemySpawns.shift();
-    const w = cellToWorld(cell.col, cell.row, _activeMazeData.cols, _activeMazeData.rows);
-    x = w.x; z = w.z;
-  } else {
-    // Fallback ring around the player.
-    const angle = Math.random() * Math.PI * 2;
-    const dist = 16 + Math.random() * 6;
-    const ARENA = 50;
-    x = Math.max(-(ARENA - 2), Math.min(ARENA - 2, player.pos.x + Math.cos(angle) * dist));
-    z = Math.max(-(ARENA - 2), Math.min(ARENA - 2, player.pos.z + Math.sin(angle) * dist));
-  }
-
-  const e = makeEnemy(type, tint, new THREE.Vector3(x, 0, z));
-  if (e) {
-    const hpMul = Math.pow(1.05, S.endlessWave - 1);
-    e.hp = Math.round(e.hp * hpMul);
-    e.hpMax = Math.round(e.hpMax * hpMul);
-    hitBurst(new THREE.Vector3(x, 1.4, z), tint, 6);
-  }
+function _retryWave(reason) {
+  cancelAssemble();
+  cancelDissolve();
+  _slide = null;
+  clearMaze(scene);
+  _mazeBuilt = false;
+  _activeMazeData = null;
+  UI.toast(reason + ' · RETRY WAVE ' + S.endlessWave, '#ff2e4d', 1500);
+  try { Audio.shot && Audio.shot('shieldHit'); } catch (_) {}
+  // Re-enter assembly with the same wave number — the seed is
+  // deterministic so the layout matches.
+  _enterWaveAssemble(S.endlessWave);
 }
 
 /**
@@ -840,12 +837,12 @@ function _spawnWaveEnemy() {
 function _enterIntermission() {
   S.endlessPhase = 'INTERMISSION';
   S.endlessPhaseT = 0;
+  S.endlessTopDown = false;
   // Maze meshes already cleared by _enterWaveDissolve. Cancel any
   // lingering dissolve / assemble particles in case the animation
   // was still mid-flight when the wave-10 boundary triggered.
   cancelDissolve();
   cancelAssemble();
-  try { clearAllPortals(); } catch (_) {}
   // Dark mode off — intermission returns to the bright tutorial
   // lobby aesthetic so the player can comfortably scan the locker
   // and weapon options.

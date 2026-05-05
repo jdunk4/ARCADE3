@@ -117,7 +117,7 @@ import { getRunStones, clearRunStones } from './avatarShards.js';
 import { initAsciiVision, activateAsciiVision, isAsciiActive, updateAsciiVision, renderAsciiPass, onAsciiEnemyKill, asciiDamageOverride } from './asciiVision.js';
 import { isBlockedByWall, segmentBlockedByMazeWall, resolveMazeCollision, damageMiningWallAt } from './mazeRenderer.js';
 import { playVO, tickVO, playRandomVO } from './vo.js';
-import { startEndlessGlyphs, updateEndlessGlyphs, exitEndlessGlyphs } from './endlessGlyphs.js';
+import { startEndlessGlyphs, updateEndlessGlyphs, exitEndlessGlyphs, endlessSlide, endlessFire } from './endlessGlyphs.js';
 import {
   beginStratagemInput, endStratagemInput, pushStratagemArrow,
   pushStratagemVariantKey,
@@ -335,6 +335,17 @@ window.__mechEjected = function(mechPos) {
   player.pos.z = mechPos.z;
   if (player.obj) player.obj.visible = true;
   if (UI && UI.toast) UI.toast('EJECTED', '#ff5520', 1500);
+};
+
+// Endless Glyphs slide-fill mode: fire a bullet in the given grid
+// direction. Sets player.facing to that direction and routes through
+// the standard fireWeapon() path so the equipped weapon, ammo, and
+// damage scaling all apply normally.
+window.__endlessFireBullet = function(dx, dz) {
+  if (!player || !player.facing) return;
+  const len = Math.sqrt(dx * dx + dz * dz) || 1;
+  player.facing.set(dx / len, 0, dz / len);
+  try { fireWeapon(); } catch (_) {}
 };
 
 // Tutorial observer hooks — bonus stratagem lessons set callbacks on
@@ -1848,6 +1859,19 @@ _syncWeaponCursor();
 
 window.addEventListener('keydown', e => {
   keys[e.key.toLowerCase()] = true;
+  // Endless Glyphs slide-fill mode: directional keys trigger a slide,
+  // Space fires in the player's facing direction. Suppresses the
+  // normal WASD-held movement and dash for that phase only.
+  if (S.endlessGlyphs && S.endlessPhase === 'WAVE' && !e.repeat) {
+    let handled = false;
+    const k = e.key;
+    if (k === 'ArrowUp' || k === 'w' || k === 'W')      { endlessSlide(0, -1); handled = true; }
+    else if (k === 'ArrowDown' || k === 's' || k === 'S')  { endlessSlide(0, 1);  handled = true; }
+    else if (k === 'ArrowLeft' || k === 'a' || k === 'A')  { endlessSlide(-1, 0); handled = true; }
+    else if (k === 'ArrowRight' || k === 'd' || k === 'D') { endlessSlide(1, 0);  handled = true; }
+    else if (e.code === 'Space')                            { endlessFire();       handled = true; }
+    if (handled) { e.preventDefault(); return; }
+  }
   if (e.code === 'Space') { e.preventDefault(); tryDash(); }
   if (e.key === 'Escape' && S.running) {
     S.paused = !S.paused;
@@ -2083,7 +2107,17 @@ window.addEventListener('mousemove', e => {
   if (hit) { mouse.worldX = hit.x; mouse.worldZ = hit.z; }
 });
 window.addEventListener('mousedown', e => {
-  if (e.button === 0) { mouse.down = true; Audio.resume(); }
+  if (e.button === 0) {
+    Audio.resume();
+    // Endless Glyphs slide-fill mode: left-click fires in the player's
+    // facing direction. Don't latch mouse.down so the regular hold-to-
+    // fire weapons don't keep trying to shoot.
+    if (S.endlessGlyphs && S.endlessPhase === 'WAVE') {
+      endlessFire();
+      return;
+    }
+    mouse.down = true;
+  }
   if (e.button === 2) {
     // Right mouse button — open stratagem menu (Helldivers-style).
     // Only honored when the player has at least one stratagem
@@ -4655,7 +4689,10 @@ function updatePlayer(dt) {
   const _inputLocked = isBossCinematicActive();
 
   let mx = 0, mz = 0;
-  if (!_inputLocked) {
+  // Endless Glyphs slide-fill phase: the slide animator drives
+  // player.pos directly off discrete keydowns; ignore held WASD.
+  const _slideMode = S.endlessGlyphs && S.endlessPhase === 'WAVE';
+  if (!_inputLocked && !_slideMode) {
     if (keys['w'] || keys['arrowup'])    mz -= 1;
     if (keys['s'] || keys['arrowdown'])  mz += 1;
     if (keys['a'] || keys['arrowleft'])  mx -= 1;
@@ -5993,6 +6030,19 @@ function tryMine() {
 }
 
 function updateCamera(dt) {
+  // Endless Glyphs slide-fill mode: lock the camera high above arena
+  // origin so the whole maze is in frame at once. Slight forward
+  // offset keeps a faint angle so walls have visible thickness.
+  if (S.endlessTopDown) {
+    camAnchor.set(0, 92, 12);
+    camera.position.lerp(camAnchor, Math.min(1, dt * 4));
+    if (S.shakeAmt > 0) {
+      camera.position.x += (Math.random() - 0.5) * S.shakeAmt;
+      camera.position.z += (Math.random() - 0.5) * S.shakeAmt;
+    }
+    camera.lookAt(0, 0, 0);
+    return;
+  }
   camAnchor.set(player.pos.x + CAMERA_OFFSET.x, CAMERA_OFFSET.y, player.pos.z + CAMERA_OFFSET.z);
   camera.position.lerp(camAnchor, Math.min(1, dt * 5));
   if (S.shakeAmt > 0) {

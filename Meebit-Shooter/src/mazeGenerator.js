@@ -1,44 +1,30 @@
 // ============================================================
-// MAZE GENERATOR — Endless Glyphs maze.
+// MAZE GENERATOR — Endless Glyphs slide-fill maze.
 //
-// Recursive-backtracker carving + loop openings, plus extra data
-// for the new wave design:
-//
-//   • Maze fills the arena from wave 1; intricacy grows toward wave
-//     10 (fewer loops, more dead-ends, more glyphs, more enemies).
-//   • Selected interior walls are flagged as mining gates — solid
-//     until the player explodes them. Density steps:
-//       waves 1-3 → 0 gates,
-//       waves 4-6 → 1 gate,
-//       waves 7-9 → 2 gates,
-//       waves 10+ → 3 gates.
-//   • Hive spawn cells placed wave 7+ (1 hive at 7-9, 3 at 10+).
-//   • Region IDs computed treating mining gates as blockers, so
-//     enemies can patrol a region until the player opens a gate.
-//
-// Each cell is CELL_SIZE × CELL_SIZE world units. The maze is
-// centered at the arena origin.
+// Wave design:
+//   • Maze fills the arena every wave (19×19 cells).
+//   • Loop fraction climbs from 0.22 (wave 1, easy) toward 0.04
+//     (wave 10+, more dead-ends).
+//   • Mining gates: 0 / 1 / 2 / 3 across waves 1-3 / 4-6 / 7-9 / 10+.
+//     Player must shoot to break them and access new cells.
+//   • Kill zones (static hazards): 0 / 1-2 / 3-5 / 6-8 across the
+//     same wave ranges. Touching one ends the wave.
 //
 // Public API:
 //   generateMaze(waveNum)  → MazeData
-//   getMazeConfig(waveNum) → { cols, rows, glyphCount, ... }
+//   getMazeConfig(waveNum) → { cols, rows, miningGateCount, ... }
 //   cellToWorld / worldToCell / isWallBlocking
 //
 // MazeData = {
 //   cols, rows,                      // grid dimensions
 //   cells: [{walls}],                // wall bitmask per cell
 //   spawn: {col, row},               // player start
-//   exit: {col, row},                // exit gate
-//   glyphs: [{col, row}],            // glyph pickups
-//   miningWalls: [{col, row, dir, hp}],  // dir ∈ 'N'|'W' (canonical edges)
-//   hiveSpawns: [{col, row}],        // queen-hive cells (wave 7+)
-//   enemySpawns: [{col, row, regionId}],
+//   miningWalls: [{col, row, dir, hp, broken}],
+//   killZones: [{col, row, kind}],   // kind ∈ 'rune' | 'mine' | 'ghost'
 //   regions: Int32Array,             // regionId per cell index
-//   regionCount: number,             // distinct regions
-//   spawnRegionId: number,           // region containing the player spawn
-//   seed,
-//   config,                          // back-ref to getMazeConfig output
-//   cellSize,                        // = CELL_SIZE
+//   regionCount: number,
+//   spawnRegionId: number,
+//   seed, config, cellSize,
 // }
 // ============================================================
 
@@ -70,30 +56,15 @@ function mulberry32(seed) {
 // Arena is 100×100u (ARENA = 50 half-extent). With CELL_SIZE = 5 the
 // theoretical maximum is 20×20; capped at 19 for a 1u border. Every
 // wave fills the arena. What changes is intricacy: loop openings drop
-// from 22% (very easy) toward 4% (lots of dead-ends), glyph and enemy
-// counts climb, and mining gates / hives unlock at wave 4 / 7.
+// 22% → 4% across waves, mining gates step up every 3 waves, and
+// kill-zone density climbs accordingly.
 export function getMazeConfig(waveNum) {
   const w = Math.max(1, waveNum | 0);
   const t = Math.min(1, (w - 1) / 9);   // 0 at wave 1, 1 at wave 10
 
-  // Same arena-filling footprint every wave; difficulty is in density.
   const cols = 19;
   const rows = 19;
-
-  // Loop openings — fraction of internal walls to knock out for
-  // alternate paths. High = easy and forgiving (wave 1). Low = lots
-  // of dead-ends (wave 10+).
   const loopFraction = 0.22 - 0.18 * t;          // 0.22 → 0.04
-
-  // Glyph count climbs with the wave.
-  const glyphCount = Math.round(3 + 4 * t);      // 3 → 7
-
-  // Enemies — drip from 0 at wave 1 up to ~14 at wave 10. Caps and
-  // continues climbing past wave 10 for endless scaling.
-  let enemyCount;
-  if (w === 1) enemyCount = 0;
-  else if (w === 2) enemyCount = 2;
-  else enemyCount = Math.round(2 + 1.4 * (w - 2));
 
   // Mining gates step up every 3 waves.
   let miningGateCount;
@@ -102,21 +73,27 @@ export function getMazeConfig(waveNum) {
   else if (w <= 9) miningGateCount = 2;
   else miningGateCount = 3;
 
-  // Hives unlock at wave 7. Wave 10+ gets 3.
-  let hiveCount;
-  if (w < 7) hiveCount = 0;
-  else if (w < 10) hiveCount = 1;
-  else hiveCount = 3;
+  // Kill zones — 0 early, ramp up to 6-8 at wave 10+.
+  let killZoneCount;
+  if (w <= 3) killZoneCount = 0;
+  else if (w <= 6) killZoneCount = 1 + Math.floor(rng01(w) * 2);   // 1-2
+  else if (w <= 9) killZoneCount = 3 + Math.floor(rng01(w) * 3);   // 3-5
+  else killZoneCount = 6 + Math.floor(rng01(w) * 3);               // 6-8
 
   return {
     cols, rows,
-    glyphCount,
-    enemyCount,
     miningGateCount,
-    hiveCount,
+    killZoneCount,
     loopFraction,
     waveNum: w,
   };
+}
+
+// Stable per-wave noise so the count for a given wave is deterministic
+// (matches the maze seed). Cheap; enough variation for "1-2" buckets.
+function rng01(w) {
+  const x = Math.sin(w * 12.9898) * 43758.5453;
+  return x - Math.floor(x);
 }
 
 // ---- GENERATE MAZE ----
@@ -187,13 +164,8 @@ export function generateMaze(waveNum) {
     }
   }
 
-  // ---- SPAWN / EXIT ----
+  // ---- SPAWN ----
   const spawn = { col: 1, row: 1 };
-  const exit = { col: cols - 2, row: rows - 2 };
-
-  const usedCells = new Set();
-  usedCells.add(idx(spawn.col, spawn.row));
-  usedCells.add(idx(exit.col, exit.row));
 
   // ---- MINING GATES ----
   // Pick interior open passages and close them — re-set the wall bit
@@ -288,124 +260,39 @@ export function generateMaze(waveNum) {
   const regionCount = regionId;
   const spawnRegionId = regions[idx(spawn.col, spawn.row)];
 
-  // ---- DEAD-END LIST (sorted by distance from spawn) ----
-  const deadEnds = [];
-  for (let r = 0; r < rows; r++) {
-    for (let c = 0; c < cols; c++) {
-      const w = cells[idx(c, r)].walls;
-      if (_countBits(w) === 3) {
-        const dist = Math.abs(c - spawn.col) + Math.abs(r - spawn.row);
-        deadEnds.push({ col: c, row: r, dist, regionId: regions[idx(c, r)] });
-      }
-    }
-  }
-  deadEnds.sort((a, b) => b.dist - a.dist);
-
-  // ---- GLYPHS ----
-  // Prefer dead-ends in non-spawn regions (forces the player to break
-  // gates), then dead-ends in the spawn region, then any far cell.
-  const glyphs = [];
-  const glyphCandidates = [
-    ...deadEnds.filter(d => d.regionId !== spawnRegionId),
-    ...deadEnds.filter(d => d.regionId === spawnRegionId),
-  ];
-  for (const d of glyphCandidates) {
-    if (glyphs.length >= config.glyphCount) break;
-    const k = idx(d.col, d.row);
-    if (usedCells.has(k)) continue;
-    glyphs.push({ col: d.col, row: d.row });
-    usedCells.add(k);
-  }
-  // Fallback for very small mazes — fill remaining glyphs anywhere.
-  const minDist = Math.floor(Math.max(cols, rows) * 0.3);
-  while (glyphs.length < config.glyphCount) {
-    let placed = false;
-    for (let attempt = 0; attempt < 200; attempt++) {
+  // ---- KILL ZONES ----
+  // Stationary hazards. Visual kind cycles by chapter:
+  //   chapter 0-1 → 'rune' (glowing skull-rune)
+  //   chapter 2-3 → 'mine' (minesweeper bomb)
+  //   chapter 4-5 → 'ghost'
+  // Density ramps with the wave (config.killZoneCount). Placed
+  // away from spawn and away from each other so the player has
+  // time to react after a slide reveals a new zone.
+  const killZones = [];
+  if (config.killZoneCount > 0) {
+    const chapter = Math.floor((w - 1) / 10) % 6;
+    const kind = (chapter <= 1) ? 'rune' : (chapter <= 3) ? 'mine' : 'ghost';
+    const spawnIdx = idx(spawn.col, spawn.row);
+    const usedKZ = new Set([spawnIdx]);
+    let attempts = 0;
+    while (killZones.length < config.killZoneCount && attempts < 800) {
+      attempts++;
       const c = Math.floor(rng() * cols);
       const r = Math.floor(rng() * rows);
       const k = idx(c, r);
-      const dist = Math.abs(c - spawn.col) + Math.abs(r - spawn.row);
-      if (!usedCells.has(k) && dist >= minDist) {
-        glyphs.push({ col: c, row: r });
-        usedCells.add(k);
-        placed = true;
-        break;
+      if (usedKZ.has(k)) continue;
+      // Manhattan distance from spawn — keep at least 3 cells away
+      // so the player doesn't slide into one on their first move.
+      const dSpawn = Math.abs(c - spawn.col) + Math.abs(r - spawn.row);
+      if (dSpawn < 3) continue;
+      // Spread — at least 2 cells from any other kill zone.
+      let tooClose = false;
+      for (const other of killZones) {
+        if (Math.abs(other.col - c) + Math.abs(other.row - r) < 2) { tooClose = true; break; }
       }
-    }
-    if (!placed) break;
-  }
-
-  // ---- HIVE CELLS ----
-  // One per non-spawn region while hives remain to place; fall back to
-  // any open cell after all gated regions are populated.
-  const hiveSpawns = [];
-  if (config.hiveCount > 0) {
-    const claimedRegions = new Set([spawnRegionId]);
-    for (const d of deadEnds) {
-      if (hiveSpawns.length >= config.hiveCount) break;
-      if (claimedRegions.has(d.regionId)) continue;
-      const k = idx(d.col, d.row);
-      if (usedCells.has(k)) continue;
-      hiveSpawns.push({ col: d.col, row: d.row });
-      usedCells.add(k);
-      claimedRegions.add(d.regionId);
-    }
-    // Remaining hives: any far-from-spawn cell.
-    while (hiveSpawns.length < config.hiveCount) {
-      let placed = false;
-      for (let attempt = 0; attempt < 200; attempt++) {
-        const c = Math.floor(rng() * cols);
-        const r = Math.floor(rng() * rows);
-        const k = idx(c, r);
-        const dist = Math.abs(c - spawn.col) + Math.abs(r - spawn.row);
-        if (!usedCells.has(k) && dist >= minDist) {
-          hiveSpawns.push({ col: c, row: r });
-          usedCells.add(k);
-          placed = true;
-          break;
-        }
-      }
-      if (!placed) break;
-    }
-  }
-
-  // ---- ENEMY PATROL CELLS ----
-  // Spread across regions so each region has at least one enemy when
-  // possible; the rest go anywhere available.
-  const enemySpawns = [];
-  if (config.enemyCount > 0) {
-    const perRegionMin = Math.min(2, Math.floor(config.enemyCount / Math.max(1, regionCount)));
-    for (let rid = 0; rid < regionCount; rid++) {
-      let placed = 0;
-      for (let attempt = 0; attempt < 200 && placed < perRegionMin; attempt++) {
-        const c = Math.floor(rng() * cols);
-        const r = Math.floor(rng() * rows);
-        const k = idx(c, r);
-        if (regions[k] !== rid) continue;
-        if (usedCells.has(k)) continue;
-        const dist = Math.abs(c - spawn.col) + Math.abs(r - spawn.row);
-        if (dist < 3 && rid === spawnRegionId) continue; // not on top of player
-        enemySpawns.push({ col: c, row: r, regionId: rid });
-        usedCells.add(k);
-        placed++;
-      }
-    }
-    // Top up.
-    while (enemySpawns.length < config.enemyCount) {
-      let placed = false;
-      for (let attempt = 0; attempt < 200; attempt++) {
-        const c = Math.floor(rng() * cols);
-        const r = Math.floor(rng() * rows);
-        const k = idx(c, r);
-        if (usedCells.has(k)) continue;
-        const dist = Math.abs(c - spawn.col) + Math.abs(r - spawn.row);
-        if (dist < 3) continue;
-        enemySpawns.push({ col: c, row: r, regionId: regions[k] });
-        usedCells.add(k);
-        placed = true;
-        break;
-      }
-      if (!placed) break;
+      if (tooClose) continue;
+      killZones.push({ col: c, row: r, kind });
+      usedKZ.add(k);
     }
   }
 
@@ -414,11 +301,8 @@ export function generateMaze(waveNum) {
     rows,
     cells,
     spawn,
-    exit,
-    glyphs,
     miningWalls,
-    hiveSpawns,
-    enemySpawns,
+    killZones,
     regions,
     regionCount,
     spawnRegionId,
@@ -429,12 +313,6 @@ export function generateMaze(waveNum) {
 }
 
 // ---- HELPERS ----
-
-function _countBits(n) {
-  let count = 0;
-  while (n) { count += n & 1; n >>= 1; }
-  return count;
-}
 
 /** Cell grid → world coordinates (centered at arena origin). */
 export function cellToWorld(col, row, mazeCols, mazeRows) {
