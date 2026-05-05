@@ -2386,6 +2386,8 @@ initGamepad({
 
 // ---- GAME LIFECYCLE ----
 function startGame() {
+  // Exit endless glyphs if active — we're switching to the main game
+  if (S.endlessGlyphs) { try { exitEndlessGlyphs(); } catch(_) {} }
   // Tear down the run-reward overlay if still showing from SIGNAL LOST.
   try { hideRunReward(); } catch (_) {}
   try { clearRunStones(); } catch (_) {}
@@ -2860,6 +2862,7 @@ function startGame() {
 // systems boot identically.
 // ---------------------------------------------------------------------
 function startTutorial() {
+  if (S.endlessGlyphs) { try { exitEndlessGlyphs(); } catch(_) {} }
   try { hideRunReward(); } catch (_) {}
   Audio.stopPhoneRing && Audio.stopPhoneRing();
   Audio.stopCDrone && Audio.stopCDrone();
@@ -4311,6 +4314,9 @@ function animate() {
         try { clearHazards(); } catch (e) {}
       }
     }
+    // Skip the main game's wave system when in Endless Glyphs mode —
+    // endless glyphs has its own wave/enemy/phase management.
+    if (!S.endlessGlyphs) {
     updateWaves(worldDt);
     // Notify the pixl-pal system of new waves so it can award charges
     // every 3rd wave. Cheap: one int comparison per frame.
@@ -4551,6 +4557,7 @@ function animate() {
         console.error('[chapter-change] FAILED:', e);
       }
     }
+    } // end if (!S.endlessGlyphs) — skip main wave system in endless mode
     // Keep a reference to player.pos on S so flingers can spawn near
     // the player without coupling directly to player module.
     S.playerPos = player.pos;
