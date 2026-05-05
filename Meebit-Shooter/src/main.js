@@ -6468,10 +6468,10 @@ function bumpKillstreak() {
   if (S.killstreak > (S.killstreakBest || 0)) {
     S.killstreakBest = S.killstreak;
   }
-  // VO killstreak callouts
-  if (S.killstreak === 10) playVO('cluster_clear');
-  else if (S.killstreak === 25) playVO('rampage');
-  else if (S.killstreak === 50) playVO('god_like');
+  // VO killstreak callouts (probabilistic — not every time)
+  if (S.killstreak === 10) playRandomVO(['cluster_clear'], 0.2);
+  else if (S.killstreak === 25) playRandomVO(['rampage'], 0.3);
+  else if (S.killstreak === 50) playRandomVO(['god_like'], 0.5);
   // Overdrive trigger — one-shot per streak. The triggered flag is
   // reset when the streak drops back to 0, so breaking and rebuilding
   // a 100-streak earns another overdrive.
