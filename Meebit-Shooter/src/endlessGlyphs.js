@@ -103,6 +103,12 @@ export function startEndlessGlyphs(playerCount = 1) {
   // Hide the title screen.
   const titleEl = document.getElementById('title');
   if (titleEl) titleEl.classList.add('hidden');
+  // Hide the loading screen (shows "100% READY · ATTACK THE AI")
+  const loadEl = document.getElementById('loading');
+  if (loadEl) loadEl.style.display = 'none';
+  // Hide any lingering hyperdrive overlay from a previous main game run
+  const hypeEl = document.getElementById('hyperdrive-overlay');
+  if (hypeEl) hypeEl.style.display = 'none';
   // Show the game HUD.
   document.querySelectorAll('.hidden-ui').forEach(el => el.style.display = '');
   // Endless Glyphs hides the chapter/wave/kills HUD top bar (those
