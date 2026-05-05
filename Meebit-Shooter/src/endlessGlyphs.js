@@ -100,15 +100,21 @@ export function startEndlessGlyphs(playerCount = 1) {
   Audio.setMusicSection && Audio.setMusicSection('endless_glyphs');
   try { Audio.startMusic && Audio.startMusic(1); } catch (e) {}
 
-  // Hide the title screen.
+  // Hide ALL overlays that could be blocking the game view.
   const titleEl = document.getElementById('title');
   if (titleEl) titleEl.classList.add('hidden');
-  // Hide the loading screen (shows "100% READY · ATTACK THE AI")
+  // Loading screen ("0-100% INITIALIZING")
   const loadEl = document.getElementById('loading');
   if (loadEl) loadEl.style.display = 'none';
-  // Hide any lingering hyperdrive overlay from a previous main game run
+  // Matrix dive ("100% READY · ATTACK THE AI")
+  const diveEl = document.getElementById('matrix-dive');
+  if (diveEl) { diveEl.style.display = 'none'; diveEl.remove(); }
+  // Hyperdrive overlay (from previous main game run)
   const hypeEl = document.getElementById('hyperdrive-overlay');
-  if (hypeEl) hypeEl.style.display = 'none';
+  if (hypeEl) { hypeEl.style.display = 'none'; hypeEl.remove(); }
+  // Initiate protocol ("SIMVOID >> BEGIN <<")
+  const ipEl = document.getElementById('initiate-protocol');
+  if (ipEl) { ipEl.style.display = 'none'; ipEl.remove(); }
   // Show the game HUD.
   document.querySelectorAll('.hidden-ui').forEach(el => el.style.display = '');
   // Endless Glyphs hides the chapter/wave/kills HUD top bar (those
