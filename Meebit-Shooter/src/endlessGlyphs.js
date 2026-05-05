@@ -1282,3 +1282,6 @@ document.addEventListener('keydown', (e) => {
     window.__unlockGlyphs();
   }
 });
+
+// Bridge for inline HTML script — must be set at module level
+window.__startEndlessGlyphs = startEndlessGlyphs;
