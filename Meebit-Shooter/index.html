@@ -446,6 +446,32 @@
   </div>
   <button id="glyphs-modal-cancel" style="margin-top:36px; padding:10px 24px; background:transparent; border:1px solid #666; color:#aaa; font-family:'Courier New',monospace; font-size:11px; letter-spacing:3px; cursor:pointer;">CANCEL</button>
 </div>
+<script>
+// Wire Endless Glyphs modal — inline so it works regardless of module load order
+(function() {
+  var btn = document.getElementById('glyphs-btn');
+  var modal = document.getElementById('glyphs-player-modal');
+  var cancel = document.getElementById('glyphs-modal-cancel');
+  if (btn && modal) {
+    btn.addEventListener('click', function() { modal.style.display = 'flex'; });
+  }
+  if (cancel && modal) {
+    cancel.addEventListener('click', function() { modal.style.display = 'none'; });
+  }
+  var solo = modal && modal.querySelector('.glyphs-pcount-btn[data-count="1"]');
+  if (solo) {
+    solo.addEventListener('click', function() {
+      modal.style.display = 'none';
+      // Bridge to endlessGlyphs.js — the module sets this on load
+      if (window.__startEndlessGlyphs) {
+        window.__startEndlessGlyphs(1);
+      } else {
+        console.warn('[glyphs] startEndlessGlyphs not available yet');
+      }
+    });
+  }
+})();
+</script>
 
 </body>
 </html>
