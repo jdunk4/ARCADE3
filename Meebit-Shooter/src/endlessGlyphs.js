@@ -289,6 +289,7 @@ export function exitEndlessGlyphs() {
   _slide = null;
   _mazeBuilt = false;
   _activeMazeData = null;
+  _popFog();
 
   restoreNormalFloor();
   _restoreWaveFloor();
@@ -553,7 +554,15 @@ function _prepareWave(waveNum) {
 function _enterWaveAssemble(waveNum) {
   S.endlessPhase = 'WAVE_ASSEMBLE';
   S.endlessPhaseT = 0;
-  _enterDarkMode();
+  // Keep the bright lobby lighting — slide-fill uses a top-down view
+  // at y=92 and the chapter-7 fog (used by the old shooter mode)
+  // would hide the entire maze from this height.
+  _exitDarkMode();
+  // Default scene fog ends at 85 — the top-down camera is at 92, so
+  // the whole maze sits in fog. Push fog out of view for the duration
+  // of the wave; restored in _enterWaveDissolve / _enterIntermission /
+  // exitEndlessGlyphs.
+  _pushFog();
 
   // Generate + render the maze. The assemble animation fades the
   // wall materials in over ~2s; the meshes have to exist in the
@@ -652,6 +661,7 @@ function _enterWaveDissolve() {
   _activeMazeData = null;
   _slide = null;
   S.endlessTopDown = false;
+  _popFog();
   startDissolve(wallSnapshot, S.endlessWave);
   _setWaveHUD('WAVE ' + S.endlessWave + ' COMPLETE', 'DISSOLVING');
 }
@@ -820,6 +830,7 @@ function _retryWave(reason) {
   clearMaze(scene);
   _mazeBuilt = false;
   _activeMazeData = null;
+  _popFog();
   UI.toast(reason + ' · RETRY WAVE ' + S.endlessWave, '#ff2e4d', 1500);
   try { Audio.shot && Audio.shot('shieldHit'); } catch (_) {}
   // Re-enter assembly with the same wave number — the seed is
@@ -838,6 +849,7 @@ function _enterIntermission() {
   S.endlessPhase = 'INTERMISSION';
   S.endlessPhaseT = 0;
   S.endlessTopDown = false;
+  _popFog();
   // Maze meshes already cleared by _enterWaveDissolve. Cancel any
   // lingering dissolve / assemble particles in case the animation
   // was still mid-flight when the wave-10 boundary triggered.
@@ -1046,6 +1058,27 @@ function _restoreWaveFloor() {
 //                                                   the dim arena)
 
 let _darkModeActive = false;
+
+// ---- FOG STASH ----
+// The default scene fog (configured in scene.js for the chase-camera
+// shooter) renders the slide-fill top-down view as a black screen.
+// We snapshot the original near/far values when entering the wave
+// and restore them on dissolve/exit so the rest of the game looks
+// unchanged.
+let _fogStash = null;
+function _pushFog() {
+  if (_fogStash) return;
+  if (!scene.fog) return;
+  _fogStash = { near: scene.fog.near, far: scene.fog.far };
+  scene.fog.near = 200;
+  scene.fog.far = 400;
+}
+function _popFog() {
+  if (!_fogStash || !scene.fog) return;
+  scene.fog.near = _fogStash.near;
+  scene.fog.far = _fogStash.far;
+  _fogStash = null;
+}
 
 function _enterDarkMode() {
   if (_darkModeActive) return;
