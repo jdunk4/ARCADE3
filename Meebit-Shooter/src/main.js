@@ -5127,7 +5127,7 @@ function fireWeapon() {
   const shakeAmt = w.name === 'SHOTGUN' ? 0.18 : 0.08;
   shake(shakeAmt, 0.1);
   Audio.shot(S.currentWeapon);
-  if (_isReloadable(id)) S.ammo[id]--;
+  if (_isReloadable(id) && S.ammo) S.ammo[id]--;
 }
 
 // Per-chapter laser tint. All chapters get matrix green (0x00ff66) by
