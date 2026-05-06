@@ -293,6 +293,8 @@ export function exitEndlessGlyphs() {
   _mazeBuilt = false;
   _activeMazeData = null;
   _hideEmojiAvatar();
+  _disposeGlyphCollector();
+  _restoreStandardHud();
   _popFog();
   try { setCrowdVisible(true); } catch (_) {}
 
@@ -535,6 +537,91 @@ const SLIDE_CELLS_PER_SEC = 12;
 let _slide = null;                   // { startX, startZ, tx, tz, t, duration, cells, idx, willKill }
 let _facingDir = { dx: 1, dz: 0 };   // last move direction (used for fire aim)
 
+// =====================================================================
+// HUD HIDE + GLYPH COLLECTOR
+// =====================================================================
+
+const _ENDLESS_HIDE_IDS = [
+  'hud-top', 'player-panel', 'inventory', 'controls',
+  'joystick', 'fire-btn', 'pick-btn', 'pal-btn', 'stratagem-hud',
+];
+const _hiddenHudPrev = new Map();
+
+function _hideStandardHud() {
+  for (const id of _ENDLESS_HIDE_IDS) {
+    const el = document.getElementById(id);
+    if (!el) continue;
+    if (!_hiddenHudPrev.has(id)) _hiddenHudPrev.set(id, el.style.display);
+    el.style.display = 'none';
+  }
+}
+
+function _restoreStandardHud() {
+  for (const [id, prev] of _hiddenHudPrev) {
+    const el = document.getElementById(id);
+    if (el) el.style.display = prev || '';
+  }
+  _hiddenHudPrev.clear();
+}
+
+let _glyphCollectorEl = null;
+let _glyphCollectorSlots = null;
+
+function _ensureGlyphCollector(total) {
+  _disposeGlyphCollector();
+  const root = document.createElement('div');
+  root.id = 'endless-glyph-collector';
+  root.style.cssText = [
+    'position:fixed', 'top:78px', 'left:50%',
+    'transform:translateX(-50%)',
+    'display:flex', 'gap:10px',
+    'padding:10px 14px',
+    'background:rgba(0,0,0,0.65)',
+    'border:1px solid rgba(79,247,255,0.55)',
+    'border-radius:8px',
+    'z-index:99996',
+    'font-family:"Courier New",monospace',
+  ].join(';');
+  _glyphCollectorSlots = [];
+  for (let i = 0; i < total; i++) {
+    const slot = document.createElement('div');
+    slot.style.cssText = [
+      'width:36px', 'height:36px',
+      'border:2px solid rgba(255,255,255,0.25)',
+      'border-radius:6px',
+      'display:flex', 'align-items:center', 'justify-content:center',
+      'font-size:22px', 'font-weight:bold',
+      'color:rgba(255,255,255,0.25)',
+      'background:rgba(255,255,255,0.04)',
+      'transition:all 0.18s ease-out',
+    ].join(';');
+    slot.textContent = '?';
+    root.appendChild(slot);
+    _glyphCollectorSlots.push(slot);
+  }
+  document.body.appendChild(root);
+  _glyphCollectorEl = root;
+}
+
+function _markGlyphCollected(idx, char, tint) {
+  if (!_glyphCollectorSlots) return;
+  const slot = _glyphCollectorSlots[idx];
+  if (!slot) return;
+  slot.textContent = char;
+  slot.style.color = tint;
+  slot.style.borderColor = tint;
+  slot.style.boxShadow = `0 0 16px ${tint}`;
+  slot.style.background = `${tint}22`;
+}
+
+function _disposeGlyphCollector() {
+  if (_glyphCollectorEl) {
+    _glyphCollectorEl.remove();
+    _glyphCollectorEl = null;
+  }
+  _glyphCollectorSlots = null;
+}
+
 // Avatar — a billboarded sprite that stands in for the Meebit in
 // the top-down slide-fill view. Loads the head-only portrait of
 // Meebit #16801 from assets/16801_portrait.png (fetched once from
@@ -658,7 +745,10 @@ function _enterWaveAssemble(waveNum) {
     player.pos.z = spawnWorld.z;
   }
   markCellVisited(mazeData.spawn.col, mazeData.spawn.row);
-  collectGlyphAt(mazeData.spawn.col, mazeData.spawn.row);
+  {
+    const c = collectGlyphAt(mazeData.spawn.col, mazeData.spawn.row);
+    if (c) _markGlyphCollected(c.index, c.char, c.tint);
+  }
   _slide = null;
   _facingDir = { dx: 1, dz: 0 };
   S.endlessTopDown = true;
@@ -668,6 +758,10 @@ function _enterWaveAssemble(waveNum) {
   // arena nicely from the top-down camera.
   try { clearGravestones(); } catch (_) {}
   try { setCrowdVisible(true); } catch (_) {}
+  // Hide the standard combat HUD and surface the glyph collector
+  // strip — the only run UI in this mode.
+  _hideStandardHud();
+  _ensureGlyphCollector(mazeData.glyphs.length);
 
   _setWaveHUD('WAVE ' + waveNum, 'ASSEMBLING');
 }
@@ -702,10 +796,9 @@ function _tickWave(dt) {
   // Slide animation tick.
   _tickSlide(dt);
 
-  // HUD — glyph progress (the win condition).
-  const total = getGlyphsTotal();
-  const got = getGlyphsCollected();
-  _setWaveHUD('WAVE ' + S.endlessWave, got + '/' + total + ' GLYPHS');
+  // HUD — wave label only; glyph progress lives in the collector
+  // strip below the wave banner.
+  _setWaveHUD('WAVE ' + S.endlessWave, '');
 
   // Win check — every glyph collected.
   if (total > 0 && got >= total) {
@@ -734,6 +827,8 @@ function _enterWaveDissolve() {
   _slide = null;
   S.endlessTopDown = false;
   _hideEmojiAvatar();
+  _disposeGlyphCollector();
+  _restoreStandardHud();
   _popFog();
   startDissolve(wallSnapshot, S.endlessWave);
   _setWaveHUD('WAVE ' + S.endlessWave + ' COMPLETE', 'DISSOLVING');
@@ -856,8 +951,10 @@ function _tickSlide(dt) {
       if (u < targetU) break;
       const c = _slide.cells[_slide.idx];
       markCellVisited(c.col, c.row);
-      if (collectGlyphAt(c.col, c.row)) {
+      const collected = collectGlyphAt(c.col, c.row);
+      if (collected) {
         try { Audio.shot && Audio.shot('pickaxe'); } catch (_) {}
+        _markGlyphCollected(collected.index, collected.char, collected.tint);
       }
       const decorPos = clearDecorEnemyAt(c.col, c.row);
       if (decorPos) {
@@ -899,6 +996,7 @@ function _retryWave(reason) {
   _mazeBuilt = false;
   _activeMazeData = null;
   _hideEmojiAvatar();
+  _disposeGlyphCollector();
   _popFog();
   UI.toast(reason + ' · RETRY WAVE ' + S.endlessWave, '#ff2e4d', 1500);
   try { Audio.shot && Audio.shot('shieldHit'); } catch (_) {}

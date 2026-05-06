@@ -271,6 +271,8 @@ export function buildMaze(mazeData, scene, fillTint) {
       collected: false,
       baseY: 2.0,
       phase: i * 1.3,
+      char,
+      tint: tintHex,
     });
   }
 
@@ -458,16 +460,17 @@ export function getCoverage() {
 // GLYPHS (the win condition)
 // ============================================================
 export function collectGlyphAt(col, row) {
-  for (const g of _glyphEntries) {
+  for (let i = 0; i < _glyphEntries.length; i++) {
+    const g = _glyphEntries[i];
     if (g.collected) continue;
     if (g.col === col && g.row === row) {
       g.collected = true;
       if (g.mesh) g.mesh.visible = false;
       _glyphsCollected++;
-      return true;
+      return { index: i, char: g.char, tint: g.tint };
     }
   }
-  return false;
+  return null;
 }
 export function getGlyphsRemaining() {
   return _glyphEntries.length - _glyphsCollected;

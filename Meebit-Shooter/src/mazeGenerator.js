@@ -186,30 +186,34 @@ export function generateMaze(waveNum) {
     }
   }
 
-  // Step 4 — extra openings (loops). Higher waves have FEWER loops
-  // (more dead-ends, more constrained). Wave 1 gets a few extras
-  // so the layout reads as varied without trapping the player in
-  // long forced sequences.
+  // Step 4 — extra openings (loops). Each opening is verified to
+  // keep every floor cell slide-reachable (a perfect maze is fully
+  // slide-fillable, but adding loops can create open pockets where
+  // the slide overshoots a cell with no way to stop on it). Any
+  // opening that orphans a cell from the slide-BFS is reverted.
   let loopOpenings;
-  if (w <= 2) loopOpenings = 8;
-  else if (w <= 5) loopOpenings = 5;
-  else if (w <= 8) loopOpenings = 3;
-  else loopOpenings = 2;
+  if (w <= 2) loopOpenings = 6;
+  else if (w <= 5) loopOpenings = 4;
+  else if (w <= 8) loopOpenings = 2;
+  else loopOpenings = 1;
 
   for (let i = 0; i < loopOpenings; i++) {
-    // Pick a random interior wall cell that sits between two
-    // logical cells (i.e. has odd+even coords).
     let attempts = 0;
-    while (attempts < 30) {
+    while (attempts < 60) {
       attempts++;
       const c = 1 + Math.floor(rng() * (cols - 2));
       const r = 1 + Math.floor(rng() * (rows - 2));
       // Must be on a passage line — exactly one of (c,r) is odd.
       const cOdd = (c & 1) === 1;
       const rOdd = (r & 1) === 1;
-      if (cOdd === rOdd) continue;     // both odd = logical cell, both even = corner post
+      if (cOdd === rOdd) continue;
       if (cells[idx(c, r)].kind !== 'wall') continue;
       cells[idx(c, r)].kind = 'floor';
+      if (!_isAllFloorSlideReachable(cells, cols, rows, spawn)) {
+        // The opening introduced an unreachable pocket. Revert.
+        cells[idx(c, r)].kind = 'wall';
+        continue;
+      }
       break;
     }
   }
@@ -301,6 +305,54 @@ export function generateMaze(waveNum) {
     config,
     cellSize: CELL_SIZE,
   };
+}
+
+// ---- SLIDE REACHABILITY ----
+// Stronger than walking-connectivity: simulates the slide-fill
+// physics so we can verify every floor cell sits on at least one
+// possible slide path. The player's slide always travels until a
+// wall, so a perfect maze + a stray loop opening can leave a cell
+// that walks-connect but the slide can never stop on it (or pass
+// over it).
+function _isAllFloorSlideReachable(cells, cols, rows, spawn) {
+  const idx = (c, r) => r * cols + c;
+  const startKey = idx(spawn.col, spawn.row);
+  if (cells[startKey].kind !== 'floor') return false;
+  const visitedStops = new Uint8Array(cols * rows);
+  const filled = new Uint8Array(cols * rows);
+  visitedStops[startKey] = 1;
+  filled[startKey] = 1;
+  const queue = [{ c: spawn.col, r: spawn.row }];
+  const DIRS = [[-1, 0], [1, 0], [0, -1], [0, 1]];
+
+  while (queue.length > 0) {
+    const { c, r } = queue.shift();
+    for (const [dc, dr] of DIRS) {
+      let nc = c, nr = r;
+      while (true) {
+        const tc = nc + dc, tr = nr + dr;
+        if (tc < 0 || tc >= cols || tr < 0 || tr >= rows) break;
+        if (cells[idx(tc, tr)].kind !== 'floor') break;
+        nc = tc; nr = tr;
+        filled[idx(nc, nr)] = 1;
+      }
+      if (nc === c && nr === r) continue;       // didn't move
+      const stopKey = idx(nc, nr);
+      if (!visitedStops[stopKey]) {
+        visitedStops[stopKey] = 1;
+        queue.push({ c: nc, r: nr });
+      }
+    }
+  }
+
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      if (cells[idx(c, r)].kind === 'floor' && !filled[idx(c, r)]) {
+        return false;
+      }
+    }
+  }
+  return true;
 }
 
 // ---- CONNECTIVITY ----
