@@ -110,7 +110,7 @@ function rng01(w) {
 // risk of an unreachable glyph.
 export function generateMaze(waveNum) {
   let lastAttempt = null;
-  for (let i = 0; i < 50; i++) {
+  for (let i = 0; i < 200; i++) {
     const result = _generateMazeAttempt(waveNum, i, /*allowFallbacks*/ false);
     if (result) return result;
     lastAttempt = i;
@@ -209,18 +209,83 @@ function _generateMazeAttempt(waveNum, attemptOffset, allowFallbacks = true) {
     }
   }
 
-  // Step 4 — extra openings (loops). Higher waves get MORE openings
-  // so the layout reads as more open / fewer interior walls; the
-  // arena boundary still constrains slides so the maze remains
-  // solvable. Each opening is validated by _isAllFloorSlideReachable
-  // and reverted if it orphans a cell, so we won't break
-  // solvability — but more openings = more chances for the player to
-  // route through wide-open spaces.
+  // Step 3.5 — break +crosses (4-degree logical cells). A logical
+  // cell with all 4 passages open has no wall in any direction, so
+  // the slide can't STOP at it — cells reachable only via that
+  // junction become unreachable. For each +cross, close one passage,
+  // verifying the cells beyond are still reachable through the
+  // remaining 3 connections (perfect-maze trees plus the existing
+  // closures). Skips closures that would orphan a cell.
+  const _logicalReachableCount = (closedSet) => {
+    const seen = new Uint8Array(LOGICAL_N * LOGICAL_N);
+    seen[0] = 1;
+    const q = [[0, 0]];
+    let count = 1;
+    while (q.length) {
+      const [cc, cr] = q.shift();
+      for (const [dlc, dlr] of DIRS) {
+        const nc = cc + dlc, nr = cr + dlr;
+        if (nc < 0 || nc >= LOGICAL_N || nr < 0 || nr >= LOGICAL_N) continue;
+        const ni = nr * LOGICAL_N + nc;
+        if (seen[ni]) continue;
+        // The passage between (cc,cr) and (nc,nr) is at the cell
+        // (2*cc+1+dlc, 2*cr+1+dlr) in render coords.
+        const passageC = 2 * cc + 1 + dlc;
+        const passageR = 2 * cr + 1 + dlr;
+        if (cells[idx(passageC, passageR)].kind !== 'floor') continue;
+        if (closedSet.has(passageR * cols + passageC)) continue;
+        seen[ni] = 1;
+        q.push([nc, nr]);
+        count++;
+      }
+    }
+    return count;
+  };
+
+  for (let lr = 0; lr < LOGICAL_N; lr++) {
+    for (let lc = 0; lc < LOGICAL_N; lc++) {
+      let openCount = 0;
+      const openPassages = [];
+      for (const [dlc, dlr] of DIRS) {
+        const nlc = lc + dlc, nlr = lr + dlr;
+        if (nlc < 0 || nlc >= LOGICAL_N || nlr < 0 || nlr >= LOGICAL_N) continue;
+        const passageC = 2 * lc + 1 + dlc;
+        const passageR = 2 * lr + 1 + dlr;
+        if (cells[idx(passageC, passageR)].kind === 'floor') {
+          openCount++;
+          openPassages.push([passageC, passageR]);
+        }
+      }
+      if (openCount < 4) continue;     // not a +cross
+
+      // Try closing each of the 4 passages; pick the first that
+      // doesn't orphan any logical cell.
+      // Shuffle for variety.
+      for (let i = openPassages.length - 1; i > 0; i--) {
+        const j = Math.floor(rng() * (i + 1));
+        [openPassages[i], openPassages[j]] = [openPassages[j], openPassages[i]];
+      }
+      for (const [pc, pr] of openPassages) {
+        const closedSet = new Set([pr * cols + pc]);
+        if (_logicalReachableCount(closedSet) === LOGICAL_N * LOGICAL_N) {
+          cells[idx(pc, pr)].kind = 'wall';
+          break;
+        }
+      }
+    }
+  }
+
+  // Step 4 — extra openings (loops). Slide-SCC is hard to satisfy
+  // for a strict perfect maze (tree); each extra opening adds a
+  // redundant path that gives the slide more places to stop. Use a
+  // generous count even for early waves so validation passes
+  // reliably without falling back to the serpentine layout. Each
+  // opening is validated and reverted if it orphans a cell.
   let loopOpenings;
-  if (w <= 2) loopOpenings = 2;
-  else if (w <= 5) loopOpenings = 6;
-  else if (w <= 8) loopOpenings = 10;
-  else loopOpenings = 16;
+  if (w <= 2) loopOpenings = 14;
+  else if (w <= 5) loopOpenings = 18;
+  else if (w <= 8) loopOpenings = 22;
+  else loopOpenings = 26;
 
   for (let i = 0; i < loopOpenings; i++) {
     let attempts = 0;
@@ -247,6 +312,28 @@ function _generateMazeAttempt(waveNum, attemptOffset, allowFallbacks = true) {
   // by Step 2 — defensive assignment in case future tweaks land
   // elsewhere).
   cells[idx(spawn.col, spawn.row)].kind = 'floor';
+
+  // Aggressive top-up: if the maze still isn't slide-SCC after the
+  // configured loop openings, KEEP ADDING openings on passage edges
+  // until it passes (or we run out of viable candidates). Each
+  // opening only ADDS connectivity so this generally converges
+  // before the maze fully opens up. Bounded so we never spin.
+  for (let extra = 0; extra < 100; extra++) {
+    if (_isAllFloorSlideReachable(cells, cols, rows, spawn)) break;
+    let placed = false;
+    for (let attempt = 0; attempt < 80; attempt++) {
+      const c = 1 + Math.floor(rng() * (cols - 2));
+      const r = 1 + Math.floor(rng() * (rows - 2));
+      const cOdd = (c & 1) === 1;
+      const rOdd = (r & 1) === 1;
+      if (cOdd === rOdd) continue;     // not a passage edge
+      if (cells[idx(c, r)].kind !== 'wall') continue;
+      cells[idx(c, r)].kind = 'floor';
+      placed = true;
+      break;
+    }
+    if (!placed) break;
+  }
 
   // Without fallbacks: bail early if not slide-SCC. The outer
   // generateMaze retry loop will try the next seed.
@@ -281,7 +368,7 @@ function _generateMazeAttempt(waveNum, attemptOffset, allowFallbacks = true) {
     }
 
     if (!_isAllFloorSlideReachable(cells, cols, rows, spawn)) {
-      _applySerpentineLayout(cells, cols, rows);
+      _applySerpentineLayout(cells, cols, rows, waveNum);
     }
   }
 
@@ -422,7 +509,7 @@ function _finalizeMazeData(waveNum, cells, cols, rows, spawn, glyphs) {
 // then right. The slide path is forced:
 //   right → drop right gap → left → drop left gap → right → ...
 // every floor cell is touched.
-function _applySerpentineLayout(cells, cols, rows) {
+function _applySerpentineLayout(cells, cols, rows, waveNum = 1) {
   const idx = (c, r) => r * cols + c;
   // Reset interior to floor.
   for (let r = 1; r < rows - 1; r++) {
@@ -430,13 +517,25 @@ function _applySerpentineLayout(cells, cols, rows) {
       cells[idx(c, r)].kind = 'floor';
     }
   }
-  // Wall rows at every even interior row.
-  let i = 0;
-  for (let r = 2; r < rows - 1; r += 2, i++) {
-    const gapCol = (i % 2 === 0) ? (cols - 2) : 1;
-    for (let c = 1; c < cols - 1; c++) {
-      if (c !== gapCol) {
-        cells[idx(c, r)].kind = 'wall';
+  // Alternate orientation per wave — odd waves get horizontal wall
+  // rows, even waves get vertical wall columns. Breaks up the
+  // "always-horizontal-stripes" look when fallback chains hit
+  // back-to-back waves.
+  const horizontal = (waveNum & 1) === 1;
+  if (horizontal) {
+    let i = 0;
+    for (let r = 2; r < rows - 1; r += 2, i++) {
+      const gapCol = (i % 2 === 0) ? (cols - 2) : 1;
+      for (let c = 1; c < cols - 1; c++) {
+        if (c !== gapCol) cells[idx(c, r)].kind = 'wall';
+      }
+    }
+  } else {
+    let i = 0;
+    for (let c = 2; c < cols - 1; c += 2, i++) {
+      const gapRow = (i % 2 === 0) ? (rows - 2) : 1;
+      for (let r = 1; r < rows - 1; r++) {
+        if (r !== gapRow) cells[idx(c, r)].kind = 'wall';
       }
     }
   }
