@@ -200,16 +200,127 @@ const TEMPLATE_LEVEL_40 = `###################
 ##.WWWWWWWWWWWWW.##
 ###################`;
 
+// Level 2 — simple "U around tall pillar" (one center wall block)
+const TEMPLATE_LEVEL_2 = `###################
+###################
+###################
+###################
+###################
+###################
+######......G######
+######.......######
+######..WW...######
+######..WW...######
+######..WW...######
+######.......######
+######..S....######
+###################
+###################
+###################
+###################
+###################
+###################`;
+
+// Level 3 — small zigzag with pillars
+const TEMPLATE_LEVEL_3 = `###################
+###################
+###################
+###################
+###################
+######G......######
+######......W######
+######.WW...W######
+######......W######
+######...W..W######
+######.W....W######
+######.....SW######
+###################
+###################
+###################
+###################
+###################
+###################
+###################`;
+
+// Level 4 — medium with multiple wall blocks creating zig-zag
+const TEMPLATE_LEVEL_4 = `###################
+###################
+###################
+####...........####
+####.WW.....WW.####
+####.W.......W.####
+####...........####
+####...G..G....####
+####.W.......W.####
+####.W.......W.####
+####...........####
+####.S..WWW....####
+####.WWWW.....G####
+####...........####
+####...........####
+###################
+###################
+###################
+###################`;
+
+// Level 6 — diagonal stair-step floor cutout
+const TEMPLATE_LEVEL_6 = `###################
+###################
+###################
+##.WW.WWWW.WW....##
+##.W..........W..##
+##.W..G.......W..##
+##.W..........W..##
+##.WWWW...WW..W..##
+##.....W..W..GW..##
+##.WW..WWWW...W..##
+##.W..........W..##
+##.W..G.......W..##
+##.W..........W..##
+##.WWWWWWWS...W..##
+##............W..##
+##.WWWWWWWWWWWW..##
+###################
+###################
+###################`;
+
+// Level 11 — symmetric "8" with 4 vertical pillar pairs
+const TEMPLATE_LEVEL_11 = `###################
+###################
+##...............##
+##.WWWWWWWWWWWWW.##
+##.W..W...W...W..##
+##.W..W.G.W...W..##
+##.W..W...W...W..##
+##...............##
+##.......W.......##
+##.......W.......##
+##...............##
+##.W..W...W...W..##
+##.W..W.G.W...W..##
+##.W..W...W...W..##
+##.WWWWWWWWWWWWW.##
+##.S.............##
+##...............##
+###################
+###################`;
+
+
 export const MAZE_TEMPLATES = [
-  TEMPLATE_LEVEL_45,        // wave 1 — small + simple
-  TEMPLATE_LEVEL_94,        // wave 2 — center pillar
-  TEMPLATE_LEVEL_51,        // wave 3 — snake zig-zag
-  TEMPLATE_LEVEL_92,        // wave 4 — open + scattered blocks
-  TEMPLATE_LEVEL_BLOCKS,    // wave 5 — block obstacles
-  TEMPLATE_LEVEL_36,        // wave 6 — diagonal stair-step
-  TEMPLATE_LEVEL_93,        // wave 7 — parallel corridors
-  TEMPLATE_LEVEL_90,        // wave 8 — multi-corridor
-  TEMPLATE_LEVEL_40,        // wave 9 — complex zig-zag
+  TEMPLATE_LEVEL_2,         // wave 1  — simplest: single center block
+  TEMPLATE_LEVEL_45,        // wave 2  — small ring + center
+  TEMPLATE_LEVEL_3,         // wave 3  — small zigzag with pillars
+  TEMPLATE_LEVEL_94,        // wave 4  — center pillar with T-cap
+  TEMPLATE_LEVEL_4,         // wave 5  — medium multi-block
+  TEMPLATE_LEVEL_51,        // wave 6  — snake zig-zag
+  TEMPLATE_LEVEL_92,        // wave 7  — open + scattered blocks
+  TEMPLATE_LEVEL_BLOCKS,    // wave 8  — block obstacles
+  TEMPLATE_LEVEL_36,        // wave 9  — diagonal stair-step
+  TEMPLATE_LEVEL_6,         // wave 10 — medium complex
+  TEMPLATE_LEVEL_93,        // wave 11 — parallel corridors
+  TEMPLATE_LEVEL_11,        // wave 12 — symmetric "8" with pillars
+  TEMPLATE_LEVEL_90,        // wave 13 — multi-corridor
+  TEMPLATE_LEVEL_40,        // wave 14 — complex zig-zag
 ];
 
 /**
