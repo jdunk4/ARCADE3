@@ -3731,6 +3731,11 @@ PauseMenu.setHandlers({
     // If quitting a tutorial run, drop the rainbow floor so the title
     // screen + any subsequent normal run look right.
     _exitTutorialIfActive();
+    // If quitting an Endless Glyphs run, tear down the maze, restore
+    // fog/camera/HUD, and start the title CDrone — without this the
+    // title appears under the still-rendered top-down maze and the
+    // game looks frozen.
+    if (S.endlessGlyphs) { try { exitEndlessGlyphs(); } catch(_) {} }
     document.querySelectorAll('.hidden-ui').forEach(el => el.style.display = 'none');
     document.getElementById('gameover').classList.add('hidden');
     document.getElementById('title').classList.remove('hidden');
