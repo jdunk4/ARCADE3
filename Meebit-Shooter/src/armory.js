@@ -188,14 +188,15 @@ export const WEAPON_BASE_CAPACITY = {
   flamethrower: 80,     // flame ticks at 0.08s = ~6.4s of continuous fire
 };
 
-// Reload duration per weapon, in seconds.
+// Reload duration per weapon, in seconds. Halved across the board
+// for snappier combat in Attack the AI + the tutorial.
 export const WEAPON_BASE_RELOAD = {
-  pistol:       1.2,
-  shotgun:      1.8,
-  smg:          2.2,
-  rocket:       2.5,
-  raygun:       2.8,
-  flamethrower: 2.5,
+  pistol:       0.6,
+  shotgun:      0.9,
+  smg:          1.1,
+  rocket:       1.25,
+  raygun:       1.4,
+  flamethrower: 1.25,
 };
 
 // =====================================================================
@@ -279,7 +280,7 @@ export function getEffectiveWeaponStats(armory, weaponId, baseWeapon) {
   const fireRateMul = WEAPON_TRACKS.fireRate.effectMul(lvls.fireRate);
   const baseCap = WEAPON_BASE_CAPACITY[weaponId] || 12;
   const capacity = baseCap + WEAPON_TRACKS.capacity.effectAdd(lvls.capacity);
-  const reloadTime = WEAPON_BASE_RELOAD[weaponId] || 1.5;
+  const reloadTime = WEAPON_BASE_RELOAD[weaponId] || 0.75;
   return {
     damage: baseWeapon.damage * damageMul,
     fireRate: baseWeapon.fireRate * fireRateMul,

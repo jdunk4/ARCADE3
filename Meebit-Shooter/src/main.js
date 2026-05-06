@@ -4977,7 +4977,7 @@ function tryReload() {
   if (!max) return;
   if (!S.ammo) return;                           // reload state not seeded yet
   if ((S.ammo[id] || 0) >= max) return;     // already full
-  const dur = WEAPON_BASE_RELOAD[id] || 1.5;
+  const dur = WEAPON_BASE_RELOAD[id] || 0.75;
   S.reloading = true;
   S.reloadT = 0;
   S.reloadDur = dur;
