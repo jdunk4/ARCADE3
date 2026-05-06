@@ -116,91 +116,104 @@ export function generateMaze(waveNum) {
   }
   const idx = (c, r) => r * cols + c;
 
-  const spawn = { col: 1, row: 1 };
-
-  // ---- LAYOUT: BOUSTROPHEDON ICE-PUZZLE ----
-  // Wall rows at every even interior row so each "corridor" is a
-  // single cell tall. Each wall row has exactly one gap, alternating
-  // between the right edge (col cols-2) and the left edge (col 1).
-  // The player's slide path becomes a forced serpentine:
-  //   row 1 right → drop through right-edge gap → row 3 left → drop
-  //   through left-edge gap → row 5 right → ...
-  // Every floor cell is touched by that path, so 100% coverage and
-  // every glyph are reachable.
+  // ---- LAYOUT: THICK-WALL PERFECT MAZE ----
+  // Reference: classic mobile slide-fill maze games (the kind with
+  // 1-cell-wide wood-floor corridors carved between blocky walls).
+  // Generation:
+  //   1. Start with the entire interior as wall.
+  //   2. Pick a 9x9 "logical" maze grid; each logical cell maps to
+  //      a (2c+1, 2r+1) cell in the 19x19 render grid. Carve those
+  //      logical cells into floor.
+  //   3. Recursive-backtracker through the logical grid; for each
+  //      passage carved, also flip the cell BETWEEN the two
+  //      logical cells into floor.
+  //   4. Optionally knock out N extra walls (creates loops). Loop
+  //      count varies by wave so the layout is always different.
+  //
+  // Result: a perfect maze with 1-cell-wide corridors. Walls are at
+  // least 1 cell thick everywhere. The slide animator can reach
+  // every floor cell — sliding into any corridor stops at the next
+  // wall, and every floor cell sits on at least one slide path.
   const w = config.waveNum;
-  const placeWallSafe = (c, r) => {
-    if (c <= 0 || c >= cols - 1 || r <= 0 || r >= rows - 1) return;
-    if (c === spawn.col && r === spawn.row) return;
-    cells[idx(c, r)].kind = 'wall';
-  };
+  const LOGICAL_N = 9;     // (LOGICAL_N * 2 + 1) = 19, matches our cols/rows
 
-  // Build the wall-row schedule. Every wave uses the same skeleton
-  // for now — variations come from extra gaps and mining blocks
-  // in higher waves, not from the wall row spacing.
-  const wallRows = [];
-  for (let r = 2; r < rows - 1; r += 2) wallRows.push(r);
-
-  // Extra middle gaps for higher waves — gives the player a second
-  // route option that can be used to shortcut or to skip a slow
-  // section. Wave 1 has none (forced solve).
-  let extraMidGapsPerRow;
-  if (w <= 1) extraMidGapsPerRow = 0;
-  else if (w <= 4) extraMidGapsPerRow = 0;
-  else if (w <= 7) extraMidGapsPerRow = 1;
-  else extraMidGapsPerRow = 2;
-
-  for (let i = 0; i < wallRows.length; i++) {
-    const r = wallRows[i];
-    const gaps = new Set();
-    // Primary gap: right on even index, left on odd. This is the
-    // gap the boustrophedon path uses.
-    gaps.add(i % 2 === 0 ? cols - 2 : 1);
-    // Extra gaps in middle columns for higher waves.
-    for (let g = 0; g < extraMidGapsPerRow; g++) {
-      let c = 4 + Math.floor(rng() * (cols - 8));
-      let safety2 = 0;
-      while (gaps.has(c) && safety2++ < 12) c = 4 + Math.floor(rng() * (cols - 8));
-      gaps.add(c);
-    }
+  // Step 1 — fill interior with walls (boundaries already are walls).
+  for (let r = 1; r < rows - 1; r++) {
     for (let c = 1; c < cols - 1; c++) {
-      if (!gaps.has(c)) placeWallSafe(c, r);
-    }
-  }
-
-  // Pillar scatter for high waves only — extra obstacles inside the
-  // single-cell corridors. Each placement is connectivity-checked.
-  if (w >= 8) {
-    const pillarCount = (w >= 10) ? 6 : 3;
-    let attempts = 0;
-    let placed = 0;
-    while (placed < pillarCount && attempts < pillarCount * 30) {
-      attempts++;
-      // Only scatter into corridor (odd) rows so the wall-row
-      // skeleton stays intact.
-      const r = 1 + 2 * Math.floor(rng() * Math.floor((rows - 2) / 2));
-      const c = 2 + Math.floor(rng() * (cols - 4));
-      if (cells[idx(c, r)].kind === 'wall') continue;
-      if (Math.abs(c - spawn.col) + Math.abs(r - spawn.row) < 3) continue;
       cells[idx(c, r)].kind = 'wall';
-      if (!_isAllFloorReachable(cells, cols, rows, spawn)) {
-        cells[idx(c, r)].kind = 'floor';
-        continue;
-      }
-      placed++;
     }
   }
 
-  // Connectivity safety net. Should never trigger in practice
-  // because the boustrophedon layout is provably solvable, but
-  // keep the guard so generator bugs degrade gracefully instead
-  // of orphaning glyphs.
-  let safety = 0;
-  while (!_isAllFloorReachable(cells, cols, rows, spawn) && safety < 50) {
-    safety++;
-    const r = wallRows[Math.floor(rng() * wallRows.length)];
-    const c = 1 + Math.floor(rng() * (cols - 2));
-    cells[idx(c, r)].kind = 'floor';
+  // Step 2 — carve logical cells.
+  const logicalToCell = (lc, lr) => idx(2 * lc + 1, 2 * lr + 1);
+  for (let lr = 0; lr < LOGICAL_N; lr++) {
+    for (let lc = 0; lc < LOGICAL_N; lc++) {
+      cells[logicalToCell(lc, lr)].kind = 'floor';
+    }
   }
+
+  // Step 3 — recursive backtracker.
+  const visited = new Uint8Array(LOGICAL_N * LOGICAL_N);
+  const startLC = 0, startLR = 0;
+  visited[startLR * LOGICAL_N + startLC] = 1;
+  const stack = [[startLC, startLR]];
+  const DIRS = [
+    [-1, 0], [1, 0], [0, -1], [0, 1],
+  ];
+  while (stack.length > 0) {
+    const [lc, lr] = stack[stack.length - 1];
+    const candidates = [];
+    for (const [dlc, dlr] of DIRS) {
+      const nlc = lc + dlc, nlr = lr + dlr;
+      if (nlc < 0 || nlc >= LOGICAL_N || nlr < 0 || nlr >= LOGICAL_N) continue;
+      if (visited[nlr * LOGICAL_N + nlc]) continue;
+      candidates.push([nlc, nlr, dlc, dlr]);
+    }
+    if (candidates.length === 0) {
+      stack.pop();
+    } else {
+      const [nlc, nlr, dlc, dlr] = candidates[Math.floor(rng() * candidates.length)];
+      // Carve the wall cell between (lc,lr) and (nlc,nlr) into floor.
+      const passageC = 2 * lc + 1 + dlc;
+      const passageR = 2 * lr + 1 + dlr;
+      cells[idx(passageC, passageR)].kind = 'floor';
+      visited[nlr * LOGICAL_N + nlc] = 1;
+      stack.push([nlc, nlr]);
+    }
+  }
+
+  // Step 4 — extra openings (loops). Higher waves have FEWER loops
+  // (more dead-ends, more constrained). Wave 1 gets a few extras
+  // so the layout reads as varied without trapping the player in
+  // long forced sequences.
+  let loopOpenings;
+  if (w <= 2) loopOpenings = 8;
+  else if (w <= 5) loopOpenings = 5;
+  else if (w <= 8) loopOpenings = 3;
+  else loopOpenings = 2;
+
+  for (let i = 0; i < loopOpenings; i++) {
+    // Pick a random interior wall cell that sits between two
+    // logical cells (i.e. has odd+even coords).
+    let attempts = 0;
+    while (attempts < 30) {
+      attempts++;
+      const c = 1 + Math.floor(rng() * (cols - 2));
+      const r = 1 + Math.floor(rng() * (rows - 2));
+      // Must be on a passage line — exactly one of (c,r) is odd.
+      const cOdd = (c & 1) === 1;
+      const rOdd = (r & 1) === 1;
+      if (cOdd === rOdd) continue;     // both odd = logical cell, both even = corner post
+      if (cells[idx(c, r)].kind !== 'wall') continue;
+      cells[idx(c, r)].kind = 'floor';
+      break;
+    }
+  }
+
+  // Spawn cell guaranteed floor (it's logical (0,0), already carved
+  // by Step 2 — defensive assignment in case future tweaks land
+  // elsewhere).
+  cells[idx(spawn.col, spawn.row)].kind = 'floor';
 
   // ---- COLLECT FLOOR CELLS for glyph / block / kill-zone placement ----
   const floorCells = [];
