@@ -48,7 +48,7 @@ import {
   markCellVisited, isKillZoneCell, isCellBlocked,
   collectGlyphAt, getGlyphsTotal, getGlyphsCollected, getGlyphsRemaining,
   clearDecorEnemyAt,
-  getMazeWallEntries,
+  getMazeWallEntries, getMazeBounds,
 } from './mazeRenderer.js';
 import { saveMazeProgress, getMazeWave } from './mazePuzzles.js';
 import { UI } from './ui.js';
@@ -816,20 +816,24 @@ function _tickWave(dt) {
 function _enterWaveDissolve() {
   S.endlessPhase = 'WAVE_DISSOLVE';
   S.endlessPhaseT = 0;
-  // Snapshot the maze wall AABBs for the particle source, then clear
-  // the meshes.
+  // Snapshot the maze wall AABBs AND the maze footprint before clearing
+  // the meshes. The footprint becomes the autoglyph patch so the glyph
+  // fills exactly the area the maze just occupied.
   const wallSnapshot = getMazeWallEntries().map(w => ({ x: w.x, z: w.z, w: w.w, h: w.h }));
+  const boundsSnapshot = getMazeBounds();
   clearMaze(scene);
   _mazeBuilt = false;
   _activeMazeData = null;
   _slide = null;
-  S.endlessTopDown = false;
+  // Keep the top-down camera through dissolve so the player can watch
+  // the glyph assemble across the full arena. The next wave's assemble
+  // will set this true again anyway; intermission flips it off.
   _hideEmojiAvatar();
   _disposeGlyphCollector();
   _restoreStandardHud();
   _popFog();
-  startDissolve(wallSnapshot, S.endlessWave);
-  _setWaveHUD('WAVE ' + S.endlessWave + ' COMPLETE', 'DISSOLVING');
+  startDissolve(wallSnapshot, S.endlessWave, boundsSnapshot);
+  _setWaveHUD('', '');
 }
 
 function _tickWaveDissolve(dt) {

@@ -1,183 +1,237 @@
 // endlessDissolve.js — Wave-end "walls dissolve into autoglyph" animation
 //
-// Per playtester (Ship 3B): when a wave ends, the procedural
-// floorplan walls explode into a cloud of small particles which then
-// fly to positions matching a generated autoglyph pattern, lie flat
-// on the white floor as a readable glyph for ~2 seconds, then sink
-// into the floor and disappear. The autoglyph is generated fresh per
-// wave (seeded by wave number for repeatability).
+// When a wave ends, the maze walls explode into particles, fly to
+// positions matching a generated autoglyph, and assemble the glyph
+// across the full footprint that the maze just occupied. An
+// "ACCESS GRANTED" banner fades in while the glyph is on display,
+// then the whole pattern sinks into the floor.
 //
-// Design:
-//   1. PARTICLE POOL — single InstancedMesh, one geometry + material,
-//      up to MAX_PARTICLES instances. Each particle is a tiny black
-//      cube. Per-particle CPU-side state (origin, target, phase, t).
-//   2. PHASES PER PARTICLE:
-//      'explode'  (0.0-0.3s)  — random outward velocity, drag decay
-//      'fly'      (0.3-1.5s)  — smooth-step from current to target
-//      'display'  (1.5-3.5s)  — hold on floor, gentle glow pulse
-//      'sink'     (3.5-4.5s)  — y-position drops, opacity fades
-//      'done'     (4.5s+)     — instance hidden via tiny scale
-//   3. ANIMATION DRIVEN BY: external tick from endlessGlyphs.js,
-//      which calls tickDissolve(dt) per frame while the WAVE_DISSOLVE
-//      phase is active.
+// Each filled cell of the autoglyph is rendered as its actual symbol
+// shape (square, circle, plus, X, pipe, dash, slash, backslash) — one
+// InstancedMesh per base geometry so the whole assembly is still only
+// a handful of draw calls regardless of cell count. Compound symbols
+// (PLUS, X) write to two instance slots per cell, one for each bar of
+// the cross.
 //
 // API:
-//   startDissolve(walls, waveSeed)
-//     → spawns particles from wall AABBs, generates autoglyph using
-//       waveSeed, assigns each particle a target floor position.
-//       Walls are EXPECTED to be cleared by the caller after this
-//       returns — particles are independent of wall meshes.
-//
-//   tickDissolve(dt)
-//     → advance animation. Returns true while still active, false
-//       when finished (caller should advance to next wave on false).
-//
-//   cancelDissolve()
-//     → immediately dispose particles, abort any in-flight animation.
-//
-//   isDissolveActive() — true between startDissolve and the moment
-//     tickDissolve returns false.
-//
-// Performance: single InstancedMesh = 1 draw call regardless of
-// particle count. Per-frame cost is N matrix updates where N is the
-// active particle count (target is < 800).
+//   startDissolve(walls, waveSeed, mazeBounds?)
+//     walls       — wall AABBs from getMazeWallEntries(); particle
+//                   origins.
+//     waveSeed    — seeds the autoglyph (deterministic per wave).
+//     mazeBounds  — { x0, x1, z0, z1 } in world units; the autoglyph
+//                   patch is mapped onto this rectangle so the glyph
+//                   replaces the maze 1:1. If omitted, falls back to
+//                   a 30u centered patch (legacy behavior).
+//   tickDissolve(dt) → boolean (true while still active).
+//   cancelDissolve() — abort + dispose particles + DOM overlay.
+//   isDissolveActive() — convenience predicate.
 
 import * as THREE from 'three';
 import { scene } from './scene.js';
-import { generateAutoglyph, forEachCell, countFilled } from './autoglyph.js';
+import { generateAutoglyph, forEachCell, SYMBOLS } from './autoglyph.js';
 
 // =====================================================================
-// CONSTANTS
+// PHASE TIMINGS
 // =====================================================================
 
-const MAX_PARTICLES = 1024;          // hard cap on instance count
-
-// Phase timings (cumulative from t=0).
 const PHASE_EXPLODE_END = 0.3;
-const PHASE_FLY_END     = 1.5;
-const PHASE_DISPLAY_END = 3.5;
-const PHASE_SINK_END    = 4.5;       // total animation length
+const PHASE_FLY_END     = 1.6;
+const PHASE_DISPLAY_END = 5.6;     // 4s reward window so the player can read it
+const PHASE_SINK_END    = 6.6;
 
-// Glyph display patch — the autoglyph is mapped onto a square area
-// of this size (world units), centered at arena origin (0, 0).
-// 30u = roughly the central third of the 100×100 arena. Big enough
-// to read at glance, small enough to leave the player some breathing
-// room around it.
-const GLYPH_PATCH_SIZE = 30.0;
-const GLYPH_PATCH_HALF = GLYPH_PATCH_SIZE * 0.5;
-const GLYPH_GRID_DIM = 64;           // matches autoglyph.js GRID_DIM
-const GLYPH_FLOOR_Y = 0.05;          // particle rest height on floor
+// "ACCESS GRANTED" banner fade window — fades in as particles settle,
+// holds through display, fades out into the sink.
+const BANNER_FADE_IN_START  = 1.3;
+const BANNER_FADE_IN_END    = 1.9;
+const BANNER_FADE_OUT_START = 5.2;
+const BANNER_FADE_OUT_END   = 5.8;
 
-// Particle dimensions.
-const PARTICLE_SIZE = 0.18;          // cube edge in world units
+// Glyph grid resolution — must match autoglyph.js.
+const GLYPH_GRID_DIM = 64;
+const GLYPH_FLOOR_Y  = 0.06;       // tiny lift so we don't z-fight the floor
 
-// Cap glyph cells we'll actually render. A dense OVERLAPPED scheme
-// can hit 1900 filled cells — way more than we want to render.
-// We sample down to this cap with a stable hash.
-const MAX_GLYPH_CELLS = 800;
+// Legacy fallback patch — only used if mazeBounds isn't supplied.
+const LEGACY_PATCH_SIZE = 30.0;
+
+// =====================================================================
+// SYMBOL GEOMETRY DEFINITIONS
+// =====================================================================
+//
+// Each base geometry is a flat shape lying on the XZ plane (Y is up).
+// Sizes are tuned for a glyph cell of ~1.4u (95u arena / 64 cells).
+//
+//   square — solid filled square (#)
+//   circle — flat ring (O)
+//   horiz  — short horizontal bar (used by DASH and the cross-bar of +)
+//   vert   — short vertical bar   (used by PIPE and the up-bar of +)
+//   slash  — diagonal bar /       (used by SLASH and one bar of X)
+//   bslash — diagonal bar \       (used by BACKSLASH and one bar of X)
+
+const CELL_BASE = 1.15;           // visual extent of a single symbol
+const BAR_THIN  = 0.22;           // thickness of bars
+const FLAT_Y    = 0.10;           // extruded height (so they catch light)
+
+function _buildSymbolGeometries() {
+  const out = {};
+
+  out.square = new THREE.BoxGeometry(CELL_BASE, FLAT_Y, CELL_BASE);
+
+  // Torus: ring of radius ~0.5, tube ~0.10. Default torus lies in XY
+  // plane — bake a -π/2 X rotation so it lies flat on XZ.
+  const torus = new THREE.TorusGeometry(CELL_BASE * 0.42, 0.10, 6, 18);
+  torus.rotateX(-Math.PI / 2);
+  out.circle = torus;
+
+  // Horizontal bar — long along X, thin along Z.
+  out.horiz = new THREE.BoxGeometry(CELL_BASE, FLAT_Y, BAR_THIN);
+
+  // Vertical bar — long along Z, thin along X.
+  out.vert = new THREE.BoxGeometry(BAR_THIN, FLAT_Y, CELL_BASE);
+
+  // Slash / backslash — start with a horizontal bar, bake a Y rotation
+  // so all instances render at the right diagonal orientation.
+  const slash = new THREE.BoxGeometry(CELL_BASE * 1.05, FLAT_Y, BAR_THIN);
+  slash.rotateY(-Math.PI / 4);
+  out.slash = slash;
+
+  const bslash = new THREE.BoxGeometry(CELL_BASE * 1.05, FLAT_Y, BAR_THIN);
+  bslash.rotateY(Math.PI / 4);
+  out.bslash = bslash;
+
+  return out;
+}
+
+// Per-symbol render recipe — which mesh slots the cell writes to.
+// Compound shapes (PLUS, X) write 2 slots per cell.
+const SYMBOL_RECIPE = {
+  [SYMBOLS.SQUARE]:    ['square'],
+  [SYMBOLS.CIRCLE]:    ['circle'],
+  [SYMBOLS.PLUS]:      ['horiz', 'vert'],
+  [SYMBOLS.X]:         ['slash', 'bslash'],
+  [SYMBOLS.PIPE]:      ['vert'],
+  [SYMBOLS.DASH]:      ['horiz'],
+  [SYMBOLS.SLASH]:     ['slash'],
+  [SYMBOLS.BACKSLASH]: ['bslash'],
+};
+
+const MESH_KEYS = ['square', 'circle', 'horiz', 'vert', 'slash', 'bslash'];
 
 // =====================================================================
 // STATE
 // =====================================================================
 
-let _instancedMesh = null;           // THREE.InstancedMesh
-let _instanceMaterial = null;
-let _particles = [];                 // CPU-side per-particle state
-let _phaseT = 0;                     // seconds since startDissolve
+let _instancedMeshes = null;       // { square, circle, horiz, vert, slash, bslash }
+let _instanceMaterial = null;      // shared across all meshes
+let _particles = [];               // CPU-side per-cell state
+let _phaseT = 0;
 let _active = false;
-let _scratchMatrix = new THREE.Matrix4();
-let _scratchQuat = new THREE.Quaternion();
-let _scratchPos = new THREE.Vector3();
-let _scratchScale = new THREE.Vector3();
+let _bannerEl = null;
+
+const _scratchMatrix = new THREE.Matrix4();
+const _scratchQuat   = new THREE.Quaternion();
+const _scratchPos    = new THREE.Vector3();
+const _scratchScale  = new THREE.Vector3(1, 1, 1);
 
 // =====================================================================
 // PUBLIC API
 // =====================================================================
 
-/**
- * Begin the dissolve animation.
- *
- * @param {Array<{x,z,w,h}>} walls   wall AABBs from mazeRenderer.getMazeWallEntries()
- * @param {number} waveSeed          seed for autoglyph generation
- *                                   (typically waveNum * some prime)
- */
-export function startDissolve(walls, waveSeed) {
-  cancelDissolve();   // idempotent — clear any prior animation
+export function startDissolve(walls, waveSeed, mazeBounds) {
+  cancelDissolve();
 
-  // No walls? Skip the dissolve entirely; caller will advance
-  // immediately. (Could happen on a malformed wave config.)
   if (!walls || walls.length === 0) {
     _active = false;
     return;
   }
 
-  // Generate the autoglyph. Use waveSeed * prime for variation across
-  // waves. The autoglyph module is deterministic — same seed always
-  // produces the same glyph.
-  const glyph = generateAutoglyph(waveSeed * 2654435761 + 1);
-  const cellCount = countFilled(glyph);
+  // Resolve the patch the glyph will fill.
+  let x0, x1, z0, z1;
+  if (mazeBounds && Number.isFinite(mazeBounds.x0)) {
+    // Inset slightly so the glyph stops just before the arena edge —
+    // looks framed instead of bleeding off-screen.
+    const inset = 1.5;
+    x0 = mazeBounds.x0 + inset; x1 = mazeBounds.x1 - inset;
+    z0 = mazeBounds.z0 + inset; z1 = mazeBounds.z1 - inset;
+  } else {
+    x0 = -LEGACY_PATCH_SIZE / 2; x1 = LEGACY_PATCH_SIZE / 2;
+    z0 = -LEGACY_PATCH_SIZE / 2; z1 = LEGACY_PATCH_SIZE / 2;
+  }
+  const patchW = x1 - x0;
+  const patchH = z1 - z0;
 
-  // Sample glyph cells down to MAX_GLYPH_CELLS if it's a dense scheme.
-  // We collect all filled cells, then if there are too many, keep
-  // every Nth one (stride = ceil(cellCount / MAX_GLYPH_CELLS)).
-  const allCells = [];
+  // Generate the autoglyph for this wave.
+  const glyph = generateAutoglyph(waveSeed * 2654435761 + 1);
+
+  // Walk every filled cell — no down-sampling. The autoglyph IS the
+  // arena now, so honor every symbol.
+  const filled = [];
   forEachCell(glyph, (gx, gy, sym) => {
-    allCells.push({ gx, gy, sym });
+    filled.push({ gx, gy, sym });
   });
-  const stride = Math.max(1, Math.ceil(cellCount / MAX_GLYPH_CELLS));
-  const usedCells = [];
-  for (let i = 0; i < allCells.length; i += stride) {
-    usedCells.push(allCells[i]);
+
+  // Per-mesh slot counts: each filled cell consumes 1 or 2 slots
+  // depending on its symbol's recipe.
+  const slotCounts = {};
+  for (const k of MESH_KEYS) slotCounts[k] = 0;
+  for (const c of filled) {
+    const recipe = SYMBOL_RECIPE[c.sym];
+    if (!recipe) continue;
+    for (const k of recipe) slotCounts[k]++;
   }
 
-  // Spawn one particle per used cell. Each particle:
-  //   - origin: a random point inside a randomly-chosen wall AABB
-  //   - target: cell position mapped to the floor patch
-  //   - delay:  staggered 0-0.3s flight start so particles don't
-  //             move in lockstep
+  // Build the InstancedMeshes sized to fit.
+  _buildInstancedMeshes(slotCounts);
+
+  // Spawn one particle per filled cell. Each particle remembers which
+  // mesh slots it owns so we can write its matrix to all of them per
+  // frame.
+  const slotCursors = {};
+  for (const k of MESH_KEYS) slotCursors[k] = 0;
+
   _particles.length = 0;
-  for (let i = 0; i < usedCells.length; i++) {
-    const cell = usedCells[i];
-    // Random origin inside a randomly-picked wall.
+  for (const c of filled) {
+    const recipe = SYMBOL_RECIPE[c.sym];
+    if (!recipe) continue;
+
+    // Origin: a random point inside a randomly-picked wall AABB.
     const wall = walls[Math.floor(Math.random() * walls.length)];
     const ox = wall.x + (Math.random() - 0.5) * wall.w;
-    const oy = 0.4 + Math.random() * 1.0;       // anywhere in wall height
+    const oy = 0.4 + Math.random() * 1.2;
     const oz = wall.z + (Math.random() - 0.5) * wall.h;
-    // Target — autoglyph cell mapped to floor patch. Center the
-    // patch at arena origin. Y is GLYPH_FLOOR_Y (just above the floor
-    // so particles z-fight is avoided).
-    const tx = ((cell.gx + 0.5) / GLYPH_GRID_DIM) * GLYPH_PATCH_SIZE - GLYPH_PATCH_HALF;
-    const tz = ((cell.gy + 0.5) / GLYPH_GRID_DIM) * GLYPH_PATCH_SIZE - GLYPH_PATCH_HALF;
-    // Random outward velocity for the explode phase. Direction is
-    // away from the wall center (pushed outward by the explosion);
-    // magnitude tuned so particles travel ~1-2u during the 0.3s
-    // explode window before the fly phase takes over.
+
+    // Target — autoglyph cell mapped onto the maze patch.
+    const tx = x0 + ((c.gx + 0.5) / GLYPH_GRID_DIM) * patchW;
+    const tz = z0 + ((c.gy + 0.5) / GLYPH_GRID_DIM) * patchH;
+
+    // Outward explode velocity.
     const dirX = ox - wall.x;
     const dirZ = oz - wall.z;
     const dirLen = Math.sqrt(dirX * dirX + dirZ * dirZ) || 1;
     const speed = 4 + Math.random() * 6;
+
+    // Reserve the slot indices this particle will write to.
+    const slots = [];
+    for (const meshKey of recipe) {
+      slots.push({ meshKey, idx: slotCursors[meshKey]++ });
+    }
+
     _particles.push({
-      ox, oy, oz,                                // origin (start position)
-      tx, ty: GLYPH_FLOOR_Y, tz,                 // target (glyph cell on floor)
-      // Current position — initially equals origin, updated each tick.
+      sym: c.sym,
+      slots,
+      ox, oy, oz,
+      tx, ty: GLYPH_FLOOR_Y, tz,
       px: ox, py: oy, pz: oz,
-      // Explode velocity — pushed outward from wall center, plus
-      // random vertical kick so particles puff up a bit.
       vx: (dirX / dirLen) * speed + (Math.random() - 0.5) * 2,
       vy: 2 + Math.random() * 4,
       vz: (dirZ / dirLen) * speed + (Math.random() - 0.5) * 2,
-      delay: Math.random() * 0.3,                // flight start delay
-      // For the display-phase glow pulse — random phase offset so
-      // not all particles pulse in unison.
+      delay: Math.random() * 0.3,
       pulsePhase: Math.random() * Math.PI * 2,
+      _flyOrigCaptured: false,
+      _fox: 0, _foy: 0, _foz: 0,
     });
   }
 
-  // Build the InstancedMesh. Black material with a faint emissive
-  // so each particle reads as a solid black mark on the white floor
-  // (matches the autoglyph aesthetic from your reference images).
-  _buildInstancedMesh(_particles.length);
-
+  _ensureBanner();
   _phaseT = 0;
   _active = true;
 }
@@ -186,30 +240,27 @@ export function tickDissolve(dt) {
   if (!_active) return false;
   _phaseT += dt;
 
-  // Animation phases drive each particle's transform per frame.
   for (let i = 0; i < _particles.length; i++) {
     _stepParticle(_particles[i], _phaseT, dt);
   }
-
-  // Push transforms to the InstancedMesh.
   _writeInstanceMatrices();
 
-  // Display-phase pulse — adjust whole-mesh emissive intensity so
-  // the glyph "breathes" on the floor.
+  _updateBanner(_phaseT);
+
+  // Material breathing during the display phase, fade during sink.
   if (_instanceMaterial) {
     if (_phaseT > PHASE_FLY_END && _phaseT < PHASE_DISPLAY_END) {
       const t = (_phaseT - PHASE_FLY_END) / (PHASE_DISPLAY_END - PHASE_FLY_END);
-      // Stronger emissive in the middle of display, softer at edges.
       const pulse = Math.sin(t * Math.PI);
-      _instanceMaterial.emissiveIntensity = 0.25 + pulse * 0.45;
+      _instanceMaterial.emissiveIntensity = 0.30 + pulse * 0.55;
+      _instanceMaterial.opacity = 1;
     } else if (_phaseT >= PHASE_DISPLAY_END) {
-      // During sink, fade emissive out.
       const t = Math.min(1, (_phaseT - PHASE_DISPLAY_END) /
                         (PHASE_SINK_END - PHASE_DISPLAY_END));
-      _instanceMaterial.emissiveIntensity = 0.25 * (1 - t);
+      _instanceMaterial.emissiveIntensity = 0.30 * (1 - t);
       _instanceMaterial.opacity = 1 - t;
     } else {
-      _instanceMaterial.emissiveIntensity = 0.18;
+      _instanceMaterial.emissiveIntensity = 0.20;
       _instanceMaterial.opacity = 1;
     }
   }
@@ -222,18 +273,21 @@ export function tickDissolve(dt) {
 }
 
 export function cancelDissolve() {
-  if (_instancedMesh) {
-    if (_instancedMesh.parent) _instancedMesh.parent.remove(_instancedMesh);
-    if (_instancedMesh.geometry) _instancedMesh.geometry.dispose();
+  if (_instancedMeshes) {
+    for (const k of MESH_KEYS) {
+      const mesh = _instancedMeshes[k];
+      if (!mesh) continue;
+      if (mesh.parent) mesh.parent.remove(mesh);
+      if (mesh.geometry) mesh.geometry.dispose();
+    }
   }
-  if (_instanceMaterial) {
-    _instanceMaterial.dispose();
-  }
-  _instancedMesh = null;
+  if (_instanceMaterial) _instanceMaterial.dispose();
+  _instancedMeshes = null;
   _instanceMaterial = null;
   _particles.length = 0;
   _phaseT = 0;
   _active = false;
+  _disposeBanner();
 }
 
 export function isDissolveActive() {
@@ -241,105 +295,163 @@ export function isDissolveActive() {
 }
 
 // =====================================================================
-// INTERNAL — PARTICLE STEP
+// PARTICLE STEP — same phase model as before, just symbol-aware.
 // =====================================================================
 
-/**
- * Update one particle's position based on the current phase.
- * Reads `phaseT` (seconds since dissolve start) to pick which sub-
- * animation governs the particle.
- */
 function _stepParticle(p, phaseT, dt) {
-  // Effective time for this particle (after its delay).
   const effT = phaseT - p.delay;
 
   if (effT < 0) {
-    // Still waiting — particle stays at origin.
     p.px = p.ox; p.py = p.oy; p.pz = p.oz;
     return;
   }
 
   if (effT < PHASE_EXPLODE_END) {
-    // Ballistic explode — apply velocity with gravity + drag.
-    p.vy -= 9.8 * dt;                       // gravity
-    const drag = Math.pow(0.92, dt * 60);   // ~92% velocity retained per frame at 60fps
+    p.vy -= 9.8 * dt;
+    const drag = Math.pow(0.92, dt * 60);
     p.vx *= drag; p.vy *= drag; p.vz *= drag;
     p.px += p.vx * dt;
     p.py += p.vy * dt;
     p.pz += p.vz * dt;
-    if (p.py < GLYPH_FLOOR_Y) p.py = GLYPH_FLOOR_Y;  // don't sink below floor
+    if (p.py < GLYPH_FLOOR_Y) p.py = GLYPH_FLOOR_Y;
   } else if (effT < PHASE_FLY_END) {
-    // Smooth-step from current position toward target. Use a fresh
-    // origin captured at fly-start so explode endpoints transition
-    // smoothly without a position snap.
     if (!p._flyOrigCaptured) {
       p._fox = p.px; p._foy = p.py; p._foz = p.pz;
       p._flyOrigCaptured = true;
     }
     const t01 = (effT - PHASE_EXPLODE_END) /
                 (PHASE_FLY_END - PHASE_EXPLODE_END);
-    // Smoothstep: 3t² - 2t³, eases in and out.
     const e = t01 * t01 * (3 - 2 * t01);
     p.px = p._fox + (p.tx - p._fox) * e;
-    // Y: arc up slightly mid-flight then down to target. Adds a sense
-    // of grace to the convergence — particles arc up over the floor
-    // before settling, like leaves drifting down.
     const arcY = p._foy + (p.ty - p._foy) * e + Math.sin(t01 * Math.PI) * 1.5;
     p.py = arcY;
     p.pz = p._foz + (p.tz - p._foz) * e;
   } else if (effT < PHASE_DISPLAY_END) {
-    // Settled on the floor — hold target position. Add a tiny
-    // vertical jitter from the pulse phase so the glyph isn't
-    // perfectly flat-static.
     p.px = p.tx;
     p.pz = p.tz;
     const wobble = Math.sin(phaseT * 3 + p.pulsePhase) * 0.012;
     p.py = GLYPH_FLOOR_Y + wobble;
   } else {
-    // Sink phase — y drops linearly, x/z hold.
     const t01 = Math.min(1, (effT - PHASE_DISPLAY_END) /
                          (PHASE_SINK_END - PHASE_DISPLAY_END));
     p.px = p.tx;
     p.pz = p.tz;
-    p.py = GLYPH_FLOOR_Y - t01 * 1.0;       // sink 1u into floor
+    p.py = GLYPH_FLOOR_Y - t01 * 1.0;
   }
 }
 
 // =====================================================================
-// INTERNAL — INSTANCED MESH
+// INSTANCED MESHES — one per base geometry, sized per slot count.
 // =====================================================================
 
-function _buildInstancedMesh(count) {
-  // Single shared cube geometry — cheap.
-  const geom = new THREE.BoxGeometry(PARTICLE_SIZE, PARTICLE_SIZE, PARTICLE_SIZE);
-  // Black material with very faint emissive — reads as solid black
-  // marks on the white floor, with just enough glow to register as
-  // "energetic" during display.
+function _buildInstancedMeshes(slotCounts) {
+  const geos = _buildSymbolGeometries();
+
   _instanceMaterial = new THREE.MeshStandardMaterial({
     color: 0x000000,
-    emissive: 0x222244,           // tiny cool-blue glow tint
-    emissiveIntensity: 0.18,
+    emissive: 0x223355,
+    emissiveIntensity: 0.20,
     roughness: 0.85,
     metalness: 0.10,
     transparent: true,
     opacity: 1.0,
   });
-  _instancedMesh = new THREE.InstancedMesh(geom, _instanceMaterial, count);
-  _instancedMesh.castShadow = false;
-  _instancedMesh.receiveShadow = false;
-  _instancedMesh.frustumCulled = false;     // particles span the arena
-  scene.add(_instancedMesh);
+
+  _instancedMeshes = {};
+  for (const k of MESH_KEYS) {
+    const count = slotCounts[k] || 0;
+    if (count === 0) {
+      // Still dispose the unused geometry — it was built but won't be
+      // rendered. Saves a tiny bit of GPU memory.
+      geos[k].dispose();
+      continue;
+    }
+    const mesh = new THREE.InstancedMesh(geos[k], _instanceMaterial, count);
+    mesh.castShadow = false;
+    mesh.receiveShadow = false;
+    mesh.frustumCulled = false;
+    // Hide all instances initially (zero scale) — they'll be written
+    // to real positions on the first tick. This avoids a single-frame
+    // flash where every instance sits at the origin.
+    const zero = new THREE.Matrix4().makeScale(0, 0, 0);
+    for (let i = 0; i < count; i++) mesh.setMatrixAt(i, zero);
+    mesh.instanceMatrix.needsUpdate = true;
+    scene.add(mesh);
+    _instancedMeshes[k] = mesh;
+  }
 }
 
 function _writeInstanceMatrices() {
-  if (!_instancedMesh) return;
+  if (!_instancedMeshes) return;
   for (let i = 0; i < _particles.length; i++) {
     const p = _particles[i];
     _scratchPos.set(p.px, p.py, p.pz);
     _scratchQuat.set(0, 0, 0, 1);
-    _scratchScale.set(1, 1, 1);
     _scratchMatrix.compose(_scratchPos, _scratchQuat, _scratchScale);
-    _instancedMesh.setMatrixAt(i, _scratchMatrix);
+    for (const slot of p.slots) {
+      const mesh = _instancedMeshes[slot.meshKey];
+      if (mesh) mesh.setMatrixAt(slot.idx, _scratchMatrix);
+    }
   }
-  _instancedMesh.instanceMatrix.needsUpdate = true;
+  for (const k of MESH_KEYS) {
+    const mesh = _instancedMeshes[k];
+    if (mesh) mesh.instanceMatrix.needsUpdate = true;
+  }
+}
+
+// =====================================================================
+// "ACCESS GRANTED" BANNER
+// =====================================================================
+
+function _ensureBanner() {
+  _disposeBanner();
+  const root = document.createElement('div');
+  root.id = 'endless-access-banner';
+  root.style.cssText = [
+    'position:fixed',
+    'top:42%', 'left:50%',
+    'transform:translate(-50%, -50%)',
+    'padding:18px 36px',
+    'background:rgba(0,0,0,0.78)',
+    'border:2px solid #4ff7ff',
+    'border-radius:10px',
+    'box-shadow:0 0 28px rgba(79,247,255,0.55), inset 0 0 18px rgba(79,247,255,0.25)',
+    'color:#4ff7ff',
+    'font-family:"Courier New",monospace',
+    'font-size:34px',
+    'font-weight:bold',
+    'letter-spacing:6px',
+    'text-shadow:0 0 12px rgba(79,247,255,0.85)',
+    'z-index:99997',
+    'opacity:0',
+    'pointer-events:none',
+    'text-align:center',
+  ].join(';');
+  root.textContent = 'ACCESS GRANTED';
+  document.body.appendChild(root);
+  _bannerEl = root;
+}
+
+function _updateBanner(t) {
+  if (!_bannerEl) return;
+  let opacity = 0;
+  if (t >= BANNER_FADE_IN_START && t < BANNER_FADE_IN_END) {
+    const u = (t - BANNER_FADE_IN_START) / (BANNER_FADE_IN_END - BANNER_FADE_IN_START);
+    opacity = u * u * (3 - 2 * u);
+  } else if (t >= BANNER_FADE_IN_END && t < BANNER_FADE_OUT_START) {
+    opacity = 1;
+  } else if (t >= BANNER_FADE_OUT_START && t < BANNER_FADE_OUT_END) {
+    const u = (t - BANNER_FADE_OUT_START) / (BANNER_FADE_OUT_END - BANNER_FADE_OUT_START);
+    opacity = 1 - u * u * (3 - 2 * u);
+  } else if (t >= BANNER_FADE_OUT_END) {
+    opacity = 0;
+  }
+  _bannerEl.style.opacity = String(opacity);
+}
+
+function _disposeBanner() {
+  if (_bannerEl && _bannerEl.parentNode) {
+    _bannerEl.parentNode.removeChild(_bannerEl);
+  }
+  _bannerEl = null;
 }
