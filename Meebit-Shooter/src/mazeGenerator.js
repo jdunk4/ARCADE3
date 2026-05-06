@@ -28,6 +28,8 @@
 // }
 // ============================================================
 
+import { pickTemplateForWave, parseTemplate } from './mazeTemplates.js';
+
 const CELL_SIZE = 5.0;
 export { CELL_SIZE };
 
@@ -100,10 +102,24 @@ function rng01(w) {
 }
 
 // ---- GENERATE MAZE ----
-// _generateMazeAttempt always returns a slide-SCC valid layout
-// (the force-fix step at the end knocks out walls until validation
-// passes). The wrapper just calls it once.
+// Templates take precedence: if a hand-traced layout is registered
+// for this wave (see mazeTemplates.js), use its cells + spawn +
+// glyphs and skip the procedural generator. Mining blocks, kill
+// zones, and decor enemies still get placed procedurally on top of
+// the template's floor cells.
+//
+// _generateMazeAttempt remains the fallback for waves past the
+// template count, and always returns a slide-SCC layout (force-fix
+// + serpentine fallback).
 export function generateMaze(waveNum) {
+  const tmpl = pickTemplateForWave(waveNum);
+  if (tmpl) {
+    const parsed = parseTemplate(tmpl);
+    if (parsed && _isAllFloorSlideReachable(parsed.cells, parsed.cols, parsed.rows, parsed.spawn)) {
+      return _finalizeMazeData(waveNum, parsed.cells, parsed.cols, parsed.rows, parsed.spawn, parsed.glyphs);
+    }
+    console.warn('[generateMaze] template for wave', waveNum, 'failed slide-SCC; falling back to procedural');
+  }
   return _generateMazeAttempt(waveNum, 0);
 }
 
@@ -307,6 +323,54 @@ function _generateMazeAttempt(waveNum, attemptOffset) {
     if (f) glyphs.push({ col: f.col, row: f.row });
   }
 
+  return _finalizeMazeData(waveNum, cells, cols, rows, spawn, glyphs);
+}
+
+// Shared placement step: takes a maze with cells + spawn + glyphs
+// already set and adds mining blocks, kill zones, decor enemies on
+// remaining floor cells per the wave config. Used by both the
+// procedural generator and the template path.
+function _finalizeMazeData(waveNum, cells, cols, rows, spawn, glyphs) {
+  const config = getMazeConfig(waveNum);
+  const seed = waveNum * 7919 + 12345;
+  const rng = mulberry32(seed ^ 0xdeadbeef);
+  const idx = (c, r) => r * cols + c;
+
+  // Re-collect floor cells (templates don't share the procedural
+  // floorCells list).
+  const floorCells = [];
+  for (let r = 1; r < rows - 1; r++) {
+    for (let c = 1; c < cols - 1; c++) {
+      if (cells[idx(c, r)].kind === 'floor') {
+        floorCells.push({ col: c, row: r });
+      }
+    }
+  }
+  const used = new Set();
+  used.add(idx(spawn.col, spawn.row));
+  for (const g of glyphs) used.add(idx(g.col, g.row));
+
+  const pickFloor = (minDistFromSpawn = 0, minSpread = 0, existing = []) => {
+    for (let attempt = 0; attempt < 200; attempt++) {
+      const f = floorCells[Math.floor(rng() * floorCells.length)];
+      if (!f) return null;
+      const k = idx(f.col, f.row);
+      if (used.has(k)) continue;
+      const dSpawn = Math.abs(f.col - spawn.col) + Math.abs(f.row - spawn.row);
+      if (dSpawn < minDistFromSpawn) continue;
+      let tooClose = false;
+      for (const e of existing) {
+        if (Math.abs(e.col - f.col) + Math.abs(e.row - f.row) < minSpread) {
+          tooClose = true; break;
+        }
+      }
+      if (tooClose) continue;
+      used.add(k);
+      return f;
+    }
+    return null;
+  };
+
   // ---- MINING BLOCKS ----
   const miningBlocks = [];
   for (let i = 0; i < config.miningBlockCount; i++) {
@@ -331,8 +395,6 @@ function _generateMazeAttempt(waveNum, attemptOffset) {
   }
 
   // ---- DECOR ENEMIES ----
-  // Static visual obstacles that get destroyed by a slide passing
-  // over them. Never damage the player.
   const decorEnemies = [];
   for (let i = 0; i < (config.decorEnemyCount | 0); i++) {
     const f = pickFloor(2, 1, decorEnemies);
