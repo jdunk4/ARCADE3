@@ -342,9 +342,9 @@ window.__mechEjected = function(mechPos) {
 // the standard fireWeapon() path so the equipped weapon, ammo, and
 // damage scaling all apply normally.
 window.__endlessFireBullet = function(dx, dz) {
-  if (!player || !player.facing) return;
-  const len = Math.sqrt(dx * dx + dz * dz) || 1;
-  player.facing.set(dx / len, 0, dz / len);
+  if (!player) return;
+  player.facing = Math.atan2(dx, dz);
+  if (player.obj) player.obj.rotation.y = player.facing;
   try { fireWeapon(); } catch (_) {}
 };
 
