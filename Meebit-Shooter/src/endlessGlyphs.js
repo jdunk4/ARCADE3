@@ -797,6 +797,8 @@ function _tickWave(dt) {
   _setWaveHUD('WAVE ' + S.endlessWave, '');
 
   // Win check — every glyph collected.
+  const total = getGlyphsTotal();
+  const got = getGlyphsCollected();
   if (total > 0 && got >= total) {
     saveMazeProgress(S.endlessWave);
     try { Audio.shot && Audio.shot('raygun'); } catch (_) {}

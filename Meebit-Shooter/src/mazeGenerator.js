@@ -186,16 +186,18 @@ export function generateMaze(waveNum) {
     }
   }
 
-  // Step 4 — extra openings (loops). Each opening is verified to
-  // keep every floor cell slide-reachable (a perfect maze is fully
-  // slide-fillable, but adding loops can create open pockets where
-  // the slide overshoots a cell with no way to stop on it). Any
-  // opening that orphans a cell from the slide-BFS is reverted.
+  // Step 4 — extra openings (loops). Higher waves get MORE openings
+  // so the layout reads as more open / fewer interior walls; the
+  // arena boundary still constrains slides so the maze remains
+  // solvable. Each opening is validated by _isAllFloorSlideReachable
+  // and reverted if it orphans a cell, so we won't break
+  // solvability — but more openings = more chances for the player to
+  // route through wide-open spaces.
   let loopOpenings;
-  if (w <= 2) loopOpenings = 6;
-  else if (w <= 5) loopOpenings = 4;
-  else if (w <= 8) loopOpenings = 2;
-  else loopOpenings = 1;
+  if (w <= 2) loopOpenings = 2;
+  else if (w <= 5) loopOpenings = 6;
+  else if (w <= 8) loopOpenings = 10;
+  else loopOpenings = 16;
 
   for (let i = 0; i < loopOpenings; i++) {
     let attempts = 0;
