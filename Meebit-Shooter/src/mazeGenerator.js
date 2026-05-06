@@ -28,7 +28,6 @@
 // }
 // ============================================================
 
-import { pickTemplateForWave, parseTemplate } from './mazeTemplates.js';
 
 const CELL_SIZE = 5.0;
 export { CELL_SIZE };
@@ -102,24 +101,11 @@ function rng01(w) {
 }
 
 // ---- GENERATE MAZE ----
-// Templates take precedence: if a hand-traced layout is registered
-// for this wave (see mazeTemplates.js), use its cells + spawn +
-// glyphs and skip the procedural generator. Mining blocks, kill
-// zones, and decor enemies still get placed procedurally on top of
-// the template's floor cells.
-//
-// _generateMazeAttempt remains the fallback for waves past the
-// template count, and always returns a slide-SCC layout (force-fix
-// + serpentine fallback).
+// _generateMazeAttempt always returns a slide-SCC layout — the
+// recursive-backtracker + force-fix + serpentine fallback chain
+// guarantees every floor cell (and therefore every glyph) is
+// reachable from spawn via slides.
 export function generateMaze(waveNum) {
-  const tmpl = pickTemplateForWave(waveNum);
-  if (tmpl) {
-    const parsed = parseTemplate(tmpl);
-    if (parsed && _isAllFloorSlideReachable(parsed.cells, parsed.cols, parsed.rows, parsed.spawn)) {
-      return _finalizeMazeData(waveNum, parsed.cells, parsed.cols, parsed.rows, parsed.spawn, parsed.glyphs);
-    }
-    console.warn('[generateMaze] template for wave', waveNum, 'failed slide-SCC; falling back to procedural');
-  }
   return _generateMazeAttempt(waveNum, 0);
 }
 
