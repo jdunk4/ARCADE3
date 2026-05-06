@@ -832,7 +832,8 @@ function _enterWaveDissolve() {
   _disposeGlyphCollector();
   _restoreStandardHud();
   _popFog();
-  startDissolve(wallSnapshot, S.endlessWave, boundsSnapshot);
+  const chapterTint = _waveFillTint(S.endlessWave);
+  startDissolve(wallSnapshot, S.endlessWave, boundsSnapshot, chapterTint);
   _setWaveHUD('', '');
 }
 

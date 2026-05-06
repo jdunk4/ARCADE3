@@ -14,14 +14,18 @@
 // the cross.
 //
 // API:
-//   startDissolve(walls, waveSeed, mazeBounds?)
-//     walls       — wall AABBs from getMazeWallEntries(); particle
-//                   origins.
-//     waveSeed    — seeds the autoglyph (deterministic per wave).
-//     mazeBounds  — { x0, x1, z0, z1 } in world units; the autoglyph
-//                   patch is mapped onto this rectangle so the glyph
-//                   replaces the maze 1:1. If omitted, falls back to
-//                   a 30u centered patch (legacy behavior).
+//   startDissolve(walls, waveSeed, mazeBounds?, chapterTint?)
+//     walls        — wall AABBs from getMazeWallEntries(); particle
+//                    origins.
+//     waveSeed     — seeds the autoglyph (deterministic per wave).
+//     mazeBounds   — { x0, x1, z0, z1 } in world units; the autoglyph
+//                    patch is mapped onto this rectangle so the glyph
+//                    replaces the maze 1:1. If omitted, falls back to
+//                    a 30u centered patch (legacy behavior).
+//     chapterTint  — 0xRRGGBB; colors both the glyph particles
+//                    (emissive) and the ACCESS GRANTED banner so the
+//                    reward reads in the current chapter's palette.
+//                    Defaults to cyan if omitted.
 //   tickDissolve(dt) → boolean (true while still active).
 //   cancelDissolve() — abort + dispose particles + DOM overlay.
 //   isDissolveActive() — convenience predicate.
@@ -126,6 +130,7 @@ let _particles = [];               // CPU-side per-cell state
 let _phaseT = 0;
 let _active = false;
 let _bannerEl = null;
+let _activeTint = 0x4ff7ff;        // current chapter tint (cyan default)
 
 const _scratchMatrix = new THREE.Matrix4();
 const _scratchQuat   = new THREE.Quaternion();
@@ -136,13 +141,15 @@ const _scratchScale  = new THREE.Vector3(1, 1, 1);
 // PUBLIC API
 // =====================================================================
 
-export function startDissolve(walls, waveSeed, mazeBounds) {
+export function startDissolve(walls, waveSeed, mazeBounds, chapterTint) {
   cancelDissolve();
 
   if (!walls || walls.length === 0) {
     _active = false;
     return;
   }
+
+  _activeTint = (chapterTint != null) ? chapterTint : 0x4ff7ff;
 
   // Resolve the patch the glyph will fill.
   let x0, x1, z0, z1;
@@ -248,19 +255,22 @@ export function tickDissolve(dt) {
   _updateBanner(_phaseT);
 
   // Material breathing during the display phase, fade during sink.
+  // Baseline 1.4 matches the build-time intensity so the glyph stays
+  // legible against the dark atmosphere; pulse adds a soft +1.0 bloom
+  // through the middle of display.
   if (_instanceMaterial) {
     if (_phaseT > PHASE_FLY_END && _phaseT < PHASE_DISPLAY_END) {
       const t = (_phaseT - PHASE_FLY_END) / (PHASE_DISPLAY_END - PHASE_FLY_END);
       const pulse = Math.sin(t * Math.PI);
-      _instanceMaterial.emissiveIntensity = 0.30 + pulse * 0.55;
+      _instanceMaterial.emissiveIntensity = 1.4 + pulse * 1.0;
       _instanceMaterial.opacity = 1;
     } else if (_phaseT >= PHASE_DISPLAY_END) {
       const t = Math.min(1, (_phaseT - PHASE_DISPLAY_END) /
                         (PHASE_SINK_END - PHASE_DISPLAY_END));
-      _instanceMaterial.emissiveIntensity = 0.30 * (1 - t);
+      _instanceMaterial.emissiveIntensity = 1.4 * (1 - t);
       _instanceMaterial.opacity = 1 - t;
     } else {
-      _instanceMaterial.emissiveIntensity = 0.20;
+      _instanceMaterial.emissiveIntensity = 1.4;
       _instanceMaterial.opacity = 1;
     }
   }
@@ -347,10 +357,14 @@ function _stepParticle(p, phaseT, dt) {
 function _buildInstancedMeshes(slotCounts) {
   const geos = _buildSymbolGeometries();
 
+  // Emissive in the chapter tint so the glyph reads as glowing
+  // colored marks against the dark wave atmosphere. Intensity is
+  // pushed high (1.4 baseline) because there's no dedicated lighting
+  // on the symbols during dissolve and the floor/ambient is dim.
   _instanceMaterial = new THREE.MeshStandardMaterial({
     color: 0x000000,
-    emissive: 0x223355,
-    emissiveIntensity: 0.20,
+    emissive: _activeTint,
+    emissiveIntensity: 1.4,
     roughness: 0.85,
     metalness: 0.10,
     transparent: true,
@@ -405,6 +419,11 @@ function _writeInstanceMatrices() {
 
 function _ensureBanner() {
   _disposeBanner();
+  const hex = '#' + _activeTint.toString(16).padStart(6, '0');
+  const r = (_activeTint >> 16) & 0xff;
+  const g = (_activeTint >> 8) & 0xff;
+  const b = _activeTint & 0xff;
+  const rgba = (a) => `rgba(${r},${g},${b},${a})`;
   const root = document.createElement('div');
   root.id = 'endless-access-banner';
   root.style.cssText = [
@@ -413,15 +432,15 @@ function _ensureBanner() {
     'transform:translate(-50%, -50%)',
     'padding:18px 36px',
     'background:rgba(0,0,0,0.78)',
-    'border:2px solid #4ff7ff',
+    `border:2px solid ${hex}`,
     'border-radius:10px',
-    'box-shadow:0 0 28px rgba(79,247,255,0.55), inset 0 0 18px rgba(79,247,255,0.25)',
-    'color:#4ff7ff',
+    `box-shadow:0 0 28px ${rgba(0.55)}, inset 0 0 18px ${rgba(0.25)}`,
+    `color:${hex}`,
     'font-family:"Courier New",monospace',
     'font-size:34px',
     'font-weight:bold',
     'letter-spacing:6px',
-    'text-shadow:0 0 12px rgba(79,247,255,0.85)',
+    `text-shadow:0 0 12px ${rgba(0.85)}`,
     'z-index:99997',
     'opacity:0',
     'pointer-events:none',
