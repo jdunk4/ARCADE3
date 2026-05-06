@@ -417,13 +417,29 @@ export function updateMazeFx(dt) {
     e.mesh.rotation.y = Math.sin(time * 1.5 + e.phase) * 0.2;
     e.mesh.position.y = Math.abs(Math.sin(time * 3 + e.phase)) * 0.15;
   }
-  // Fill fade-in.
+  // Fill fade-in + post-fade pulse. Once a cell is fully revealed
+  // (opacity 1), modulate emissive intensity around the base value
+  // using a sin keyed off a per-cell phase. The phase varies with
+  // (col, row) so the whole filled area reads as a wave rippling
+  // across the maze — visual reinforcement that the player's
+  // coverage is alive, not just painted on.
   if (_fillMeshes) {
+    const PULSE_BASE = 0.45;
+    const PULSE_AMP  = 0.55;
+    const PULSE_HZ   = 1.4;
     for (let i = 0; i < _fillMeshes.length; i++) {
       const m = _fillMeshes[i];
       if (!m || !m.visible) continue;
       const mat = m.material;
-      if (mat.opacity < 1) mat.opacity = Math.min(1, mat.opacity + dt * 6);
+      if (mat.opacity < 1) {
+        mat.opacity = Math.min(1, mat.opacity + dt * 6);
+      } else {
+        const phase = (m.userData && m.userData.pulsePhase) || 0;
+        const s = Math.sin(time * PULSE_HZ + phase);
+        // Map sin (-1..1) → (0..1) then scale into [base..base+amp]
+        // so the cell never dims below its baseline glow.
+        mat.emissiveIntensity = PULSE_BASE + ((s + 1) * 0.5) * PULSE_AMP;
+      }
     }
   }
 }
@@ -440,6 +456,11 @@ export function markCellVisited(col, row) {
   if (!m || m.visible) return false;
   m.visible = true;
   m.material.opacity = 0;
+  // Phase tied to grid position so the pulse reads as a coherent wave
+  // sweeping across the filled area, not random per-cell flicker. The
+  // 0.55/0.40 frequencies are mutually irrational enough to avoid a
+  // visible repeating banding pattern.
+  m.userData.pulsePhase = col * 0.55 + row * 0.40;
   _coverageFilled++;
   return true;
 }

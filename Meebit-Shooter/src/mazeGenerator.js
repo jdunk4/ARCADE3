@@ -440,14 +440,39 @@ function _finalizeMazeData(waveNum, cells, cols, rows, spawn, glyphs) {
   }
 
   // ---- KILL ZONES ----
+  // Per-placement reachability gate: a kill zone in the wrong corridor
+  // can orphan a glyph (the player would have to slide INTO the kill
+  // zone to reach it, which kills them). For each candidate position,
+  // simulate placing it and verify every glyph is still walk-reachable
+  // from spawn via floor cells that are NOT walls and NOT kill zones.
+  // Mining blocks are treated as passable here because the player can
+  // shoot through them — an obstacle, not a soft-lock. If we can't find
+  // a safe slot for a kill zone after enough tries we just place fewer;
+  // a sparser wave 7 beats an unwinnable one.
   const killZones = [];
   if (config.killZoneCount > 0) {
     const chapter = Math.floor((waveNum - 1) / 10) % 6;
     const kind = (chapter <= 1) ? 'rune' : (chapter <= 3) ? 'mine' : 'ghost';
+    const blockedSet = new Set();   // kill-zone cells block reachability
     for (let i = 0; i < config.killZoneCount; i++) {
-      const f = pickFloor(3, 2, killZones);
-      if (!f) break;
-      killZones.push({ col: f.col, row: f.row, kind });
+      let placed = null;
+      for (let safety = 0; safety < 30 && !placed; safety++) {
+        const f = pickFloor(3, 2, killZones);
+        if (!f) break;
+        // Provisionally treat this cell as a kill zone and confirm
+        // every glyph is still reachable.
+        blockedSet.add(idx(f.col, f.row));
+        if (_glyphsReachableAvoiding(cells, cols, rows, spawn, glyphs, blockedSet)) {
+          placed = f;
+        } else {
+          // Revert and try a different cell. Note that pickFloor
+          // already added f to `used`, which is fine — we just won't
+          // pick that same cell again.
+          blockedSet.delete(idx(f.col, f.row));
+        }
+      }
+      if (!placed) break;       // give up on remaining kill zones
+      killZones.push({ col: placed.col, row: placed.row, kind });
     }
   }
 
@@ -470,6 +495,41 @@ function _finalizeMazeData(waveNum, cells, cols, rows, spawn, glyphs) {
     config,
     cellSize: CELL_SIZE,
   };
+}
+
+// ---- GLYPH REACHABILITY (with kill-zone avoidance) ----
+// Used by the kill-zone placement loop. BFS from spawn over floor
+// cells, refusing to enter any cell in `blockedKeys` (kill zones).
+// Returns true iff every glyph cell is reached. Mining blocks are
+// NOT considered blockers — the player can shoot through them, so
+// for win-feasibility purposes they're an obstacle, not a barrier.
+function _glyphsReachableAvoiding(cells, cols, rows, spawn, glyphs, blockedKeys) {
+  const idx = (c, r) => r * cols + c;
+  const start = idx(spawn.col, spawn.row);
+  if (cells[start].kind !== 'floor') return false;
+  if (blockedKeys.has(start)) return false;
+  const visited = new Uint8Array(cols * rows);
+  visited[start] = 1;
+  const stack = [start];
+  while (stack.length) {
+    const i = stack.pop();
+    const r = (i / cols) | 0;
+    const c = i - r * cols;
+    const nbrs = [[c - 1, r], [c + 1, r], [c, r - 1], [c, r + 1]];
+    for (const [nc, nr] of nbrs) {
+      if (nc < 0 || nc >= cols || nr < 0 || nr >= rows) continue;
+      const ni = idx(nc, nr);
+      if (visited[ni]) continue;
+      if (cells[ni].kind !== 'floor') continue;
+      if (blockedKeys.has(ni)) continue;
+      visited[ni] = 1;
+      stack.push(ni);
+    }
+  }
+  for (const g of glyphs) {
+    if (!visited[idx(g.col, g.row)]) return false;
+  }
+  return true;
 }
 
 // ---- SLIDE REACHABILITY ----
