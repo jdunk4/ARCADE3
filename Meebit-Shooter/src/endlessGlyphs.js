@@ -45,8 +45,9 @@ import { grantArtifact } from './stratagems.js';
 import { generateMaze, cellToWorld, worldToCell } from './mazeGenerator.js';
 import {
   buildMaze, clearMaze, updateMazeFx,
-  markCellVisited, getCoverage, isKillZoneCell, isCellBlocked,
-  getMazeWallEntries, isBlockedByWall as mazeIsBlocked,
+  markCellVisited, isKillZoneCell, isCellBlocked,
+  collectGlyphAt, getGlyphsTotal, getGlyphsCollected, getGlyphsRemaining,
+  getMazeWallEntries,
 } from './mazeRenderer.js';
 import { saveMazeProgress, getMazeWave } from './mazePuzzles.js';
 import { UI } from './ui.js';
@@ -462,7 +463,7 @@ function _removeConstructionOverlay() {
 // seconds?" Was 60s; the longer prep window encouraged dawdling
 // without adding meaningful planning beats. 15s is enough to glance
 // at the locker, pick a weapon if desired, and brace for the wave.
-const LOBBY_PREP_DURATION = 15;
+const LOBBY_PREP_DURATION = 5;
 
 /**
  * LOBBY_PREP — player is in the rainbow-tile lobby. Locker is up,
@@ -526,11 +527,9 @@ let _activeMazeData = null;
 
 // Slide-fill state.
 const SLIDE_CELLS_PER_SEC = 12;
-const WAVE_TIME_LIMIT = 60;          // seconds per wave
 
 let _slide = null;                   // { startX, startZ, tx, tz, t, duration, cells, idx, willKill }
 let _facingDir = { dx: 1, dz: 0 };   // last move direction (used for fire aim)
-let _waveTimer = WAVE_TIME_LIMIT;
 
 // Avatar — a billboarded sprite that stands in for the Meebit in
 // the top-down slide-fill view. Loads the head-only portrait of
@@ -607,7 +606,6 @@ function _updateEmojiAvatar(dt) {
 
 function _prepareWave(waveNum) {
   _pendingWaveNum = waveNum;
-  _waveTimer = WAVE_TIME_LIMIT;
 }
 
 /**
@@ -656,6 +654,7 @@ function _enterWaveAssemble(waveNum) {
     player.pos.z = spawnWorld.z;
   }
   markCellVisited(mazeData.spawn.col, mazeData.spawn.row);
+  collectGlyphAt(mazeData.spawn.col, mazeData.spawn.row);
   _slide = null;
   _facingDir = { dx: 1, dz: 0 };
   S.endlessTopDown = true;
@@ -694,24 +693,13 @@ function _tickWave(dt) {
   // Slide animation tick.
   _tickSlide(dt);
 
-  // 1-minute wave timer. Running out is treated as a kill — the wave
-  // restarts from a clean state.
-  _waveTimer = Math.max(0, _waveTimer - dt);
-  if (_waveTimer <= 0) {
-    _retryWave('TIME OUT');
-    return;
-  }
+  // HUD — glyph progress (the win condition).
+  const total = getGlyphsTotal();
+  const got = getGlyphsCollected();
+  _setWaveHUD('WAVE ' + S.endlessWave, got + '/' + total + ' GLYPHS');
 
-  // HUD — coverage % + timer.
-  const cov = getCoverage();
-  const pct = cov.total > 0 ? Math.floor((cov.filled / cov.total) * 100) : 0;
-  const t = Math.ceil(_waveTimer);
-  const mm = Math.floor(t / 60), ss = t - mm * 60;
-  const timeStr = mm + ':' + (ss < 10 ? '0' + ss : ss);
-  _setWaveHUD('WAVE ' + S.endlessWave, pct + '% · ' + timeStr);
-
-  // Win check — every cell visited.
-  if (cov.total > 0 && cov.filled >= cov.total) {
+  // Win check — every glyph collected.
+  if (total > 0 && got >= total) {
     saveMazeProgress(S.endlessWave);
     try { Audio.shot && Audio.shot('raygun'); } catch (_) {}
     UI.toast('WAVE ' + S.endlessWave + ' CLEARED', '#4ff7ff', 1800);
@@ -813,19 +801,14 @@ export function endlessSlide(dx, dz) {
   let col = start.col, row = start.row;
   let willKill = false;
 
-  // Walk forward until either:
-  //   • a wall blocks the next step,
-  //   • the next cell holds an un-broken mining block (slide stops
-  //     in front; player must shoot to clear it), OR
-  //   • the next cell is a kill zone (slide continues INTO it, then
-  //     the wave retries on slide-end).
+  // Walk forward until the next cell is impassable (wall block or
+  // un-broken mining block) or a kill zone (slide INTO that cell
+  // then trigger retry).
   while (true) {
-    const dir = dx > 0 ? 'E' : dx < 0 ? 'W' : dz > 0 ? 'S' : 'N';
-    if (_isCellBlockedToward(col, row, dir)) break;
     const nc = col + dx;
     const nr = row + dz;
     if (nc < 0 || nc >= md.cols || nr < 0 || nr >= md.rows) break;
-    if (isCellBlocked(nc, nr)) break;        // mining block in path
+    if (isCellBlocked(nc, nr)) break;
     col = nc; row = nr;
     cells.push({ col, row });
     if (isKillZoneCell(col, row)) { willKill = true; break; }
@@ -848,18 +831,6 @@ export function endlessSlide(dx, dz) {
   };
 }
 
-function _isCellBlockedToward(col, row, dir) {
-  if (!_activeMazeData) return true;
-  const { cols, cells } = _activeMazeData;
-  const cell = cells[row * cols + col];
-  if (!cell) return true;
-  const flag =
-    dir === 'N' ? 1 :         // WALL_N
-    dir === 'E' ? 2 :         // WALL_E
-    dir === 'S' ? 4 :         // WALL_S
-                  8;          // WALL_W
-  return (cell.walls & flag) !== 0;
-}
 
 function _tickSlide(dt) {
   if (!_slide) return;
@@ -868,7 +839,7 @@ function _tickSlide(dt) {
   player.pos.x = _slide.startX + (_slide.tx - _slide.startX) * u;
   player.pos.z = _slide.startZ + (_slide.tz - _slide.startZ) * u;
 
-  // Mark cells as we cross them.
+  // Mark cells as we cross them, and pick up any glyphs in the path.
   const md = _activeMazeData;
   if (md) {
     while (_slide.idx < _slide.cells.length) {
@@ -876,6 +847,9 @@ function _tickSlide(dt) {
       if (u < targetU) break;
       const c = _slide.cells[_slide.idx];
       markCellVisited(c.col, c.row);
+      if (collectGlyphAt(c.col, c.row)) {
+        try { Audio.shot && Audio.shot('pickaxe'); } catch (_) {}
+      }
       _slide.idx++;
     }
   }
