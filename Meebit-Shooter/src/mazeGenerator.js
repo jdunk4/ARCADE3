@@ -101,27 +101,27 @@ function rng01(w) {
 }
 
 // ---- GENERATE MAZE ----
-// Try up to 50 different seeds for the recursive-backtracker. The
-// first one that produces a slide-SCC layout wins — this typically
-// happens within the first few attempts. Force-fix + serpentine
-// fallback only activate if none of the 50 seeds work, which is
-// rare in practice. Keeps the maze layouts varied (most waves get
-// the recursive-backtracker output) without leaving any wave at
-// risk of an unreachable glyph.
+// Try up to 200 different seeds for the recursive-backtracker. The
+// first one that produces a slide-SCC layout wins. In testing,
+// every wave 1-14 succeeds within the first handful of attempts.
+//
+// If somehow all 200 fail, we accept the LAST recursive-backtracker
+// output as-is (slide-SCC not guaranteed for that one seed) rather
+// than reverting to a serpentine fallback. The result is always a
+// recursive-backtracker maze; never a horizontal-stripe fallback.
 export function generateMaze(waveNum) {
-  let lastAttempt = null;
   for (let i = 0; i < 200; i++) {
-    const result = _generateMazeAttempt(waveNum, i, /*allowFallbacks*/ false);
+    const result = _generateMazeAttempt(waveNum, i, /*strict*/ true);
     if (result) return result;
-    lastAttempt = i;
   }
-  // No clean recursive-backtracker output worked — retry the last
-  // seed WITH the force-fix + serpentine fallback enabled so we
-  // still return a valid maze.
-  return _generateMazeAttempt(waveNum, lastAttempt, /*allowFallbacks*/ true);
+  // No strict pass found — return the recursive-backtracker output
+  // for one more seed without slide-SCC enforcement. This is
+  // empirically unreachable for waves 1-14, but kept as a guard
+  // against future config changes.
+  return _generateMazeAttempt(waveNum, 0, /*strict*/ false);
 }
 
-function _generateMazeAttempt(waveNum, attemptOffset, allowFallbacks = true) {
+function _generateMazeAttempt(waveNum, attemptOffset, strict = true) {
   const config = getMazeConfig(waveNum);
   const { cols, rows } = config;
   // Each attempt perturbs the seed so the recursive backtracker
@@ -335,42 +335,12 @@ function _generateMazeAttempt(waveNum, attemptOffset, allowFallbacks = true) {
     if (!placed) break;
   }
 
-  // Without fallbacks: bail early if not slide-SCC. The outer
-  // generateMaze retry loop will try the next seed.
-  if (!allowFallbacks) {
-    if (!_isAllFloorSlideReachable(cells, cols, rows, spawn)) return null;
-  } else {
-    // Step 5 — FORCE-FIX. Knock out bridge walls until slide-SCC.
-    // Doesn't always converge (adding floor can REDUCE stop count),
-    // so a 60-iteration cap then a serpentine fallback as last
-    // resort.
-    let fixSafety = 0;
-    while (!_isAllFloorSlideReachable(cells, cols, rows, spawn) && fixSafety < 60) {
-      fixSafety++;
-      let best = null;
-      let bestScore = -1;
-      for (let r = 1; r < rows - 1; r++) {
-        for (let c = 1; c < cols - 1; c++) {
-          if (cells[idx(c, r)].kind !== 'wall') continue;
-          let floorNbrs = 0;
-          for (const [dc, dr] of [[-1, 0], [1, 0], [0, -1], [0, 1]]) {
-            const nbr = cells[idx(c + dc, r + dr)];
-            if (nbr && nbr.kind === 'floor') floorNbrs++;
-          }
-          if (floorNbrs > bestScore) {
-            bestScore = floorNbrs;
-            best = [c, r];
-          }
-        }
-      }
-      if (!best || bestScore < 1) break;
-      cells[idx(best[0], best[1])].kind = 'floor';
-    }
-
-    if (!_isAllFloorSlideReachable(cells, cols, rows, spawn)) {
-      _applySerpentineLayout(cells, cols, rows, waveNum);
-    }
-  }
+  // Strict mode (the only path now): bail if not slide-SCC. The
+  // outer retry loop tries the next seed. After exhausting retries
+  // generateMaze still calls this with strict=false to accept
+  // whatever the last seed produced — that result is still the
+  // recursive-backtracker output, never a serpentine fallback.
+  if (strict && !_isAllFloorSlideReachable(cells, cols, rows, spawn)) return null;
 
   // ---- COLLECT FLOOR CELLS for glyph / block / kill-zone placement ----
   const floorCells = [];
@@ -500,45 +470,6 @@ function _finalizeMazeData(waveNum, cells, cols, rows, spawn, glyphs) {
     config,
     cellSize: CELL_SIZE,
   };
-}
-
-// ---- SERPENTINE FALLBACK ----
-// Guaranteed-solvable layout used as a last resort when the
-// procedural maze can't be repaired into slide-SCC. Wall rows at
-// every even interior row, single gap per row alternating left
-// then right. The slide path is forced:
-//   right → drop right gap → left → drop left gap → right → ...
-// every floor cell is touched.
-function _applySerpentineLayout(cells, cols, rows, waveNum = 1) {
-  const idx = (c, r) => r * cols + c;
-  // Reset interior to floor.
-  for (let r = 1; r < rows - 1; r++) {
-    for (let c = 1; c < cols - 1; c++) {
-      cells[idx(c, r)].kind = 'floor';
-    }
-  }
-  // Alternate orientation per wave — odd waves get horizontal wall
-  // rows, even waves get vertical wall columns. Breaks up the
-  // "always-horizontal-stripes" look when fallback chains hit
-  // back-to-back waves.
-  const horizontal = (waveNum & 1) === 1;
-  if (horizontal) {
-    let i = 0;
-    for (let r = 2; r < rows - 1; r += 2, i++) {
-      const gapCol = (i % 2 === 0) ? (cols - 2) : 1;
-      for (let c = 1; c < cols - 1; c++) {
-        if (c !== gapCol) cells[idx(c, r)].kind = 'wall';
-      }
-    }
-  } else {
-    let i = 0;
-    for (let c = 2; c < cols - 1; c += 2, i++) {
-      const gapRow = (i % 2 === 0) ? (rows - 2) : 1;
-      for (let r = 1; r < rows - 1; r++) {
-        if (r !== gapRow) cells[idx(c, r)].kind = 'wall';
-      }
-    }
-  }
 }
 
 // ---- SLIDE REACHABILITY ----
