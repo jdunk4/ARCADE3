@@ -663,10 +663,11 @@ function _enterWaveAssemble(waveNum) {
   _facingDir = { dx: 1, dz: 0 };
   S.endlessTopDown = true;
   _showEmojiAvatar();
-  // Strip arena dressing — gravestones + spectator crowd get in the
-  // way of the clean top-down maze view.
+  // Clear gravestones (they cluttered the maze view) but leave the
+  // spectator crowd visible — the orange/purple lanterns frame the
+  // arena nicely from the top-down camera.
   try { clearGravestones(); } catch (_) {}
-  try { setCrowdVisible(false); } catch (_) {}
+  try { setCrowdVisible(true); } catch (_) {}
 
   _setWaveHUD('WAVE ' + waveNum, 'ASSEMBLING');
 }

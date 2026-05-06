@@ -262,14 +262,14 @@ export function buildMaze(mazeData, scene, fillTint) {
       map: tex, transparent: true, depthWrite: false,
     });
     const sprite = new THREE.Sprite(spriteMat);
-    sprite.scale.set(2.4, 2.4, 1);
-    sprite.position.set(x, 1.6, z);
+    sprite.scale.set(4.8, 4.8, 1);
+    sprite.position.set(x, 2.0, z);
     group.add(sprite);
     _glyphEntries.push({
       col: g.col, row: g.row,
       mesh: sprite,
       collected: false,
-      baseY: 1.6,
+      baseY: 2.0,
       phase: i * 1.3,
     });
   }

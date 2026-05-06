@@ -118,72 +118,69 @@ export function generateMaze(waveNum) {
 
   const spawn = { col: 1, row: 1 };
 
-  // ---- LAYOUT: HORIZONTAL WALL ROWS WITH OFFSET GAPS ----
-  // Slide-puzzle design — the player slides into walls and uses
-  // gaps to traverse vertically. Wave 1 is the tightest:
-  // 5 wall rows, single gap each, gaps zig-zag so the player is
-  // forced into a serpentine path that touches every cell.
-  // Higher waves loosen up: fewer wall rows, more gaps, optional
-  // pillar scatter.
+  // ---- LAYOUT: BOUSTROPHEDON ICE-PUZZLE ----
+  // Wall rows at every even interior row so each "corridor" is a
+  // single cell tall. Each wall row has exactly one gap, alternating
+  // between the right edge (col cols-2) and the left edge (col 1).
+  // The player's slide path becomes a forced serpentine:
+  //   row 1 right → drop through right-edge gap → row 3 left → drop
+  //   through left-edge gap → row 5 right → ...
+  // Every floor cell is touched by that path, so 100% coverage and
+  // every glyph are reachable.
   const w = config.waveNum;
   const placeWallSafe = (c, r) => {
-    if (c <= 0 || c >= cols - 1 || r <= 0 || r >= rows - 1) return false;
-    if (c === spawn.col && r === spawn.row) return false;
+    if (c <= 0 || c >= cols - 1 || r <= 0 || r >= rows - 1) return;
+    if (c === spawn.col && r === spawn.row) return;
     cells[idx(c, r)].kind = 'wall';
   };
 
-  // Wall row positions + gap counts per wave. Lower waves = more
-  // walls and fewer gaps.
-  let wallRowPositions, gapsPerRow;
-  if (w <= 2) {
-    wallRowPositions = [3, 6, 9, 12, 15];
-    gapsPerRow = 1;
-  } else if (w <= 4) {
-    wallRowPositions = [3, 6, 9, 12, 15];
-    gapsPerRow = 2;
-  } else if (w <= 7) {
-    wallRowPositions = [4, 8, 12, 16];
-    gapsPerRow = 2;
-  } else {
-    wallRowPositions = [4, 9, 14];
-    gapsPerRow = 3;
-  }
+  // Build the wall-row schedule. Every wave uses the same skeleton
+  // for now — variations come from extra gaps and mining blocks
+  // in higher waves, not from the wall row spacing.
+  const wallRows = [];
+  for (let r = 2; r < rows - 1; r += 2) wallRows.push(r);
 
-  // Pick gap columns per wall row. They zig-zag so the player can't
-  // shortcut straight down — every gap is reachable from the
-  // adjacent corridor by sliding laterally.
-  for (let i = 0; i < wallRowPositions.length; i++) {
-    const r = wallRowPositions[i];
-    const interior = cols - 2;             // playable columns 1..cols-2
-    const gapsInThisRow = new Set();
-    for (let g = 0; g < gapsPerRow; g++) {
-      // Spread gaps roughly evenly across the row, offset per row
-      // index, then wiggle by RNG so back-to-back waves vary.
-      const baseFrac = (g + 0.5) / gapsPerRow;
-      const baseCol = 1 + Math.floor(baseFrac * interior);
-      const offset = ((i * 5) + Math.floor(rng() * 3) - 1) % interior;
-      const col = 1 + ((baseCol - 1 + offset) % interior);
-      gapsInThisRow.add(col);
+  // Extra middle gaps for higher waves — gives the player a second
+  // route option that can be used to shortcut or to skip a slow
+  // section. Wave 1 has none (forced solve).
+  let extraMidGapsPerRow;
+  if (w <= 1) extraMidGapsPerRow = 0;
+  else if (w <= 4) extraMidGapsPerRow = 0;
+  else if (w <= 7) extraMidGapsPerRow = 1;
+  else extraMidGapsPerRow = 2;
+
+  for (let i = 0; i < wallRows.length; i++) {
+    const r = wallRows[i];
+    const gaps = new Set();
+    // Primary gap: right on even index, left on odd. This is the
+    // gap the boustrophedon path uses.
+    gaps.add(i % 2 === 0 ? cols - 2 : 1);
+    // Extra gaps in middle columns for higher waves.
+    for (let g = 0; g < extraMidGapsPerRow; g++) {
+      let c = 4 + Math.floor(rng() * (cols - 8));
+      let safety2 = 0;
+      while (gaps.has(c) && safety2++ < 12) c = 4 + Math.floor(rng() * (cols - 8));
+      gaps.add(c);
     }
     for (let c = 1; c < cols - 1; c++) {
-      if (!gapsInThisRow.has(c)) placeWallSafe(c, r);
+      if (!gaps.has(c)) placeWallSafe(c, r);
     }
   }
 
-  // Pillar scatter for higher waves — single-cell obstacles in the
-  // open corridors. Skipped when wave is low so the early-game
-  // layout reads as clean horizontal stripes.
-  if (w >= 5) {
-    const pillarCount = (w >= 10) ? 12 : (w >= 7) ? 8 : 4;
+  // Pillar scatter for high waves only — extra obstacles inside the
+  // single-cell corridors. Each placement is connectivity-checked.
+  if (w >= 8) {
+    const pillarCount = (w >= 10) ? 6 : 3;
     let attempts = 0;
     let placed = 0;
-    while (placed < pillarCount && attempts < pillarCount * 20) {
+    while (placed < pillarCount && attempts < pillarCount * 30) {
       attempts++;
+      // Only scatter into corridor (odd) rows so the wall-row
+      // skeleton stays intact.
+      const r = 1 + 2 * Math.floor(rng() * Math.floor((rows - 2) / 2));
       const c = 2 + Math.floor(rng() * (cols - 4));
-      const r = 2 + Math.floor(rng() * (rows - 4));
       if (cells[idx(c, r)].kind === 'wall') continue;
-      // Don't pillar the spawn cell or its 4 neighbors.
-      if (Math.abs(c - spawn.col) + Math.abs(r - spawn.row) < 2) continue;
+      if (Math.abs(c - spawn.col) + Math.abs(r - spawn.row) < 3) continue;
       cells[idx(c, r)].kind = 'wall';
       if (!_isAllFloorReachable(cells, cols, rows, spawn)) {
         cells[idx(c, r)].kind = 'floor';
@@ -193,14 +190,14 @@ export function generateMaze(waveNum) {
     }
   }
 
-  // Connectivity sanity — if the gap distribution somehow orphaned
-  // a region, knock out the offending wall column on each row until
-  // everything reconnects.
+  // Connectivity safety net. Should never trigger in practice
+  // because the boustrophedon layout is provably solvable, but
+  // keep the guard so generator bugs degrade gracefully instead
+  // of orphaning glyphs.
   let safety = 0;
   while (!_isAllFloorReachable(cells, cols, rows, spawn) && safety < 50) {
     safety++;
-    // Force-open one extra cell at a random wall row.
-    const r = wallRowPositions[Math.floor(rng() * wallRowPositions.length)];
+    const r = wallRows[Math.floor(rng() * wallRows.length)];
     const c = 1 + Math.floor(rng() * (cols - 2));
     cells[idx(c, r)].kind = 'floor';
   }
