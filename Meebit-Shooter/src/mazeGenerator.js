@@ -311,46 +311,81 @@ export function generateMaze(waveNum) {
 
 // ---- SLIDE REACHABILITY ----
 // Stronger than walking-connectivity: simulates the slide-fill
-// physics so we can verify every floor cell sits on at least one
-// possible slide path. The player's slide always travels until a
-// wall, so a perfect maze + a stray loop opening can leave a cell
-// that walks-connect but the slide can never stop on it (or pass
-// over it).
+// physics so we can verify the player can navigate to every floor
+// cell from EVERY reachable stop position — not just from spawn.
+//
+// The earlier check only verified "spawn covers every cell", which
+// is necessary but not sufficient. A loop opening can let spawn
+// reach a corridor pocket that the player slides INTO and can't
+// slide OUT of (the slide directions from that pocket all loop
+// back into the pocket). To catch those, we:
+//   1. BFS the directed slide graph from spawn → set of all
+//      reachable stops.
+//   2. From EACH reachable stop, run a fresh slide-fill BFS and
+//      verify it covers every floor cell.
+// If any stop fails (2), the maze has a one-way trap and we reject
+// the layout. ~O(N²) where N is the small stop count for a 19×19
+// grid, so cheap.
 function _isAllFloorSlideReachable(cells, cols, rows, spawn) {
   const idx = (c, r) => r * cols + c;
   const startKey = idx(spawn.col, spawn.row);
   if (cells[startKey].kind !== 'floor') return false;
-  const visitedStops = new Uint8Array(cols * rows);
-  const filled = new Uint8Array(cols * rows);
-  visitedStops[startKey] = 1;
-  filled[startKey] = 1;
-  const queue = [{ c: spawn.col, r: spawn.row }];
   const DIRS = [[-1, 0], [1, 0], [0, -1], [0, 1]];
 
-  while (queue.length > 0) {
-    const { c, r } = queue.shift();
-    for (const [dc, dr] of DIRS) {
-      let nc = c, nr = r;
-      while (true) {
-        const tc = nc + dc, tr = nr + dr;
-        if (tc < 0 || tc >= cols || tr < 0 || tr >= rows) break;
-        if (cells[idx(tc, tr)].kind !== 'floor') break;
-        nc = tc; nr = tr;
-        filled[idx(nc, nr)] = 1;
+  // Compute the set of cells filled by slides starting from a given
+  // stop position, plus the set of stops reachable from there.
+  const slideFillFrom = (sc, sr) => {
+    const visitedStops = new Uint8Array(cols * rows);
+    const filled = new Uint8Array(cols * rows);
+    const stops = [];
+    visitedStops[idx(sc, sr)] = 1;
+    filled[idx(sc, sr)] = 1;
+    const queue = [{ c: sc, r: sr }];
+    while (queue.length > 0) {
+      const { c, r } = queue.shift();
+      stops.push({ c, r });
+      for (const [dc, dr] of DIRS) {
+        let nc = c, nr = r;
+        while (true) {
+          const tc = nc + dc, tr = nr + dr;
+          if (tc < 0 || tc >= cols || tr < 0 || tr >= rows) break;
+          if (cells[idx(tc, tr)].kind !== 'floor') break;
+          nc = tc; nr = tr;
+          filled[idx(nc, nr)] = 1;
+        }
+        if (nc === c && nr === r) continue;
+        const k = idx(nc, nr);
+        if (!visitedStops[k]) {
+          visitedStops[k] = 1;
+          queue.push({ c: nc, r: nr });
+        }
       }
-      if (nc === c && nr === r) continue;       // didn't move
-      const stopKey = idx(nc, nr);
-      if (!visitedStops[stopKey]) {
-        visitedStops[stopKey] = 1;
-        queue.push({ c: nc, r: nr });
+    }
+    return { filled, stops };
+  };
+
+  // Quick pre-check: spawn must cover everything.
+  const fromSpawn = slideFillFrom(spawn.col, spawn.row);
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      if (cells[idx(c, r)].kind === 'floor' && !fromSpawn.filled[idx(c, r)]) {
+        return false;
       }
     }
   }
 
-  for (let r = 0; r < rows; r++) {
-    for (let c = 0; c < cols; c++) {
-      if (cells[idx(c, r)].kind === 'floor' && !filled[idx(c, r)]) {
-        return false;
+  // Now check: from every stop reachable from spawn, the slide-fill
+  // BFS must also cover every floor cell. If it doesn't, the player
+  // can land at that stop and be unable to escape to part of the
+  // maze.
+  for (const stop of fromSpawn.stops) {
+    if (stop.c === spawn.col && stop.r === spawn.row) continue;   // already checked
+    const fromStop = slideFillFrom(stop.c, stop.r);
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        if (cells[idx(c, r)].kind === 'floor' && !fromStop.filled[idx(c, r)]) {
+          return false;
+        }
       }
     }
   }
