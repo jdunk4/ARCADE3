@@ -54,18 +54,12 @@ function mulberry32(seed) {
 // ---- WAVE CONFIG ----
 export function getMazeConfig(waveNum) {
   const w = Math.max(1, waveNum | 0);
-  const t = Math.min(1, (w - 1) / 9);    // 0 at wave 1, 1 at wave 10
 
   const cols = 19;
   const rows = 19;
-  const interior = (cols - 2) * (rows - 2);   // 17×17 = 289 cells
 
-  // Internal wall density — keep wave 1 open (~5% walls); ramp up.
-  const wallPct = 0.05 + 0.30 * t;            // 5% → 35%
-  const internalWallCount = Math.round(interior * wallPct);
-
-  // Glyphs.
-  const glyphCount = Math.round(5 + 4 * t);   // 5 → 9
+  // Glyphs — start at 5, climb modestly.
+  const glyphCount = Math.min(9, 5 + Math.floor((w - 1) / 2));
 
   // Mining blocks.
   let miningBlockCount;
@@ -81,12 +75,21 @@ export function getMazeConfig(waveNum) {
   else if (w <= 9) killZoneCount = 3 + Math.floor(rng01(w) * 3);
   else killZoneCount = 6 + Math.floor(rng01(w) * 3);
 
+  // Decor (chapter 1) enemies — purely visual obstacles destroyed by
+  // sliding through them. None on wave 1 so the player learns the
+  // movement model first; sprinkle a few from wave 2 onward.
+  let decorEnemyCount;
+  if (w <= 1) decorEnemyCount = 0;
+  else if (w <= 4) decorEnemyCount = 2;
+  else if (w <= 8) decorEnemyCount = 4;
+  else decorEnemyCount = 6;
+
   return {
     cols, rows,
-    internalWallCount,
     glyphCount,
     miningBlockCount,
     killZoneCount,
+    decorEnemyCount,
     waveNum: w,
   };
 }
@@ -115,48 +118,91 @@ export function generateMaze(waveNum) {
 
   const spawn = { col: 1, row: 1 };
 
-  // ---- INTERNAL WALL PLACEMENT ----
-  // Place wall cells one at a time. Reject placements that would
-  // disconnect any floor cell from the spawn (so every glyph is
-  // reachable) or that sit on the spawn itself.
-  const placeWall = (c, r) => {
+  // ---- LAYOUT: HORIZONTAL WALL ROWS WITH OFFSET GAPS ----
+  // Slide-puzzle design — the player slides into walls and uses
+  // gaps to traverse vertically. Wave 1 is the tightest:
+  // 5 wall rows, single gap each, gaps zig-zag so the player is
+  // forced into a serpentine path that touches every cell.
+  // Higher waves loosen up: fewer wall rows, more gaps, optional
+  // pillar scatter.
+  const w = config.waveNum;
+  const placeWallSafe = (c, r) => {
     if (c <= 0 || c >= cols - 1 || r <= 0 || r >= rows - 1) return false;
     if (c === spawn.col && r === spawn.row) return false;
-    if (cells[idx(c, r)].kind !== 'floor') return false;
     cells[idx(c, r)].kind = 'wall';
-    if (!_isAllFloorReachable(cells, cols, rows, spawn)) {
-      cells[idx(c, r)].kind = 'floor';
-      return false;
-    }
-    return true;
   };
 
-  let placed = 0;
-  let attempts = 0;
-  const maxAttempts = config.internalWallCount * 30 + 200;
-  while (placed < config.internalWallCount && attempts < maxAttempts) {
-    attempts++;
-    // Bias placements toward random scatter; occasionally place a
-    // short horizontal or vertical run of 2-3 cells so the maze
-    // gets corridors rather than only single pillars.
-    if (rng() < 0.35 && placed + 2 < config.internalWallCount) {
-      const c = 2 + Math.floor(rng() * (cols - 4));
-      const r = 2 + Math.floor(rng() * (rows - 4));
-      const horizontal = rng() < 0.5;
-      const len = 2 + Math.floor(rng() * 2);   // 2-3
-      let runPlaced = 0;
-      for (let i = 0; i < len; i++) {
-        const cc = horizontal ? c + i : c;
-        const rr = horizontal ? r : r + i;
-        if (placeWall(cc, rr)) runPlaced++;
-        else break;
-      }
-      placed += runPlaced;
-    } else {
-      const c = 2 + Math.floor(rng() * (cols - 4));
-      const r = 2 + Math.floor(rng() * (rows - 4));
-      if (placeWall(c, r)) placed++;
+  // Wall row positions + gap counts per wave. Lower waves = more
+  // walls and fewer gaps.
+  let wallRowPositions, gapsPerRow;
+  if (w <= 2) {
+    wallRowPositions = [3, 6, 9, 12, 15];
+    gapsPerRow = 1;
+  } else if (w <= 4) {
+    wallRowPositions = [3, 6, 9, 12, 15];
+    gapsPerRow = 2;
+  } else if (w <= 7) {
+    wallRowPositions = [4, 8, 12, 16];
+    gapsPerRow = 2;
+  } else {
+    wallRowPositions = [4, 9, 14];
+    gapsPerRow = 3;
+  }
+
+  // Pick gap columns per wall row. They zig-zag so the player can't
+  // shortcut straight down — every gap is reachable from the
+  // adjacent corridor by sliding laterally.
+  for (let i = 0; i < wallRowPositions.length; i++) {
+    const r = wallRowPositions[i];
+    const interior = cols - 2;             // playable columns 1..cols-2
+    const gapsInThisRow = new Set();
+    for (let g = 0; g < gapsPerRow; g++) {
+      // Spread gaps roughly evenly across the row, offset per row
+      // index, then wiggle by RNG so back-to-back waves vary.
+      const baseFrac = (g + 0.5) / gapsPerRow;
+      const baseCol = 1 + Math.floor(baseFrac * interior);
+      const offset = ((i * 5) + Math.floor(rng() * 3) - 1) % interior;
+      const col = 1 + ((baseCol - 1 + offset) % interior);
+      gapsInThisRow.add(col);
     }
+    for (let c = 1; c < cols - 1; c++) {
+      if (!gapsInThisRow.has(c)) placeWallSafe(c, r);
+    }
+  }
+
+  // Pillar scatter for higher waves — single-cell obstacles in the
+  // open corridors. Skipped when wave is low so the early-game
+  // layout reads as clean horizontal stripes.
+  if (w >= 5) {
+    const pillarCount = (w >= 10) ? 12 : (w >= 7) ? 8 : 4;
+    let attempts = 0;
+    let placed = 0;
+    while (placed < pillarCount && attempts < pillarCount * 20) {
+      attempts++;
+      const c = 2 + Math.floor(rng() * (cols - 4));
+      const r = 2 + Math.floor(rng() * (rows - 4));
+      if (cells[idx(c, r)].kind === 'wall') continue;
+      // Don't pillar the spawn cell or its 4 neighbors.
+      if (Math.abs(c - spawn.col) + Math.abs(r - spawn.row) < 2) continue;
+      cells[idx(c, r)].kind = 'wall';
+      if (!_isAllFloorReachable(cells, cols, rows, spawn)) {
+        cells[idx(c, r)].kind = 'floor';
+        continue;
+      }
+      placed++;
+    }
+  }
+
+  // Connectivity sanity — if the gap distribution somehow orphaned
+  // a region, knock out the offending wall column on each row until
+  // everything reconnects.
+  let safety = 0;
+  while (!_isAllFloorReachable(cells, cols, rows, spawn) && safety < 50) {
+    safety++;
+    // Force-open one extra cell at a random wall row.
+    const r = wallRowPositions[Math.floor(rng() * wallRowPositions.length)];
+    const c = 1 + Math.floor(rng() * (cols - 2));
+    cells[idx(c, r)].kind = 'floor';
   }
 
   // ---- COLLECT FLOOR CELLS for glyph / block / kill-zone placement ----
@@ -220,12 +266,23 @@ export function generateMaze(waveNum) {
     }
   }
 
+  // ---- DECOR ENEMIES ----
+  // Static visual obstacles that get destroyed by a slide passing
+  // over them. Never damage the player.
+  const decorEnemies = [];
+  for (let i = 0; i < (config.decorEnemyCount | 0); i++) {
+    const f = pickFloor(2, 1, decorEnemies);
+    if (!f) break;
+    decorEnemies.push({ col: f.col, row: f.row });
+  }
+
   return {
     cols, rows, cells,
     spawn,
     glyphs,
     miningBlocks,
     killZones,
+    decorEnemies,
     seed,
     config,
     cellSize: CELL_SIZE,

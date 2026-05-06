@@ -156,6 +156,14 @@ export function buildCrowd() {
 /**
  * Retint every lantern + the four side lights to the chapter color.
  */
+export function setCrowdVisible(visible) {
+  if (bodyMesh) bodyMesh.visible = !!visible;
+  if (headMesh) headMesh.visible = !!visible;
+  if (sideLights) {
+    for (const l of sideLights) if (l) l.visible = !!visible;
+  }
+}
+
 export function recolorCrowd(tintHex) {
   if (!bodyMesh) return;
   const tint = new THREE.Color(tintHex);

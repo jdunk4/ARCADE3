@@ -42,6 +42,7 @@ let _killZoneEntries = [];
 let _killZoneCells = null;
 let _glyphEntries = [];         // [{ col, row, mesh, collected, baseY, phase }]
 let _glyphsCollected = 0;
+let _decorEnemyEntries = [];    // [{ col, row, mesh, destroyed, phase }]
 
 let _fillMeshes = null;
 let _coverageFilled = 0;
@@ -155,7 +156,7 @@ export function buildMaze(mazeData, scene, fillTint) {
   _coverageFilled = 0;
   _glyphsCollected = 0;
 
-  const { cols, rows, cells, miningBlocks, killZones, glyphs } = mazeData;
+  const { cols, rows, cells, miningBlocks, killZones, glyphs, decorEnemies } = mazeData;
   const group = new THREE.Group();
   group.name = 'maze';
 
@@ -310,9 +311,50 @@ export function buildMaze(mazeData, scene, fillTint) {
     _killZoneCells.add(kz.row * cols + kz.col);
   }
 
+  // ---- DECOR ENEMIES ----
+  // Chapter-tinted boxy meshes — visual fluff. Slide over to destroy.
+  // Built from simple primitives; we don't reuse the makeEnemy path
+  // because we don't want enemy AI / damage behavior to engage.
+  _decorEnemyEntries = [];
+  if (decorEnemies && decorEnemies.length) {
+    const enemyChapterIdx = Math.floor((mazeData.config.waveNum - 1) / 10) % 6;
+    const enemyTint = _enemyTintForChapter(enemyChapterIdx);
+    const bodyMat = new THREE.MeshStandardMaterial({
+      color: enemyTint,
+      emissive: enemyTint,
+      emissiveIntensity: 0.35,
+      roughness: 0.55,
+      metalness: 0.1,
+    });
+    const bodyGeo = new THREE.BoxGeometry(1.6, 1.8, 1.6);
+    const headGeo = new THREE.BoxGeometry(1.0, 0.9, 1.0);
+    for (const e of decorEnemies) {
+      const { x, z } = cellToWorld(e.col, e.row, cols, rows);
+      const ent = new THREE.Group();
+      const body = new THREE.Mesh(bodyGeo, bodyMat);
+      body.position.y = 0.9;
+      ent.add(body);
+      const head = new THREE.Mesh(headGeo, bodyMat);
+      head.position.y = 2.2;
+      ent.add(head);
+      ent.position.set(x, 0, z);
+      group.add(ent);
+      _decorEnemyEntries.push({
+        col: e.col, row: e.row, mesh: ent,
+        destroyed: false, phase: Math.random() * Math.PI * 2,
+      });
+    }
+  }
+
   scene.add(group);
   _mazeGroup = group;
   return group;
+}
+
+function _enemyTintForChapter(idx) {
+  // Mirrors CHAPTERS[idx].full.enemyTint without importing config.js.
+  const tints = [0xff6a1a, 0xff2e4d, 0xffbb00, 0x00ff44, 0x4ff7ff, 0xbb00ff];
+  return tints[idx % tints.length];
 }
 
 // ============================================================
@@ -333,6 +375,7 @@ export function clearMaze(scene) {
   _killZoneCells = null;
   _glyphEntries = [];
   _glyphsCollected = 0;
+  _decorEnemyEntries = [];
   _fillMeshes = null;
   _mazeData = null;
   _coverageFilled = 0;
@@ -365,6 +408,12 @@ export function updateMazeFx(dt) {
     if (g.collected || !g.mesh) continue;
     g.mesh.position.y = g.baseY + Math.sin(time * 2 + g.phase) * 0.3;
     g.mesh.material.rotation = time * 0.5 + g.phase;
+  }
+  // Decor enemy idle wiggle.
+  for (const e of _decorEnemyEntries) {
+    if (e.destroyed || !e.mesh) continue;
+    e.mesh.rotation.y = Math.sin(time * 1.5 + e.phase) * 0.2;
+    e.mesh.position.y = Math.abs(Math.sin(time * 3 + e.phase)) * 0.15;
   }
   // Fill fade-in.
   if (_fillMeshes) {
@@ -428,6 +477,28 @@ export function getGlyphsTotal() {
 }
 export function getGlyphsCollected() {
   return _glyphsCollected;
+}
+
+// Slide-over destruction for decor enemies. Returns the world center
+// of the destroyed enemy (or null) so the caller can spawn a hit
+// burst.
+export function clearDecorEnemyAt(col, row) {
+  for (const e of _decorEnemyEntries) {
+    if (e.destroyed) continue;
+    if (e.col === col && e.row === row) {
+      e.destroyed = true;
+      if (e.mesh) {
+        if (e.mesh.parent) e.mesh.parent.remove(e.mesh);
+        e.mesh.traverse((node) => {
+          if (node.isMesh && node.geometry) node.geometry.dispose();
+        });
+      }
+      const { cols, rows } = _mazeData;
+      const w = cellToWorld(col, row, cols, rows);
+      return { x: w.x, z: w.z };
+    }
+  }
+  return null;
 }
 
 // ============================================================

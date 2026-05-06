@@ -47,10 +47,13 @@ import {
   buildMaze, clearMaze, updateMazeFx,
   markCellVisited, isKillZoneCell, isCellBlocked,
   collectGlyphAt, getGlyphsTotal, getGlyphsCollected, getGlyphsRemaining,
+  clearDecorEnemyAt,
   getMazeWallEntries,
 } from './mazeRenderer.js';
 import { saveMazeProgress, getMazeWave } from './mazePuzzles.js';
 import { UI } from './ui.js';
+import { clearGravestones } from './gravestones.js';
+import { setCrowdVisible } from './crowd.js';
 
 // =====================================================================
 // PUBLIC API
@@ -291,6 +294,7 @@ export function exitEndlessGlyphs() {
   _activeMazeData = null;
   _hideEmojiAvatar();
   _popFog();
+  try { setCrowdVisible(true); } catch (_) {}
 
   restoreNormalFloor();
   _restoreWaveFloor();
@@ -659,6 +663,10 @@ function _enterWaveAssemble(waveNum) {
   _facingDir = { dx: 1, dz: 0 };
   S.endlessTopDown = true;
   _showEmojiAvatar();
+  // Strip arena dressing — gravestones + spectator crowd get in the
+  // way of the clean top-down maze view.
+  try { clearGravestones(); } catch (_) {}
+  try { setCrowdVisible(false); } catch (_) {}
 
   _setWaveHUD('WAVE ' + waveNum, 'ASSEMBLING');
 }
@@ -849,6 +857,10 @@ function _tickSlide(dt) {
       markCellVisited(c.col, c.row);
       if (collectGlyphAt(c.col, c.row)) {
         try { Audio.shot && Audio.shot('pickaxe'); } catch (_) {}
+      }
+      const decorPos = clearDecorEnemyAt(c.col, c.row);
+      if (decorPos) {
+        try { hitBurst(new THREE.Vector3(decorPos.x, 1.2, decorPos.z), 0xff6a1a, 12); } catch (_) {}
       }
       _slide.idx++;
     }
