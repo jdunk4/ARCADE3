@@ -101,15 +101,27 @@ function rng01(w) {
 }
 
 // ---- GENERATE MAZE ----
-// _generateMazeAttempt always returns a slide-SCC layout — the
-// recursive-backtracker + force-fix + serpentine fallback chain
-// guarantees every floor cell (and therefore every glyph) is
-// reachable from spawn via slides.
+// Try up to 50 different seeds for the recursive-backtracker. The
+// first one that produces a slide-SCC layout wins — this typically
+// happens within the first few attempts. Force-fix + serpentine
+// fallback only activate if none of the 50 seeds work, which is
+// rare in practice. Keeps the maze layouts varied (most waves get
+// the recursive-backtracker output) without leaving any wave at
+// risk of an unreachable glyph.
 export function generateMaze(waveNum) {
-  return _generateMazeAttempt(waveNum, 0);
+  let lastAttempt = null;
+  for (let i = 0; i < 50; i++) {
+    const result = _generateMazeAttempt(waveNum, i, /*allowFallbacks*/ false);
+    if (result) return result;
+    lastAttempt = i;
+  }
+  // No clean recursive-backtracker output worked — retry the last
+  // seed WITH the force-fix + serpentine fallback enabled so we
+  // still return a valid maze.
+  return _generateMazeAttempt(waveNum, lastAttempt, /*allowFallbacks*/ true);
 }
 
-function _generateMazeAttempt(waveNum, attemptOffset) {
+function _generateMazeAttempt(waveNum, attemptOffset, allowFallbacks = true) {
   const config = getMazeConfig(waveNum);
   const { cols, rows } = config;
   // Each attempt perturbs the seed so the recursive backtracker
@@ -236,39 +248,41 @@ function _generateMazeAttempt(waveNum, attemptOffset) {
   // elsewhere).
   cells[idx(spawn.col, spawn.row)].kind = 'floor';
 
-  // Step 5 — FORCE-FIX. If the maze isn't slide-SCC, try repairing
-  // by knocking out bridge walls (those adjacent to multiple floors).
-  // This works for many topologies but isn't a guaranteed converge —
-  // adding floor can REDUCE stop count by stripping walls off
-  // existing stops. So if 60 attempts don't yield a valid maze, fall
-  // back to a serpentine layout (every-other-row walls with gaps
-  // alternating left/right) which is provably slide-SCC.
-  let fixSafety = 0;
-  while (!_isAllFloorSlideReachable(cells, cols, rows, spawn) && fixSafety < 60) {
-    fixSafety++;
-    let best = null;
-    let bestScore = -1;
-    for (let r = 1; r < rows - 1; r++) {
-      for (let c = 1; c < cols - 1; c++) {
-        if (cells[idx(c, r)].kind !== 'wall') continue;
-        let floorNbrs = 0;
-        for (const [dc, dr] of [[-1, 0], [1, 0], [0, -1], [0, 1]]) {
-          const nbr = cells[idx(c + dc, r + dr)];
-          if (nbr && nbr.kind === 'floor') floorNbrs++;
-        }
-        if (floorNbrs > bestScore) {
-          bestScore = floorNbrs;
-          best = [c, r];
+  // Without fallbacks: bail early if not slide-SCC. The outer
+  // generateMaze retry loop will try the next seed.
+  if (!allowFallbacks) {
+    if (!_isAllFloorSlideReachable(cells, cols, rows, spawn)) return null;
+  } else {
+    // Step 5 — FORCE-FIX. Knock out bridge walls until slide-SCC.
+    // Doesn't always converge (adding floor can REDUCE stop count),
+    // so a 60-iteration cap then a serpentine fallback as last
+    // resort.
+    let fixSafety = 0;
+    while (!_isAllFloorSlideReachable(cells, cols, rows, spawn) && fixSafety < 60) {
+      fixSafety++;
+      let best = null;
+      let bestScore = -1;
+      for (let r = 1; r < rows - 1; r++) {
+        for (let c = 1; c < cols - 1; c++) {
+          if (cells[idx(c, r)].kind !== 'wall') continue;
+          let floorNbrs = 0;
+          for (const [dc, dr] of [[-1, 0], [1, 0], [0, -1], [0, 1]]) {
+            const nbr = cells[idx(c + dc, r + dr)];
+            if (nbr && nbr.kind === 'floor') floorNbrs++;
+          }
+          if (floorNbrs > bestScore) {
+            bestScore = floorNbrs;
+            best = [c, r];
+          }
         }
       }
+      if (!best || bestScore < 1) break;
+      cells[idx(best[0], best[1])].kind = 'floor';
     }
-    if (!best || bestScore < 1) break;
-    cells[idx(best[0], best[1])].kind = 'floor';
-  }
 
-  // Last resort — serpentine fallback. Guaranteed slide-SCC.
-  if (!_isAllFloorSlideReachable(cells, cols, rows, spawn)) {
-    _applySerpentineLayout(cells, cols, rows);
+    if (!_isAllFloorSlideReachable(cells, cols, rows, spawn)) {
+      _applySerpentineLayout(cells, cols, rows);
+    }
   }
 
   // ---- COLLECT FLOOR CELLS for glyph / block / kill-zone placement ----
