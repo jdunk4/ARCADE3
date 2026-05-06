@@ -1,36 +1,35 @@
 // ============================================================
 // MAZE GENERATOR — Endless Glyphs slide-fill maze.
 //
-// Wave design:
-//   • Maze fills the arena every wave (19×19 cells).
-//   • Loop fraction climbs from 0.22 (wave 1, easy) toward 0.04
-//     (wave 10+, more dead-ends).
-//   • Mining gates: 0 / 1 / 2 / 3 across waves 1-3 / 4-6 / 7-9 / 10+.
-//     Player must shoot to break them and access new cells.
-//   • Kill zones (static hazards): 0 / 1-2 / 3-5 / 6-8 across the
-//     same wave ranges. Touching one ends the wave.
+// Algorithm: Sidewinder. Produces long horizontal corridors broken
+// by sparse vertical connections — exactly the "long sweeps with
+// occasional U-turns" look the reference asks for.
 //
-// Public API:
-//   generateMaze(waveNum)  → MazeData
-//   getMazeConfig(waveNum) → { cols, rows, miningGateCount, ... }
-//   cellToWorld / worldToCell / isWallBlocking
+//   • Wave 1: very low east-close probability → near-empty corridors,
+//     player can fill an entire row in one slide.
+//   • Wave 10+: higher east-close probability → more turns, more
+//     dead-ends, harder coverage.
+//
+// Black mining BLOCKS (cell-based) are placed in some cells along
+// long horizontal corridors. The slide animator treats those cells
+// as impassable until the player shoots the block to clear it.
+//
+// Kill zones (static hazards) sit in cells like before; touching one
+// retries the wave.
 //
 // MazeData = {
-//   cols, rows,                      // grid dimensions
-//   cells: [{walls}],                // wall bitmask per cell
-//   spawn: {col, row},               // player start
-//   miningWalls: [{col, row, dir, hp, broken}],
-//   killZones: [{col, row, kind}],   // kind ∈ 'rune' | 'mine' | 'ghost'
-//   regions: Int32Array,             // regionId per cell index
-//   regionCount: number,
-//   spawnRegionId: number,
+//   cols, rows,
+//   cells: [{walls}],
+//   spawn: {col, row},
+//   miningBlocks: [{col, row, hp, hpMax, broken}],
+//   killZones: [{col, row, kind}],
+//   regions: Int32Array, regionCount, spawnRegionId,
 //   seed, config, cellSize,
 // }
 // ============================================================
 
-const CELL_SIZE = 5.0;          // world units per cell — wide corridors
+const CELL_SIZE = 5.0;
 
-// Wall bit flags
 const WALL_N = 1;
 const WALL_E = 2;
 const WALL_S = 4;
@@ -38,9 +37,8 @@ const WALL_W = 8;
 
 export { CELL_SIZE, WALL_N, WALL_E, WALL_S, WALL_W };
 
-const MINING_WALL_HP = 25;      // shots to clear a mining gate
+const MINING_BLOCK_HP = 25;
 
-// ---- SEEDED RNG ----
 function mulberry32(seed) {
   let s = seed | 0;
   return function () {
@@ -52,45 +50,41 @@ function mulberry32(seed) {
 }
 
 // ---- WAVE CONFIG ----
-//
-// Arena is 100×100u (ARENA = 50 half-extent). With CELL_SIZE = 5 the
-// theoretical maximum is 20×20; capped at 19 for a 1u border. Every
-// wave fills the arena. What changes is intricacy: loop openings drop
-// 22% → 4% across waves, mining gates step up every 3 waves, and
-// kill-zone density climbs accordingly.
 export function getMazeConfig(waveNum) {
   const w = Math.max(1, waveNum | 0);
-  const t = Math.min(1, (w - 1) / 9);   // 0 at wave 1, 1 at wave 10
+  const t = Math.min(1, (w - 1) / 9);     // 0 at wave 1, 1 at wave 10
 
   const cols = 19;
   const rows = 19;
-  const loopFraction = 0.22 - 0.18 * t;          // 0.22 → 0.04
 
-  // Mining gates step up every 3 waves.
-  let miningGateCount;
-  if (w <= 3) miningGateCount = 0;
-  else if (w <= 6) miningGateCount = 1;
-  else if (w <= 9) miningGateCount = 2;
-  else miningGateCount = 3;
+  // East-close probability — chance any given cell in a sidewinder
+  // run "closes" the east edge (forcing a U-turn). Low value →
+  // long uninterrupted corridors. Climbs with the wave.
+  const eastCloseProb = 0.18 + 0.42 * t;  // 0.18 → 0.60
 
-  // Kill zones — 0 early, ramp up to 6-8 at wave 10+.
+  // Mining blocks count.
+  let miningBlockCount;
+  if (w <= 3) miningBlockCount = 0;
+  else if (w <= 6) miningBlockCount = 2;
+  else if (w <= 9) miningBlockCount = 4;
+  else miningBlockCount = 6;
+
+  // Kill zones.
   let killZoneCount;
   if (w <= 3) killZoneCount = 0;
-  else if (w <= 6) killZoneCount = 1 + Math.floor(rng01(w) * 2);   // 1-2
-  else if (w <= 9) killZoneCount = 3 + Math.floor(rng01(w) * 3);   // 3-5
-  else killZoneCount = 6 + Math.floor(rng01(w) * 3);               // 6-8
+  else if (w <= 6) killZoneCount = 1 + Math.floor(rng01(w) * 2);
+  else if (w <= 9) killZoneCount = 3 + Math.floor(rng01(w) * 3);
+  else killZoneCount = 6 + Math.floor(rng01(w) * 3);
 
   return {
     cols, rows,
-    miningGateCount,
+    eastCloseProb,
+    miningBlockCount,
     killZoneCount,
-    loopFraction,
     waveNum: w,
   };
 }
 
-// Stable per-wave noise so the count for a given wave is deterministic
-// (matches the maze seed). Cheap; enough variation for "1-2" buckets.
 function rng01(w) {
   const x = Math.sin(w * 12.9898) * 43758.5453;
   return x - Math.floor(x);
@@ -104,130 +98,83 @@ export function generateMaze(waveNum) {
   const rng = mulberry32(seed);
 
   const cells = new Array(cols * rows);
+  // Sidewinder starts with all walls present; we open passages as
+  // we sweep row by row.
   for (let i = 0; i < cells.length; i++) {
-    cells[i] = { walls: WALL_N | WALL_E | WALL_S | WALL_W, visited: false };
+    cells[i] = { walls: WALL_N | WALL_E | WALL_S | WALL_W };
   }
 
   const idx = (c, r) => r * cols + c;
-  const inBounds = (c, r) => c >= 0 && c < cols && r >= 0 && r < rows;
 
-  // ---- RECURSIVE BACKTRACKING ----
-  const stack = [];
-  cells[idx(0, 0)].visited = true;
-  stack.push([0, 0]);
-
-  const DIRS = [
-    [0, -1, WALL_N, WALL_S],
-    [1, 0, WALL_E, WALL_W],
-    [0, 1, WALL_S, WALL_N],
-    [-1, 0, WALL_W, WALL_E],
-  ];
-
-  while (stack.length > 0) {
-    const [cc, cr] = stack[stack.length - 1];
-    const neighbors = [];
-    for (const [dc, dr, wallA, wallB] of DIRS) {
-      const nc = cc + dc, nr = cr + dr;
-      if (inBounds(nc, nr) && !cells[idx(nc, nr)].visited) {
-        neighbors.push([nc, nr, wallA, wallB]);
+  // ---- SIDEWINDER ----
+  // For each row top-down:
+  //   - Maintain a "run" of consecutive open cells.
+  //   - For each cell except the last column, decide:
+  //       • close east (end run + open one cell's south wall to
+  //         connect to the row below), OR
+  //       • open east (extend run).
+  //   - At the rightmost column or when we close, pick a random
+  //     cell from the run, open its south wall, clear next row's
+  //     north wall to pair.
+  //
+  // We carve top-down (row 0 first), so the canonical "carve south
+  // when closing" rule is what produces the horizontal-corridor
+  // look from the player's top-down view.
+  for (let r = 0; r < rows; r++) {
+    let runStart = 0;
+    for (let c = 0; c < cols; c++) {
+      const atEastEdge = (c === cols - 1);
+      const atSouthEdge = (r === rows - 1);
+      // Forced close at east edge so a run never escapes the grid.
+      // At south edge we never close (we'd have nothing to pair to);
+      // we just keep extending.
+      const closeOut = atEastEdge || (!atSouthEdge && rng() < config.eastCloseProb);
+      if (closeOut) {
+        if (!atSouthEdge) {
+          // Pick a random cell in the run [runStart..c] and open
+          // its south wall + the next row's matching north wall.
+          const pick = runStart + Math.floor(rng() * (c - runStart + 1));
+          cells[idx(pick, r)].walls &= ~WALL_S;
+          cells[idx(pick, r + 1)].walls &= ~WALL_N;
+        }
+        runStart = c + 1;
+      } else {
+        // Extend run east.
+        cells[idx(c, r)].walls &= ~WALL_E;
+        cells[idx(c + 1, r)].walls &= ~WALL_W;
       }
-    }
-    if (neighbors.length === 0) {
-      stack.pop();
-    } else {
-      const [nc, nr, wallA, wallB] = neighbors[Math.floor(rng() * neighbors.length)];
-      cells[idx(cc, cr)].walls &= ~wallA;
-      cells[idx(nc, nr)].walls &= ~wallB;
-      cells[idx(nc, nr)].visited = true;
-      stack.push([nc, nr]);
     }
   }
 
-  // ---- LOOP OPENINGS ----
-  // Knock out a fraction of remaining interior walls so the maze isn't
-  // a single tortuous path. Higher fraction = easier navigation.
-  const internalWallCount = (cols - 1) * rows + cols * (rows - 1);
-  const wallsToOpen = Math.floor(internalWallCount * config.loopFraction);
-  for (let i = 0; i < wallsToOpen; i++) {
-    if (rng() < 0.5) {
-      // East/West edge between (c,r) and (c+1,r)
-      const c = Math.floor(rng() * (cols - 1));
-      const r = Math.floor(rng() * rows);
-      cells[idx(c, r)].walls &= ~WALL_E;
-      cells[idx(c + 1, r)].walls &= ~WALL_W;
-    } else {
-      // South/North edge between (c,r) and (c,r+1)
-      const c = Math.floor(rng() * cols);
-      const r = Math.floor(rng() * (rows - 1));
-      cells[idx(c, r)].walls &= ~WALL_S;
-      cells[idx(c, r + 1)].walls &= ~WALL_N;
+  // ---- CENTRAL OPENING ----
+  // The user asked for "less obstacles in the middle" — clear all
+  // interior walls in a small band around the arena center. This
+  // gives the maze a hub the player can route through without
+  // mining anything.
+  const cBand = 3;
+  const midC = Math.floor(cols / 2);
+  const midR = Math.floor(rows / 2);
+  for (let r = midR - cBand; r <= midR + cBand; r++) {
+    for (let c = midC - cBand; c <= midC + cBand; c++) {
+      if (r < 0 || r >= rows || c < 0 || c >= cols) continue;
+      const cell = cells[idx(c, r)];
+      if (c < midC + cBand && c < cols - 1) {
+        cell.walls &= ~WALL_E;
+        cells[idx(c + 1, r)].walls &= ~WALL_W;
+      }
+      if (r < midR + cBand && r < rows - 1) {
+        cell.walls &= ~WALL_S;
+        cells[idx(c, r + 1)].walls &= ~WALL_N;
+      }
     }
   }
 
   // ---- SPAWN ----
   const spawn = { col: 1, row: 1 };
 
-  // ---- MINING GATES ----
-  // Pick interior open passages and close them — re-set the wall bit
-  // on both cells. The wall is then visually rendered as a mining
-  // block (themed) and tracked here so the player can damage and
-  // destroy it. When destroyed, both adjacent cells get their wall
-  // bit cleared, restoring the original perfect-maze passage.
-  const miningWalls = [];
-  const gateAttempts = config.miningGateCount * 24;
-  let gatesPlaced = 0;
-  const gateKey = new Set();
-
-  for (let attempt = 0; attempt < gateAttempts && gatesPlaced < config.miningGateCount; attempt++) {
-    const horizontal = rng() < 0.5;
-    let c, r, dir;
-    if (horizontal) {
-      // West edge between (c-1,r) and (c,r): canonical via cell (c,r) WALL_W.
-      c = 1 + Math.floor(rng() * (cols - 1));
-      r = Math.floor(rng() * rows);
-      dir = 'W';
-      const cell = cells[idx(c, r)];
-      if (cell.walls & WALL_W) continue;
-    } else {
-      // North edge between (c,r-1) and (c,r): canonical via cell (c,r) WALL_N.
-      c = Math.floor(rng() * cols);
-      r = 1 + Math.floor(rng() * (rows - 1));
-      dir = 'N';
-      const cell = cells[idx(c, r)];
-      if (cell.walls & WALL_N) continue;
-    }
-    if ((c === spawn.col && r === spawn.row) ||
-        (dir === 'W' && c - 1 === spawn.col && r === spawn.row) ||
-        (dir === 'N' && c === spawn.col && r - 1 === spawn.row)) continue;
-    const k = `${c},${r},${dir}`;
-    if (gateKey.has(k)) continue;
-    gateKey.add(k);
-
-    // Close the passage on both sides — collision and projectile
-    // checks now treat this edge as solid until the gate is broken.
-    if (dir === 'W') {
-      cells[idx(c, r)].walls |= WALL_W;
-      cells[idx(c - 1, r)].walls |= WALL_E;
-    } else {
-      cells[idx(c, r)].walls |= WALL_N;
-      cells[idx(c, r - 1)].walls |= WALL_S;
-    }
-
-    miningWalls.push({
-      col: c, row: r, dir,
-      hp: MINING_WALL_HP, hpMax: MINING_WALL_HP, broken: false,
-    });
-    gatesPlaced++;
-  }
-
-  // ---- REGION COMPUTATION ----
-  // BFS over open passages only. Mining gates are CURRENTLY blocking
-  // (their wall bits were set above), so the regions reflect what's
-  // reachable until the player clears a gate. When a gate is broken
-  // at runtime the renderer flips the bits and the patrol behavior
-  // catches up naturally on the next frame.
+  // ---- REGIONS (after carving; treats remaining walls as blockers,
+  // mining blocks aren't walls so they don't split regions) ----
   const regions = new Int32Array(cols * rows).fill(-1);
-
   let regionId = 0;
   for (let startIdx = 0; startIdx < cells.length; startIdx++) {
     if (regions[startIdx] !== -1) continue;
@@ -260,39 +207,61 @@ export function generateMaze(waveNum) {
   const regionCount = regionId;
   const spawnRegionId = regions[idx(spawn.col, spawn.row)];
 
+  // ---- MINING BLOCKS ----
+  // Cell-based black cubes. Picked from interior cells away from
+  // spawn. Spaced so they don't all cluster.
+  const miningBlocks = [];
+  const usedCells = new Set([idx(spawn.col, spawn.row)]);
+  let attempts = 0;
+  while (miningBlocks.length < config.miningBlockCount && attempts < 800) {
+    attempts++;
+    const c = 2 + Math.floor(rng() * (cols - 4));
+    const r = 2 + Math.floor(rng() * (rows - 4));
+    const k = idx(c, r);
+    if (usedCells.has(k)) continue;
+    const dSpawn = Math.abs(c - spawn.col) + Math.abs(r - spawn.row);
+    if (dSpawn < 4) continue;
+    // Avoid blocks inside the central opening — that hub is meant
+    // to stay clear.
+    if (c >= midC - cBand && c <= midC + cBand &&
+        r >= midR - cBand && r <= midR + cBand) continue;
+    let tooClose = false;
+    for (const m of miningBlocks) {
+      if (Math.abs(m.col - c) + Math.abs(m.row - r) < 3) { tooClose = true; break; }
+    }
+    if (tooClose) continue;
+    miningBlocks.push({
+      col: c, row: r,
+      hp: MINING_BLOCK_HP, hpMax: MINING_BLOCK_HP, broken: false,
+    });
+    usedCells.add(k);
+  }
+
   // ---- KILL ZONES ----
-  // Stationary hazards. Visual kind cycles by chapter:
-  //   chapter 0-1 → 'rune' (glowing skull-rune)
-  //   chapter 2-3 → 'mine' (minesweeper bomb)
-  //   chapter 4-5 → 'ghost'
-  // Density ramps with the wave (config.killZoneCount). Placed
-  // away from spawn and away from each other so the player has
-  // time to react after a slide reveals a new zone.
   const killZones = [];
   if (config.killZoneCount > 0) {
-    const chapter = Math.floor((w - 1) / 10) % 6;
+    const chapter = Math.floor((waveNum - 1) / 10) % 6;
     const kind = (chapter <= 1) ? 'rune' : (chapter <= 3) ? 'mine' : 'ghost';
-    const spawnIdx = idx(spawn.col, spawn.row);
-    const usedKZ = new Set([spawnIdx]);
-    let attempts = 0;
-    while (killZones.length < config.killZoneCount && attempts < 800) {
-      attempts++;
+    let kzAttempts = 0;
+    while (killZones.length < config.killZoneCount && kzAttempts < 800) {
+      kzAttempts++;
       const c = Math.floor(rng() * cols);
       const r = Math.floor(rng() * rows);
       const k = idx(c, r);
-      if (usedKZ.has(k)) continue;
-      // Manhattan distance from spawn — keep at least 3 cells away
-      // so the player doesn't slide into one on their first move.
+      if (usedCells.has(k)) continue;
       const dSpawn = Math.abs(c - spawn.col) + Math.abs(r - spawn.row);
       if (dSpawn < 3) continue;
-      // Spread — at least 2 cells from any other kill zone.
+      // Don't put kill zones in the central hub either — that area
+      // is the player's safe spine.
+      if (c >= midC - cBand && c <= midC + cBand &&
+          r >= midR - cBand && r <= midR + cBand) continue;
       let tooClose = false;
       for (const other of killZones) {
         if (Math.abs(other.col - c) + Math.abs(other.row - r) < 2) { tooClose = true; break; }
       }
       if (tooClose) continue;
       killZones.push({ col: c, row: r, kind });
-      usedKZ.add(k);
+      usedCells.add(k);
     }
   }
 
@@ -301,7 +270,7 @@ export function generateMaze(waveNum) {
     rows,
     cells,
     spawn,
-    miningWalls,
+    miningBlocks,
     killZones,
     regions,
     regionCount,
@@ -314,7 +283,6 @@ export function generateMaze(waveNum) {
 
 // ---- HELPERS ----
 
-/** Cell grid → world coordinates (centered at arena origin). */
 export function cellToWorld(col, row, mazeCols, mazeRows) {
   const mazeW = mazeCols * CELL_SIZE;
   const mazeH = mazeRows * CELL_SIZE;
@@ -326,7 +294,6 @@ export function cellToWorld(col, row, mazeCols, mazeRows) {
   };
 }
 
-/** World → cell. */
 export function worldToCell(x, z, mazeCols, mazeRows) {
   const mazeW = mazeCols * CELL_SIZE;
   const mazeH = mazeRows * CELL_SIZE;
@@ -340,7 +307,6 @@ export function worldToCell(x, z, mazeCols, mazeRows) {
   };
 }
 
-/** Is the wall on a given side of a cell currently solid? */
 export function isWallBlocking(mazeData, col, row, dir) {
   const cell = mazeData.cells[row * mazeData.cols + col];
   if (!cell) return true;

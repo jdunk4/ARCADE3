@@ -42,12 +42,11 @@ import { WEAPONS, CHAPTERS } from './config.js';
 import { startDissolve, tickDissolve, cancelDissolve } from './endlessDissolve.js';
 import { startAssemble, tickAssemble, cancelAssemble } from './endlessAssemble.js';
 import { grantArtifact } from './stratagems.js';
-import { generateMaze, getMazeConfig, cellToWorld, worldToCell } from './mazeGenerator.js';
+import { generateMaze, cellToWorld, worldToCell } from './mazeGenerator.js';
 import {
   buildMaze, clearMaze, updateMazeFx,
-  markCellVisited, getCoverage, isKillZoneCell,
+  markCellVisited, getCoverage, isKillZoneCell, isCellBlocked,
   getMazeWallEntries, isBlockedByWall as mazeIsBlocked,
-  damageMiningWallAt,
 } from './mazeRenderer.js';
 import { saveMazeProgress, getMazeWave } from './mazePuzzles.js';
 import { UI } from './ui.js';
@@ -289,6 +288,7 @@ export function exitEndlessGlyphs() {
   _slide = null;
   _mazeBuilt = false;
   _activeMazeData = null;
+  _hideEmojiAvatar();
   _popFog();
 
   restoreNormalFloor();
@@ -532,6 +532,54 @@ let _slide = null;                   // { startX, startZ, tx, tz, t, duration, c
 let _facingDir = { dx: 1, dz: 0 };   // last move direction (used for fire aim)
 let _waveTimer = WAVE_TIME_LIMIT;
 
+// Emoji avatar — a billboarded sprite that stands in for the Meebit
+// in the top-down slide-fill view. Built lazily in _enterWaveAssemble.
+let _emojiSprite = null;
+const EMOJI_CHAR = '😀';
+
+function _ensureEmojiSprite() {
+  if (_emojiSprite) return _emojiSprite;
+  const canvas = document.createElement('canvas');
+  canvas.width = 256; canvas.height = 256;
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, 256, 256);
+  ctx.font = '210px "Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji", sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(EMOJI_CHAR, 128, 138);
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.minFilter = THREE.LinearFilter;
+  const mat = new THREE.SpriteMaterial({
+    map: tex, transparent: true, depthWrite: false, depthTest: false,
+  });
+  const sprite = new THREE.Sprite(mat);
+  sprite.scale.set(3.2, 3.2, 1);
+  sprite.renderOrder = 999;            // always on top
+  _emojiSprite = sprite;
+  return sprite;
+}
+
+function _showEmojiAvatar() {
+  const s = _ensureEmojiSprite();
+  if (!s.parent) scene.add(s);
+  s.visible = true;
+  if (player && player.obj) player.obj.visible = false;
+}
+
+function _hideEmojiAvatar() {
+  if (_emojiSprite) {
+    _emojiSprite.visible = false;
+    if (_emojiSprite.parent) _emojiSprite.parent.remove(_emojiSprite);
+  }
+  if (player && player.obj) player.obj.visible = true;
+}
+
+function _updateEmojiAvatar(dt) {
+  if (!_emojiSprite || !_emojiSprite.visible || !player || !player.pos) return;
+  const t = performance.now() * 0.001;
+  _emojiSprite.position.set(player.pos.x, 1.6 + Math.sin(t * 4) * 0.08, player.pos.z);
+}
+
 function _prepareWave(waveNum) {
   _pendingWaveNum = waveNum;
   _waveTimer = WAVE_TIME_LIMIT;
@@ -586,6 +634,7 @@ function _enterWaveAssemble(waveNum) {
   _slide = null;
   _facingDir = { dx: 1, dz: 0 };
   S.endlessTopDown = true;
+  _showEmojiAvatar();
 
   _setWaveHUD('WAVE ' + waveNum, 'ASSEMBLING');
 }
@@ -615,6 +664,7 @@ function _enterWave(waveNum) {
 function _tickWave(dt) {
   if (!_mazeBuilt) return;
   updateMazeFx(dt);
+  _updateEmojiAvatar(dt);
 
   // Slide animation tick.
   _tickSlide(dt);
@@ -661,6 +711,7 @@ function _enterWaveDissolve() {
   _activeMazeData = null;
   _slide = null;
   S.endlessTopDown = false;
+  _hideEmojiAvatar();
   _popFog();
   startDissolve(wallSnapshot, S.endlessWave);
   _setWaveHUD('WAVE ' + S.endlessWave + ' COMPLETE', 'DISSOLVING');
@@ -737,14 +788,19 @@ export function endlessSlide(dx, dz) {
   let col = start.col, row = start.row;
   let willKill = false;
 
-  // Walk forward until wall blocks, OR until the next cell is a kill
-  // zone (we still slide INTO it, then die).
+  // Walk forward until either:
+  //   • a wall blocks the next step,
+  //   • the next cell holds an un-broken mining block (slide stops
+  //     in front; player must shoot to clear it), OR
+  //   • the next cell is a kill zone (slide continues INTO it, then
+  //     the wave retries on slide-end).
   while (true) {
     const dir = dx > 0 ? 'E' : dx < 0 ? 'W' : dz > 0 ? 'S' : 'N';
     if (_isCellBlockedToward(col, row, dir)) break;
     const nc = col + dx;
     const nr = row + dz;
     if (nc < 0 || nc >= md.cols || nr < 0 || nr >= md.rows) break;
+    if (isCellBlocked(nc, nr)) break;        // mining block in path
     col = nc; row = nr;
     cells.push({ col, row });
     if (isKillZoneCell(col, row)) { willKill = true; break; }
@@ -830,6 +886,7 @@ function _retryWave(reason) {
   clearMaze(scene);
   _mazeBuilt = false;
   _activeMazeData = null;
+  _hideEmojiAvatar();
   _popFog();
   UI.toast(reason + ' · RETRY WAVE ' + S.endlessWave, '#ff2e4d', 1500);
   try { Audio.shot && Audio.shot('shieldHit'); } catch (_) {}

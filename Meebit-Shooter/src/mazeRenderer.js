@@ -1,26 +1,35 @@
 // ============================================================
 // MAZE RENDERER — slide-fill maze visuals + collision.
 //
-// Visual style: black-and-white checker walls, dark floor that
-// recolors to the chapter fill tint as the player slides over each
-// cell. Mining gates are themed breakable blocks. Kill zones are
-// static hazard meshes (rune / mine / ghost depending on chapter).
+// Look (matches the reference image):
+//   • Cream floor; per-cell decals fade in with the chapter fill
+//     color when visited.
+//   • Walls are rendered as rows of small alternating black/white
+//     cubes (single InstancedMesh — one draw call per maze).
+//   • Mining BLOCKS are big black cubes that fill a cell. Slide
+//     stops at them; player must shoot to break.
+//   • Kill zones are static themed hazards (rune / mine / ghost).
 //
 // Public API:
 //   buildMaze(mazeData, scene, fillTint)
 //   clearMaze(scene)
 //   updateMazeFx(dt)
-//   markCellVisited(col, row)        — flips a cell to filled
+//   markCellVisited(col, row)
 //   isCellVisited(col, row)
-//   getCoverage()                    → { filled, total }
+//   getCoverage()
 //   isKillZoneCell(col, row)
-//   isBlockedByWall(x, z, dx, dz)    — single-step
+//   isCellBlocked(col, row)         — true when the cell holds an
+//                                     un-broken mining block
+//   isBlockedByWall(x, z, dx, dz)
 //   segmentBlockedByMazeWall(x0,z0,x1,z1)
 //   resolveMazeCollision(pos, radius)
-//   damageMiningWallAt(x, z, dmg)
-//   findMiningWallAt(x, z)
+//   damageMiningBlockAt(x, z, dmg)  — alias kept as
+//                                     damageMiningWallAt for
+//                                     backward compatibility
+//   findFirstMiningBlockInDir(col, row, dx, dz)
 //   getMazeWallEntries()
-//   getMazeBounds()                  → { x0, x1, z0, z1 }
+//   getMazeBounds()
+//   getMazeData()
 //   isMazeActive()
 // ============================================================
 
@@ -28,89 +37,85 @@ import * as THREE from 'three';
 import {
   CELL_SIZE,
   WALL_N, WALL_E, WALL_S, WALL_W,
-  cellToWorld, worldToCell,
+  cellToWorld,
 } from './mazeGenerator.js';
 
 let _mazeGroup = null;
 let _mazeData = null;
-let _wallEntries = [];
-let _killZoneEntries = [];   // { col, row, kind, mesh }
-let _fillTint = 0xff6a1a;
-let _fillMatCache = new Map();
-let _fillMeshes = null;       // 2D array (cols*rows) of decal meshes; null until built
+let _wallEntries = [];          // for assemble/dissolve animation snapshot
+let _miningBlockEntries = [];   // [{ col, row, ref, mesh }]
+let _miningCellSet = null;      // Set<idx> for fast cell lookup
+let _killZoneEntries = [];
+let _killZoneCells = null;
+let _fillMeshes = null;
 let _coverageFilled = 0;
 let _coverageTotal = 0;
-let _killZoneCells = null;    // Set<idx> for fast lookup
+let _fillTint = 0xff6a1a;
 
-const WALL_HEIGHT = 3.5;
-const WALL_THICKNESS = 0.45;
+const WALL_HEIGHT = 1.6;        // shorter — top-down view doesn't need tall walls
+const WALL_THICKNESS = 0.55;
+const WALL_CUBE_SIZE = 0.65;    // each segment cube edge
+const CUBES_PER_WALL = 7;       // along a 5u edge
 
-// ---- WALL MATERIAL CACHE (black + white pattern) ----
-let _wallMatBlack = null;
-let _wallMatWhite = null;
+// ---- CACHED MATS / GEO ----
 let _floorMat = null;
-
-function _getWallMatBlack() {
-  if (_wallMatBlack) return _wallMatBlack;
-  _wallMatBlack = new THREE.MeshStandardMaterial({
-    color: 0x080808, emissive: 0x000000, roughness: 0.85, metalness: 0.0,
-  });
-  return _wallMatBlack;
-}
-function _getWallMatWhite() {
-  if (_wallMatWhite) return _wallMatWhite;
-  _wallMatWhite = new THREE.MeshStandardMaterial({
-    color: 0xf2f2f2, emissive: 0x111111, roughness: 0.7, metalness: 0.0,
-  });
-  return _wallMatWhite;
-}
 function _getFloorMat() {
   if (_floorMat) return _floorMat;
   _floorMat = new THREE.MeshStandardMaterial({
-    color: 0x111118, roughness: 0.92, metalness: 0.0,
+    color: 0xf2ede0,            // cream
+    roughness: 0.85,
+    metalness: 0.0,
   });
   return _floorMat;
 }
 
-// Mining gate uses fill-tint emissive so it pops against the B&W walls.
-const _miningMatCache = new Map();
-const _miningEdgeMatCache = new Map();
-function _getMiningMat(tint) {
-  let m = _miningMatCache.get(tint);
-  if (!m) {
-    const base = new THREE.Color(tint).lerp(new THREE.Color(0x222233), 0.35);
-    m = new THREE.MeshStandardMaterial({
-      color: base, emissive: tint, emissiveIntensity: 0.55,
-      roughness: 0.55, metalness: 0.25,
-    });
-    _miningMatCache.set(tint, m);
-  }
-  return m;
-}
-function _getMiningEdgeMat(tint) {
-  let m = _miningEdgeMatCache.get(tint);
-  if (!m) {
-    m = new THREE.LineBasicMaterial({ color: tint, transparent: true, opacity: 0.95 });
-    _miningEdgeMatCache.set(tint, m);
-  }
-  return m;
-}
-
-// Fill-decal material (one per chapter tint).
+const _fillMatCache = new Map();
 function _getFillMat(tint) {
   let m = _fillMatCache.get(tint);
   if (!m) {
     m = new THREE.MeshStandardMaterial({
-      color: tint, emissive: tint, emissiveIntensity: 0.35,
-      roughness: 0.7, metalness: 0.0,
-      transparent: true, opacity: 0.0,    // fade in via opacity
+      color: tint,
+      emissive: tint,
+      emissiveIntensity: 0.45,
+      roughness: 0.65,
+      metalness: 0.0,
+      transparent: true,
+      opacity: 0.0,
     });
     _fillMatCache.set(tint, m);
   }
   return m;
 }
 
-// ---- KILL ZONE MESHES ----
+// Wall cube materials (shared by every maze's walls — one cache).
+let _wallMatBlack = null, _wallMatWhite = null;
+function _getWallMatBlack() {
+  if (_wallMatBlack) return _wallMatBlack;
+  _wallMatBlack = new THREE.MeshStandardMaterial({
+    color: 0x101010, roughness: 0.7, metalness: 0.0,
+  });
+  return _wallMatBlack;
+}
+function _getWallMatWhite() {
+  if (_wallMatWhite) return _wallMatWhite;
+  _wallMatWhite = new THREE.MeshStandardMaterial({
+    color: 0xfafafa, roughness: 0.6, metalness: 0.0,
+  });
+  return _wallMatWhite;
+}
+
+// Mining block (cell-fill black cube). Each instance gets its own
+// material clone for hit-flash.
+function _makeMiningMat() {
+  return new THREE.MeshStandardMaterial({
+    color: 0x080808,
+    emissive: 0x000000,
+    roughness: 0.55,
+    metalness: 0.15,
+  });
+}
+
+// Kill-zone meshes
 const _kzGeo = {
   rune: new THREE.OctahedronGeometry(1.2, 0),
   mine: new THREE.SphereGeometry(1.0, 12, 8),
@@ -136,76 +141,141 @@ export function buildMaze(mazeData, scene, fillTint) {
   _fillTint = fillTint;
   _coverageFilled = 0;
 
-  const { cols, rows, cells, miningWalls, killZones } = mazeData;
+  const { cols, rows, cells, miningBlocks, killZones } = mazeData;
   const group = new THREE.Group();
   group.name = 'maze';
 
-  group.add(new THREE.AmbientLight(0xffffff, 0.6));
+  // Bright ambient + mild directional so the cream floor reads.
+  group.add(new THREE.AmbientLight(0xffffff, 0.85));
+  const dir = new THREE.DirectionalLight(0xffffff, 0.4);
+  dir.position.set(20, 50, 30);
+  group.add(dir);
 
-  // Wall entries — alternate black/white per cell index for a checker
-  // read on the maze. Mining gates override into themed mining mat.
-  const miningByEdge = new Map();
-  for (const m of (miningWalls || [])) {
-    miningByEdge.set(`${m.col},${m.row},${m.dir}`, m);
-  }
-  const miningMat = _getMiningMat(fillTint);
-  const miningEdgeMat = _getMiningEdgeMat(fillTint);
-  const blackMat = _getWallMatBlack();
-  const whiteMat = _getWallMatWhite();
+  // ---- FLOOR + FILL DECALS ----
   const floorMat = _getFloorMat();
   const fillMat = _getFillMat(fillTint);
-
-  const wallGeoNS = new THREE.BoxGeometry(CELL_SIZE, WALL_HEIGHT, WALL_THICKNESS);
-  const wallGeoEW = new THREE.BoxGeometry(WALL_THICKNESS, WALL_HEIGHT, CELL_SIZE);
-  const floorGeo = new THREE.PlaneGeometry(CELL_SIZE * 0.96, CELL_SIZE * 0.96);
+  const floorGeo = new THREE.PlaneGeometry(CELL_SIZE * 0.98, CELL_SIZE * 0.98);
   floorGeo.rotateX(-Math.PI / 2);
-  const fillGeo = new THREE.PlaneGeometry(CELL_SIZE * 0.94, CELL_SIZE * 0.94);
+  const fillGeo = new THREE.PlaneGeometry(CELL_SIZE * 0.95, CELL_SIZE * 0.95);
   fillGeo.rotateX(-Math.PI / 2);
 
-  _wallEntries = [];
   _fillMeshes = new Array(cols * rows).fill(null);
   _coverageTotal = cols * rows;
 
   for (let r = 0; r < rows; r++) {
     for (let c = 0; c < cols; c++) {
-      const cell = cells[r * cols + c];
       const { x, z } = cellToWorld(c, r, cols, rows);
-
-      // Floor tile (dark base).
       const floor = new THREE.Mesh(floorGeo, floorMat);
       floor.position.set(x, 0.01, z);
       floor.receiveShadow = true;
       group.add(floor);
 
-      // Fill decal — built invisible, opacity bumps to 1 when visited.
       const fill = new THREE.Mesh(fillGeo, fillMat.clone());
       fill.position.set(x, 0.04, z);
       fill.visible = false;
       group.add(fill);
       _fillMeshes[r * cols + c] = fill;
+    }
+  }
 
-      // Walls — alternating black/white pattern.
-      const checker = ((c + r) & 1) === 0 ? blackMat : whiteMat;
+  // ---- WALLS ----
+  // Collect all wall edges first, then emit one InstancedMesh of
+  // black cubes + one of white cubes to keep draw calls minimal.
+  // _wallEntries also stores per-edge AABBs so the assemble/dissolve
+  // animations can target them.
+  _wallEntries = [];
+  const blackCubes = [];     // [Matrix4]
+  const whiteCubes = [];
 
+  const tmpScale = new THREE.Vector3(WALL_CUBE_SIZE, WALL_HEIGHT, WALL_CUBE_SIZE);
+  const tmpQuat = new THREE.Quaternion();
+  const _pushCubes = (xMid, zMid, axis /* 'NS' or 'EW' */, wallSeed) => {
+    // axis 'NS' = wall extends along X (north/south wall, on the
+    // top or bottom of a cell). axis 'EW' = wall extends along Z
+    // (east/west wall).
+    const half = (CUBES_PER_WALL - 1) * 0.5;
+    for (let i = 0; i < CUBES_PER_WALL; i++) {
+      const t = (i - half) * (CELL_SIZE / CUBES_PER_WALL);
+      const px = axis === 'NS' ? xMid + t : xMid;
+      const pz = axis === 'NS' ? zMid : zMid + t;
+      const m = new THREE.Matrix4();
+      m.compose(
+        new THREE.Vector3(px, WALL_HEIGHT / 2, pz),
+        tmpQuat,
+        tmpScale,
+      );
+      // Alternate B/W along the wall, with the wall's seed offsetting
+      // the start so adjacent walls don't visibly line up.
+      if (((i + wallSeed) & 1) === 0) blackCubes.push(m);
+      else whiteCubes.push(m);
+    }
+  };
+
+  let wallSeed = 0;
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      const cell = cells[r * cols + c];
+      const { x, z } = cellToWorld(c, r, cols, rows);
       if (cell.walls & WALL_N) {
-        const gate = miningByEdge.get(`${c},${r},N`);
-        _addWall(group, wallGeoNS, x, WALL_HEIGHT / 2, z - CELL_SIZE / 2,
-                 CELL_SIZE, WALL_THICKNESS, c, r, 'N', gate, checker, miningMat, miningEdgeMat);
+        _pushCubes(x, z - CELL_SIZE / 2, 'NS', wallSeed++);
+        _wallEntries.push({ x, z: z - CELL_SIZE / 2, w: CELL_SIZE, h: WALL_THICKNESS });
       }
       if (cell.walls & WALL_W) {
-        const gate = miningByEdge.get(`${c},${r},W`);
-        _addWall(group, wallGeoEW, x - CELL_SIZE / 2, WALL_HEIGHT / 2, z,
-                 WALL_THICKNESS, CELL_SIZE, c, r, 'W', gate, checker, miningMat, miningEdgeMat);
+        _pushCubes(x - CELL_SIZE / 2, z, 'EW', wallSeed++);
+        _wallEntries.push({ x: x - CELL_SIZE / 2, z, w: WALL_THICKNESS, h: CELL_SIZE });
       }
       if (r === rows - 1 && (cell.walls & WALL_S)) {
-        _addWall(group, wallGeoNS, x, WALL_HEIGHT / 2, z + CELL_SIZE / 2,
-                 CELL_SIZE, WALL_THICKNESS, c, r, 'S', null, checker, miningMat, miningEdgeMat);
+        _pushCubes(x, z + CELL_SIZE / 2, 'NS', wallSeed++);
+        _wallEntries.push({ x, z: z + CELL_SIZE / 2, w: CELL_SIZE, h: WALL_THICKNESS });
       }
       if (c === cols - 1 && (cell.walls & WALL_E)) {
-        _addWall(group, wallGeoEW, x + CELL_SIZE / 2, WALL_HEIGHT / 2, z,
-                 WALL_THICKNESS, CELL_SIZE, c, r, 'E', null, checker, miningMat, miningEdgeMat);
+        _pushCubes(x + CELL_SIZE / 2, z, 'EW', wallSeed++);
+        _wallEntries.push({ x: x + CELL_SIZE / 2, z, w: WALL_THICKNESS, h: CELL_SIZE });
       }
     }
+  }
+
+  if (blackCubes.length > 0) {
+    const cubeGeo = new THREE.BoxGeometry(1, 1, 1);
+    const blackMesh = new THREE.InstancedMesh(cubeGeo, _getWallMatBlack(), blackCubes.length);
+    for (let i = 0; i < blackCubes.length; i++) blackMesh.setMatrixAt(i, blackCubes[i]);
+    blackMesh.instanceMatrix.needsUpdate = true;
+    blackMesh.castShadow = true;
+    group.add(blackMesh);
+    // Save the InstancedMesh as the synthetic "mesh" for every
+    // wall entry so endlessAssemble's traverse can fade them.
+    for (const e of _wallEntries) e.mesh = blackMesh;
+  }
+  if (whiteCubes.length > 0) {
+    const cubeGeo = new THREE.BoxGeometry(1, 1, 1);
+    const whiteMesh = new THREE.InstancedMesh(cubeGeo, _getWallMatWhite(), whiteCubes.length);
+    for (let i = 0; i < whiteCubes.length; i++) whiteMesh.setMatrixAt(i, whiteCubes[i]);
+    whiteMesh.instanceMatrix.needsUpdate = true;
+    whiteMesh.castShadow = true;
+    group.add(whiteMesh);
+  }
+
+  // ---- MINING BLOCKS (cell-based) ----
+  _miningBlockEntries = [];
+  _miningCellSet = new Set();
+  const blockGeo = new THREE.BoxGeometry(CELL_SIZE * 0.78, CELL_SIZE * 0.55, CELL_SIZE * 0.78);
+  for (const mb of (miningBlocks || [])) {
+    const { x, z } = cellToWorld(mb.col, mb.row, cols, rows);
+    const mat = _makeMiningMat();
+    const mesh = new THREE.Mesh(blockGeo, mat);
+    mesh.position.set(x, CELL_SIZE * 0.55 / 2 + 0.02, z);
+    mesh.castShadow = true;
+    // Bright outline so the black-on-cream block reads at glance.
+    const edges = new THREE.LineSegments(
+      new THREE.EdgesGeometry(blockGeo),
+      new THREE.LineBasicMaterial({ color: fillTint, transparent: true, opacity: 0.85 }),
+    );
+    mesh.add(edges);
+    group.add(mesh);
+    const entry = { col: mb.col, row: mb.row, ref: mb, mesh, hitFlash: 0 };
+    mb._entry = entry;
+    _miningBlockEntries.push(entry);
+    _miningCellSet.add(mb.row * cols + mb.col);
   }
 
   // ---- KILL ZONES ----
@@ -228,30 +298,6 @@ export function buildMaze(mazeData, scene, fillTint) {
   return group;
 }
 
-function _addWall(group, geo, x, y, z, w, h, col, row, dir, gateRef,
-                  baseMat, miningMat, miningEdgeMat) {
-  const isMining = !!gateRef;
-  const useMat = isMining ? miningMat.clone() : baseMat;
-  const mesh = new THREE.Mesh(geo, useMat);
-  mesh.position.set(x, y, z);
-  mesh.castShadow = true;
-
-  if (isMining) {
-    const edges = new THREE.LineSegments(new THREE.EdgesGeometry(geo), miningEdgeMat);
-    mesh.add(edges);
-  }
-  group.add(mesh);
-
-  const entry = {
-    mesh, x, z, w, h,
-    isMining, gateRef,
-    cellCol: col, cellRow: row, dir,
-    hitFlash: 0,
-  };
-  if (isMining && gateRef) gateRef._entry = entry;
-  _wallEntries.push(entry);
-}
-
 // ============================================================
 // CLEAR
 // ============================================================
@@ -264,6 +310,8 @@ export function clearMaze(scene) {
     _mazeGroup = null;
   }
   _wallEntries = [];
+  _miningBlockEntries = [];
+  _miningCellSet = null;
   _killZoneEntries = [];
   _killZoneCells = null;
   _fillMeshes = null;
@@ -277,12 +325,12 @@ export function clearMaze(scene) {
 // ============================================================
 export function updateMazeFx(dt) {
   const time = performance.now() * 0.001;
-  // Mining-wall hit-flash decay.
-  for (const e of _wallEntries) {
-    if (!e.isMining || e.hitFlash <= 0) continue;
+  // Mining-block hit-flash decay.
+  for (const e of _miningBlockEntries) {
+    if (e.hitFlash <= 0) continue;
     e.hitFlash = Math.max(0, e.hitFlash - dt * 4);
     if (e.mesh && e.mesh.material) {
-      e.mesh.material.emissiveIntensity = 0.55 + e.hitFlash * 1.5;
+      e.mesh.material.emissive.setRGB(e.hitFlash * 0.4, e.hitFlash * 0.4, e.hitFlash * 0.4);
     }
   }
   // Kill-zone bob + spin.
@@ -292,15 +340,12 @@ export function updateMazeFx(dt) {
     kz.mesh.position.y = 1.4 + Math.sin(time * 2 + phase) * 0.25;
     kz.mesh.rotation.y = time * 1.5 + phase;
   }
-  // Fade in newly-marked fills.
   if (_fillMeshes) {
     for (let i = 0; i < _fillMeshes.length; i++) {
       const m = _fillMeshes[i];
       if (!m || !m.visible) continue;
       const mat = m.material;
-      if (mat.opacity < 1) {
-        mat.opacity = Math.min(1, mat.opacity + dt * 6);
-      }
+      if (mat.opacity < 1) mat.opacity = Math.min(1, mat.opacity + dt * 6);
     }
   }
 }
@@ -316,7 +361,7 @@ export function markCellVisited(col, row) {
   const m = _fillMeshes[i];
   if (!m || m.visible) return false;
   m.visible = true;
-  m.material.opacity = 0;            // tickFx fades it in
+  m.material.opacity = 0;
   _coverageFilled++;
   return true;
 }
@@ -330,15 +375,62 @@ export function isCellVisited(col, row) {
 }
 
 export function getCoverage() {
-  return { filled: _coverageFilled, total: _coverageTotal };
+  // Mining-block cells don't count toward coverage (the player can't
+  // visit them while the block stands). They're factored into the
+  // total only AFTER they break — visited then.
+  let blockedTotal = 0;
+  for (const e of _miningBlockEntries) {
+    if (!e.ref || !e.ref.broken) blockedTotal++;
+  }
+  return { filled: _coverageFilled, total: Math.max(1, _coverageTotal - blockedTotal) };
 }
 
 // ============================================================
-// KILL ZONES
+// CELL QUERIES
 // ============================================================
 export function isKillZoneCell(col, row) {
   if (!_mazeData || !_killZoneCells) return false;
   return _killZoneCells.has(row * _mazeData.cols + col);
+}
+
+export function isCellBlocked(col, row) {
+  if (!_mazeData || !_miningCellSet) return false;
+  if (!_miningCellSet.has(row * _mazeData.cols + col)) return false;
+  // Look up the actual entry to check broken state.
+  for (const e of _miningBlockEntries) {
+    if (e.col === col && e.row === row) return !(e.ref && e.ref.broken);
+  }
+  return false;
+}
+
+/**
+ * Walk from (col,row) in (dx,dz) until either a wall is hit or a
+ * mining block cell is reached. Returns the block entry if a block
+ * is the first impassable thing in that direction (so directional
+ * fire can damage it), or null otherwise.
+ */
+export function findFirstMiningBlockInDir(col, row, dx, dz) {
+  if (!_mazeData) return null;
+  const { cols, rows, cells } = _mazeData;
+  let c = col, r = row;
+  for (let step = 0; step < Math.max(cols, rows); step++) {
+    const cell = cells[r * cols + c];
+    const flag =
+      dx > 0 ? WALL_E :
+      dx < 0 ? WALL_W :
+      dz > 0 ? WALL_S : WALL_N;
+    if (cell.walls & flag) return null;
+    const nc = c + dx, nr = r + dz;
+    if (nc < 0 || nc >= cols || nr < 0 || nr >= rows) return null;
+    if (_miningCellSet && _miningCellSet.has(nr * cols + nc)) {
+      for (const e of _miningBlockEntries) {
+        if (e.col === nc && e.row === nr && !(e.ref && e.ref.broken)) return e;
+      }
+      return null;
+    }
+    c = nc; r = nr;
+  }
+  return null;
 }
 
 // ============================================================
@@ -365,6 +457,8 @@ export function isBlockedByWall(x, z, dx, dz) {
   if (newCol < col && (cell.walls & WALL_W)) return true;
   if (newRow > row && (cell.walls & WALL_S)) return true;
   if (newRow < row && (cell.walls & WALL_N)) return true;
+  // Mining blocks block movement at the cell boundary too.
+  if ((newCol !== col || newRow !== row) && isCellBlocked(newCol, newRow)) return true;
   return false;
 }
 
@@ -429,74 +523,63 @@ export function resolveMazeCollision(pos, radius) {
 }
 
 // ============================================================
-// MINING WALLS
+// MINING BLOCK DAMAGE
 // ============================================================
-export function damageMiningWallAt(x, z, dmg) {
+
+export function damageMiningBlockAt(x, z, dmg) {
   if (!_mazeData) return { hit: false };
-  let target = null;
-  let bestDist = Infinity;
-  for (const e of _wallEntries) {
-    if (!e.isMining || !e.gateRef || e.gateRef.broken) continue;
-    const hx = e.w / 2, hz = e.h / 2;
-    if (x < e.x - hx - 0.4 || x > e.x + hx + 0.4) continue;
-    if (z < e.z - hz - 0.4 || z > e.z + hz + 0.4) continue;
-    const ddx = x - e.x, ddz = z - e.z;
-    const d = ddx * ddx + ddz * ddz;
-    if (d < bestDist) { bestDist = d; target = e; }
-  }
-  if (!target) return { hit: false };
-
-  const gate = target.gateRef;
-  gate.hp = Math.max(0, gate.hp - dmg);
-  target.hitFlash = 1;
-
-  if (gate.hp <= 0 && !gate.broken) {
-    gate.broken = true;
-    const { cells, cols } = _mazeData;
-    const c = gate.col, r = gate.row;
-    if (gate.dir === 'W') {
-      cells[r * cols + c].walls &= ~WALL_W;
-      if (c - 1 >= 0) cells[r * cols + (c - 1)].walls &= ~WALL_E;
-    } else {
-      cells[r * cols + c].walls &= ~WALL_N;
-      if (r - 1 >= 0) cells[(r - 1) * cols + c].walls &= ~WALL_S;
+  const { cols, rows } = _mazeData;
+  const mazeW = cols * CELL_SIZE;
+  const mazeH = rows * CELL_SIZE;
+  const ox = -mazeW / 2;
+  const oz = -mazeH / 2;
+  const col = Math.floor((x - ox) / CELL_SIZE);
+  const row = Math.floor((z - oz) / CELL_SIZE);
+  if (col < 0 || col >= cols || row < 0 || row >= rows) return { hit: false };
+  if (!_miningCellSet || !_miningCellSet.has(row * cols + col)) return { hit: false };
+  for (const e of _miningBlockEntries) {
+    if (e.col === col && e.row === row && e.ref && !e.ref.broken) {
+      return _applyMiningBlockDamage(e, dmg);
     }
-    if (target.mesh) {
-      if (target.mesh.parent) target.mesh.parent.remove(target.mesh);
-      if (target.mesh.geometry) target.mesh.geometry.dispose();
-      if (target.mesh.material && target.mesh.material.dispose) target.mesh.material.dispose();
-    }
-    const idx = _wallEntries.indexOf(target);
-    if (idx >= 0) _wallEntries.splice(idx, 1);
-    return {
-      hit: true, destroyed: true,
-      color: _fillTint,
-      x: target.x, z: target.z,
-    };
   }
-
-  return {
-    hit: true, destroyed: false,
-    color: _fillTint,
-    x: target.x, z: target.z,
-  };
+  return { hit: false };
 }
 
-export function findMiningWallAt(x, z) {
-  if (!_mazeData) return null;
-  for (const e of _wallEntries) {
-    if (!e.isMining || !e.gateRef || e.gateRef.broken) continue;
-    const hx = e.w / 2, hz = e.h / 2;
-    if (x >= e.x - hx && x <= e.x + hx && z >= e.z - hz && z <= e.z + hz) return e;
-  }
-  return null;
+/** Same as damageMiningBlockAt but scoped to a known block entry —
+ * used by directional-fire so we don't miss when the bullet path
+ * lands a hair off the cell center. */
+export function damageMiningBlockEntry(entry, dmg) {
+  if (!entry || !entry.ref || entry.ref.broken) return { hit: false };
+  return _applyMiningBlockDamage(entry, dmg);
 }
 
-export function getMazeWallEntries() { return _wallEntries.slice(); }
+function _applyMiningBlockDamage(entry, dmg) {
+  const ref = entry.ref;
+  ref.hp = Math.max(0, ref.hp - dmg);
+  entry.hitFlash = 1;
+  if (ref.hp <= 0 && !ref.broken) {
+    ref.broken = true;
+    if (entry.mesh) {
+      if (entry.mesh.parent) entry.mesh.parent.remove(entry.mesh);
+      if (entry.mesh.geometry) entry.mesh.geometry.dispose();
+      if (entry.mesh.material && entry.mesh.material.dispose) entry.mesh.material.dispose();
+    }
+    if (_miningCellSet) _miningCellSet.delete(entry.row * _mazeData.cols + entry.col);
+    const idx = _miningBlockEntries.indexOf(entry);
+    if (idx >= 0) _miningBlockEntries.splice(idx, 1);
+    return { hit: true, destroyed: true, color: _fillTint, x: entry.col, z: entry.row };
+  }
+  return { hit: true, destroyed: false, color: _fillTint };
+}
+
+// Backward-compat shim — main.js + stratagemTurret still reference
+// the old name. Maps to the new cell-based API.
+export const damageMiningWallAt = damageMiningBlockAt;
 
 // ============================================================
 // HELPERS
 // ============================================================
+export function getMazeWallEntries() { return _wallEntries.slice(); }
 export function getMazeBounds() {
   if (!_mazeData) return null;
   const { cols, rows } = _mazeData;
@@ -504,6 +587,5 @@ export function getMazeBounds() {
   const halfH = (rows * CELL_SIZE) / 2;
   return { x0: -halfW, x1: halfW, z0: -halfH, z1: halfH };
 }
-
 export function getMazeData() { return _mazeData; }
 export function isMazeActive() { return !!_mazeData; }
