@@ -532,29 +532,36 @@ let _slide = null;                   // { startX, startZ, tx, tz, t, duration, c
 let _facingDir = { dx: 1, dz: 0 };   // last move direction (used for fire aim)
 let _waveTimer = WAVE_TIME_LIMIT;
 
-// Emoji avatar — a billboarded sprite that stands in for the Meebit
-// in the top-down slide-fill view. Built lazily in _enterWaveAssemble.
+// Avatar — a billboarded sprite that stands in for the Meebit in
+// the top-down slide-fill view. Uses the project's hero-meebit
+// portrait (assets/meebit_fallback.png). Built lazily; the texture
+// loads async, so the sprite appears flat until the PNG resolves
+// (~one frame from a Vite dev server, instant from the bundle).
 let _emojiSprite = null;
-const EMOJI_CHAR = '😀';
+const _avatarLoader = new THREE.TextureLoader();
 
 function _ensureEmojiSprite() {
   if (_emojiSprite) return _emojiSprite;
-  const canvas = document.createElement('canvas');
-  canvas.width = 256; canvas.height = 256;
-  const ctx = canvas.getContext('2d');
-  ctx.clearRect(0, 0, 256, 256);
-  ctx.font = '210px "Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji", sans-serif';
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillText(EMOJI_CHAR, 128, 138);
-  const tex = new THREE.CanvasTexture(canvas);
-  tex.minFilter = THREE.LinearFilter;
   const mat = new THREE.SpriteMaterial({
-    map: tex, transparent: true, depthWrite: false, depthTest: false,
+    color: 0xffffff,
+    transparent: true,
+    depthWrite: false,
+    depthTest: false,
   });
+  _avatarLoader.load(
+    'assets/meebit_fallback.png',
+    (tex) => {
+      tex.minFilter = THREE.LinearFilter;
+      tex.magFilter = THREE.LinearFilter;
+      mat.map = tex;
+      mat.needsUpdate = true;
+    },
+    undefined,
+    (err) => { console.warn('[endless] avatar texture load failed', err); },
+  );
   const sprite = new THREE.Sprite(mat);
-  sprite.scale.set(3.2, 3.2, 1);
-  sprite.renderOrder = 999;            // always on top
+  sprite.scale.set(3.6, 3.6, 1);
+  sprite.renderOrder = 999;
   _emojiSprite = sprite;
   return sprite;
 }
