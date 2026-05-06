@@ -234,17 +234,16 @@ function _generateMazeAttempt(waveNum, attemptOffset) {
   // elsewhere).
   cells[idx(spawn.col, spawn.row)].kind = 'floor';
 
-  // Step 5 — FORCE-FIX. If the maze isn't slide-SCC after the
-  // backtracker + loop openings, the recursive-backtracker topology
-  // produced unreachable pockets (mid-corridor branches the slide
-  // can't enter). Knock out walls until it is. Knockouts only ADD
-  // floor, so this always converges — worst case the entire arena
-  // becomes floor, which is trivially slide-SCC.
+  // Step 5 — FORCE-FIX. If the maze isn't slide-SCC, try repairing
+  // by knocking out bridge walls (those adjacent to multiple floors).
+  // This works for many topologies but isn't a guaranteed converge —
+  // adding floor can REDUCE stop count by stripping walls off
+  // existing stops. So if 60 attempts don't yield a valid maze, fall
+  // back to a serpentine layout (every-other-row walls with gaps
+  // alternating left/right) which is provably slide-SCC.
   let fixSafety = 0;
-  while (!_isAllFloorSlideReachable(cells, cols, rows, spawn) && fixSafety < 200) {
+  while (!_isAllFloorSlideReachable(cells, cols, rows, spawn) && fixSafety < 60) {
     fixSafety++;
-    // Prefer wall cells with the most floor neighbors — those are
-    // "bridge" walls whose removal opens the most new connections.
     let best = null;
     let bestScore = -1;
     for (let r = 1; r < rows - 1; r++) {
@@ -263,6 +262,11 @@ function _generateMazeAttempt(waveNum, attemptOffset) {
     }
     if (!best || bestScore < 1) break;
     cells[idx(best[0], best[1])].kind = 'floor';
+  }
+
+  // Last resort — serpentine fallback. Guaranteed slide-SCC.
+  if (!_isAllFloorSlideReachable(cells, cols, rows, spawn)) {
+    _applySerpentineLayout(cells, cols, rows);
   }
 
   // ---- COLLECT FLOOR CELLS for glyph / block / kill-zone placement ----
@@ -347,6 +351,33 @@ function _generateMazeAttempt(waveNum, attemptOffset) {
     config,
     cellSize: CELL_SIZE,
   };
+}
+
+// ---- SERPENTINE FALLBACK ----
+// Guaranteed-solvable layout used as a last resort when the
+// procedural maze can't be repaired into slide-SCC. Wall rows at
+// every even interior row, single gap per row alternating left
+// then right. The slide path is forced:
+//   right → drop right gap → left → drop left gap → right → ...
+// every floor cell is touched.
+function _applySerpentineLayout(cells, cols, rows) {
+  const idx = (c, r) => r * cols + c;
+  // Reset interior to floor.
+  for (let r = 1; r < rows - 1; r++) {
+    for (let c = 1; c < cols - 1; c++) {
+      cells[idx(c, r)].kind = 'floor';
+    }
+  }
+  // Wall rows at every even interior row.
+  let i = 0;
+  for (let r = 2; r < rows - 1; r += 2, i++) {
+    const gapCol = (i % 2 === 0) ? (cols - 2) : 1;
+    for (let c = 1; c < cols - 1; c++) {
+      if (c !== gapCol) {
+        cells[idx(c, r)].kind = 'wall';
+      }
+    }
+  }
 }
 
 // ---- SLIDE REACHABILITY ----
