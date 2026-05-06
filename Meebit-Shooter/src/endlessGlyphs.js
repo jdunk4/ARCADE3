@@ -533,32 +533,50 @@ let _facingDir = { dx: 1, dz: 0 };   // last move direction (used for fire aim)
 let _waveTimer = WAVE_TIME_LIMIT;
 
 // Avatar — a billboarded sprite that stands in for the Meebit in
-// the top-down slide-fill view. Uses the project's hero-meebit
-// portrait (assets/meebit_fallback.png). Built lazily; the texture
-// loads async, so the sprite appears flat until the PNG resolves
-// (~one frame from a Vite dev server, instant from the bundle).
+// the top-down slide-fill view. Loads the head-only portrait of
+// Meebit #16801 from assets/16801_portrait.png (fetched once from
+// api.meebits.app/v2/images/yugalabs_portrait/16801) and applies a
+// circular mask so the result reads as an emoji-style avatar with
+// no blue background bleed.
 let _emojiSprite = null;
-const _avatarLoader = new THREE.TextureLoader();
 
 function _ensureEmojiSprite() {
   if (_emojiSprite) return _emojiSprite;
+
+  // Placeholder canvas — drawn over once the portrait PNG loads.
+  const canvas = document.createElement('canvas');
+  canvas.width = 256; canvas.height = 256;
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.minFilter = THREE.LinearFilter;
   const mat = new THREE.SpriteMaterial({
-    color: 0xffffff,
-    transparent: true,
-    depthWrite: false,
-    depthTest: false,
+    map: tex, transparent: true, depthWrite: false, depthTest: false,
   });
-  _avatarLoader.load(
-    'assets/meebit_fallback.png',
-    (tex) => {
-      tex.minFilter = THREE.LinearFilter;
-      tex.magFilter = THREE.LinearFilter;
-      mat.map = tex;
-      mat.needsUpdate = true;
-    },
-    undefined,
-    (err) => { console.warn('[endless] avatar texture load failed', err); },
-  );
+
+  const img = new Image();
+  img.onload = () => {
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, 256, 256);
+    ctx.save();
+    // Circular clip — only the meebit's head + shoulders show.
+    ctx.beginPath();
+    ctx.arc(128, 128, 124, 0, Math.PI * 2);
+    ctx.closePath();
+    ctx.clip();
+    // The portrait crops tighter than the full body — use the whole
+    // source canvas, no extra zoom.
+    ctx.drawImage(img, 0, 0, 256, 256);
+    ctx.restore();
+    // Subtle ring outline so the avatar reads against the cream floor.
+    ctx.beginPath();
+    ctx.arc(128, 128, 122, 0, Math.PI * 2);
+    ctx.lineWidth = 6;
+    ctx.strokeStyle = 'rgba(255,255,255,0.85)';
+    ctx.stroke();
+    tex.needsUpdate = true;
+  };
+  img.onerror = () => console.warn('[endless] avatar portrait failed to load');
+  img.src = 'assets/16801_portrait.png';
+
   const sprite = new THREE.Sprite(mat);
   sprite.scale.set(3.6, 3.6, 1);
   sprite.renderOrder = 999;
