@@ -116,6 +116,10 @@ export function generateMaze(waveNum) {
   }
   const idx = (c, r) => r * cols + c;
 
+  // Player spawn — top-left logical cell of the maze. The thick-wall
+  // generator below treats this as logical (0, 0).
+  const spawn = { col: 1, row: 1 };
+
   // ---- LAYOUT: THICK-WALL PERFECT MAZE ----
   // Reference: classic mobile slide-fill maze games (the kind with
   // 1-cell-wide wood-floor corridors carved between blocky walls).
