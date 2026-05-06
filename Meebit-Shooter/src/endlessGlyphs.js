@@ -123,9 +123,10 @@ export function startEndlessGlyphs(playerCount = 1) {
   const ipEl = document.getElementById('initiate-protocol');
   if (ipEl) { ipEl.style.display = 'none'; ipEl.remove(); }
 
-  // UNDER CONSTRUCTION — show the placeholder and return early.
+  // Skip the player-count picker, the construction overlay, and the
+  // tutorial-floor lobby/locker. Jump straight to wave 1.
   _savedPlayerCount = playerCount;
-  _showConstructionOverlay();
+  _realStartEndlessGlyphs(playerCount);
   return;
 }
 
@@ -222,19 +223,13 @@ function _realStartEndlessGlyphs(playerCount) {
     grantArtifact('thermonuclear', 99);
   } catch (e) { console.warn('[glyphs] grant artifacts', e); }
 
-  // Apply rainbow tile floor — the lobby visually matches the tutorial.
-  // Per playtester: "The same rainbow tile grid that the tutorial uses."
-  // setTutorialActive flips a flag that other systems (under-foot glow,
-  // enemy color override) read; we WANT the rainbow color sampling but
-  // NOT the enemy monochrome forcing. The wave runner in Phase 3b will
-  // handle the override conflict. For the lobby phase (no enemies)
-  // this is fine.
-  applyTutorialFloor();
-  setTutorialActive(true);
-
-  // Build the locker mesh at the arena center — the player walks up
-  // to interact with it. Phase 3c will add the proximity-trigger UI.
-  _spawnLocker();
+  // Skip the rainbow-tile lobby + locker. Apply the wave white floor
+  // and jump straight to wave 1 — startEndlessGlyphs is a one-button
+  // entry point now.
+  _applyWaveWhiteFloor();
+  S.endlessWave = 1;
+  _prepareWave(1);
+  _enterWaveAssemble(1);
 }
 
 /**
@@ -316,13 +311,14 @@ export function exitEndlessGlyphs() {
     catch (e) { console.warn('[glyphs] teardown', e); }
   }
 
-  // Return to main menu — show the title screen
+  // Return to main menu — show the title screen with CDrone ambience.
   const titleEl = document.getElementById('title');
   if (titleEl) { titleEl.classList.remove('hidden'); titleEl.style.display = ''; }
-  // Stop music
   Audio.stopPhoneRing && Audio.stopPhoneRing();
-  Audio.stopCDrone && Audio.stopCDrone();
   try { Audio.stopMusic && Audio.stopMusic(); } catch (_) {}
+  // Match the title-screen audio: kill the wave music section and
+  // start CDrone humming under the menu.
+  try { Audio.startCDrone && Audio.startCDrone(); } catch (_) {}
 }
 
 // ---- UNDER CONSTRUCTION OVERLAY ----

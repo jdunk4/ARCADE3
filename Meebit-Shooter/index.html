@@ -464,12 +464,32 @@
   var soloBtn = document.getElementById('glyphs-solo-btn');
   var cancelBtn = document.getElementById('glyphs-cancel-btn');
 
-  // Open modal when the hidden glyphs-btn is clicked (forwarded from card)
+  // Endless Glyphs: skip the player-count modal and the lobby —
+  // jump straight into wave 1 in solo. Co-op is not implemented.
   if (glyphsBtn) {
     glyphsBtn.addEventListener('click', function(e) {
       e.preventDefault();
       e.stopPropagation();
-      if (modal) modal.classList.add('open');
+      // Hide ALL possible overlays before launching the run.
+      var ts = document.getElementById('title');
+      if (ts) { ts.classList.add('hidden'); ts.style.display = 'none'; }
+      var ld = document.getElementById('loading');
+      if (ld) ld.style.display = 'none';
+      var md = document.getElementById('matrix-dive');
+      if (md) md.remove();
+      var hp = document.getElementById('hyperdrive-overlay');
+      if (hp) hp.remove();
+      var ip = document.getElementById('initiate-protocol');
+      if (ip) ip.remove();
+      // Start the run immediately. Module bridge may still be
+      // resolving on a slow first load — retry once.
+      if (window.__startEndlessGlyphs) {
+        window.__startEndlessGlyphs(1);
+      } else {
+        setTimeout(function() {
+          if (window.__startEndlessGlyphs) window.__startEndlessGlyphs(1);
+        }, 1500);
+      }
     });
   }
 
