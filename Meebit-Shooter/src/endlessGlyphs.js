@@ -48,7 +48,7 @@ import {
   markCellVisited, isKillZoneCell, isCellBlocked,
   collectGlyphAt, getGlyphsTotal, getGlyphsCollected, getGlyphsRemaining,
   clearDecorEnemyAt,
-  getMazeWallEntries, getMazeBounds,
+  getMazeWallEntries, getMazeBounds, damageMiningBlocksNear,
 } from './mazeRenderer.js';
 import { saveMazeProgress, getMazeWave } from './mazePuzzles.js';
 import { UI } from './ui.js';
@@ -567,11 +567,13 @@ function _ensureGlyphCollector(total) {
   _disposeGlyphCollector();
   const root = document.createElement('div');
   root.id = 'endless-glyph-collector';
+  // Anchored to top-right so it doesn't overlap the maze on top-down
+  // view. The pause/ammo HUD sits top-left, controls hint is hidden
+  // during waves, so this corner is otherwise empty.
   root.style.cssText = [
-    'position:fixed', 'top:78px', 'left:50%',
-    'transform:translateX(-50%)',
-    'display:flex', 'gap:10px',
-    'padding:10px 14px',
+    'position:fixed', 'top:14px', 'right:14px',
+    'display:flex', 'gap:8px',
+    'padding:8px 10px',
     'background:rgba(0,0,0,0.65)',
     'border:1px solid rgba(79,247,255,0.55)',
     'border-radius:8px',
@@ -830,8 +832,12 @@ function _enterWaveDissolve() {
   // will set this true again anyway; intermission flips it off.
   _hideEmojiAvatar();
   _disposeGlyphCollector();
-  _restoreStandardHud();
-  _popFog();
+  // INTENTIONALLY NOT calling _restoreStandardHud() or _popFog() here.
+  // The top-down camera is at y=92, while the default scene fog ends
+  // around 85u — popping fog now would render the entire arena dark
+  // and drop the glyph reward into invisibility. Same for the HUD:
+  // restoring the bottom weapon strip mid-dissolve clutters the
+  // ACCESS GRANTED moment. Both get restored at intermission/exit.
   const chapterTint = _waveFillTint(S.endlessWave);
   startDissolve(wallSnapshot, S.endlessWave, boundsSnapshot, chapterTint);
   _setWaveHUD('', '');
@@ -980,10 +986,32 @@ function _tickSlide(dt) {
  * Aimed at the next mining gate / wall so the bullet either damages
  * the gate or splashes against the wall.
  */
+// Cells of slack the proximity-shot allowance gives the player. A
+// mining block within Chebyshev `PROXIMITY_RADIUS` cells of the player
+// takes damage on every fire press regardless of facing — the slide
+// model means perfect aim is harsh, and "near + click" is the natural
+// mental model for cracking a wall in this mode.
+const PROXIMITY_RADIUS = 3;
+const PROXIMITY_DMG = 1;
+
 export function endlessFire() {
   if (!S.endlessGlyphs || S.endlessPhase !== 'WAVE') return;
+  // Directional bullet still fires for everything else (corridors,
+  // walls, decor enemies down the line).
   if (typeof window.__endlessFireBullet === 'function') {
     try { window.__endlessFireBullet(_facingDir.dx, _facingDir.dz); } catch (_) {}
+  }
+  // Proximity damage to nearby mining blocks.
+  if (player && player.pos) {
+    const hits = damageMiningBlocksNear(player.pos.x, player.pos.z, PROXIMITY_RADIUS, PROXIMITY_DMG);
+    for (const h of hits) {
+      if (!h || !h.hit) continue;
+      try {
+        hitBurst(new THREE.Vector3(h.x, 1.4, h.z),
+                 h.color || 0xffffff,
+                 h.destroyed ? 18 : 5);
+      } catch (_) {}
+    }
   }
 }
 

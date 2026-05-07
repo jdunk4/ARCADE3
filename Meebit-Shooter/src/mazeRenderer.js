@@ -663,6 +663,40 @@ function _applyMiningBlockDamage(entry, dmg) {
 // Backward-compat alias for callers that still import the old name.
 export const damageMiningWallAt = damageMiningBlockAt;
 
+// Endless Glyphs proximity damage. Damages every un-broken mining block
+// within `radiusCells` cells of (x, z), Chebyshev distance. Returns the
+// list of hit results so the caller can spawn one VFX burst per block.
+// Used so the player doesn't have to perfectly face a block to crack
+// it — being near it is enough.
+export function damageMiningBlocksNear(x, z, radiusCells, dmg) {
+  if (!_mazeData) return [];
+  const { cols, rows } = _mazeData;
+  const mazeW = cols * CELL_SIZE;
+  const mazeH = rows * CELL_SIZE;
+  const ox = -mazeW / 2;
+  const oz = -mazeH / 2;
+  const pCol = Math.floor((x - ox) / CELL_SIZE);
+  const pRow = Math.floor((z - oz) / CELL_SIZE);
+  const r = radiusCells | 0;
+  const out = [];
+  // Snapshot first — _applyMiningBlockDamage mutates _miningBlockEntries
+  // when a block breaks, so iterating directly mid-loop would skip
+  // entries and miscount.
+  const candidates = [];
+  for (const e of _miningBlockEntries) {
+    if (!e.ref || e.ref.broken) continue;
+    if (Math.abs(e.col - pCol) > r) continue;
+    if (Math.abs(e.row - pRow) > r) continue;
+    candidates.push(e);
+  }
+  for (const e of candidates) {
+    const result = _applyMiningBlockDamage(e, dmg);
+    const w = cellToWorld(e.col, e.row, cols, rows);
+    out.push({ ...result, x: w.x, z: w.z });
+  }
+  return out;
+}
+
 // ============================================================
 // HELPERS
 // ============================================================

@@ -40,7 +40,10 @@ export const WALL_E = 2;
 export const WALL_S = 4;
 export const WALL_W = 8;
 
-const MINING_BLOCK_HP = 25;
+// Endless Glyphs is an arcade slide-fill mode, not a mining sim — three
+// shots feels right; 25 dragged the player out of flow for half a minute
+// per block.
+const MINING_BLOCK_HP = 3;
 
 function mulberry32(seed) {
   let s = seed | 0;
