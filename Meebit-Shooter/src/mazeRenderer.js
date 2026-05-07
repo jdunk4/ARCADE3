@@ -105,24 +105,15 @@ function _makeMiningMat() {
   });
 }
 
-// Singularity (kill zone) — black-hole-style danger marker. Replaces
-// the old rune/mine/ghost gem visuals. Each kill zone is a small Group
-// with a black event horizon (sphere), a bright glowing accretion disc
-// (torus, lying flat) spinning one way, and a dimmer outer ring
-// spinning the other. Tinted slightly per chapter band so the player
-// still gets a visual cue about which chapter they're in, but the core
-// shape always reads as "do not slide here — it eats you".
-function _singularityTint(kind) {
-  // rune (chapters 0-1) → hot red       — the original look
-  // mine (chapters 2-3) → amber-orange  — molten
-  // ghost (chapters 4+) → cool plasma   — blue-white
-  if (kind === 'mine') return 0xffaa22;
-  if (kind === 'ghost') return 0x88ccff;
-  return 0xff2e4d;
-}
-
-function _buildSingularity(kind) {
-  const tint = _singularityTint(kind);
+// Singularity (kill zone) — black-hole-style danger marker. Each
+// kill zone is a small Group with a black event horizon (sphere),
+// a bright glowing accretion disc (torus, lying flat) spinning one
+// way, and a dimmer outer ring spinning the other. The disc tint
+// matches the chapter signature (orange/red/yellow/green/cyan/
+// purple) so each of the six chapters has its own singularity
+// color. The black hole shape is the constant "do not slide here"
+// signal across all chapters.
+function _buildSingularity(tint) {
   const group = new THREE.Group();
 
   // Event horizon — pure black sphere; basic material so no light
@@ -351,7 +342,10 @@ export function buildMaze(mazeData, scene, fillTint) {
   _killZoneCells = new Set();
   for (const kz of (killZones || [])) {
     const { x, z } = cellToWorld(kz.col, kz.row, cols, rows);
-    const mesh = _buildSingularity(kz.kind);
+    // Use the chapter's signature tint (passed in as fillTint) so the
+    // singularity matches the rest of the wave's palette — orange in
+    // INFERNO, red in CRIMSON, yellow in SOLAR, etc.
+    const mesh = _buildSingularity(fillTint);
     // Sit just above the floor — the event horizon is half-buried so
     // it reads as a hole the floor opens around.
     mesh.position.set(x, 0.55, z);
