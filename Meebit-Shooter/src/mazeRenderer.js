@@ -105,20 +105,68 @@ function _makeMiningMat() {
   });
 }
 
-const _kzGeo = {
-  rune: new THREE.OctahedronGeometry(1.2, 0),
-  mine: new THREE.SphereGeometry(1.0, 12, 8),
-  ghost: new THREE.SphereGeometry(1.1, 12, 8),
-};
-const _kzMatCache = {};
-function _getKzMat(kind) {
-  if (_kzMatCache[kind]) return _kzMatCache[kind];
-  const color = kind === 'rune' ? 0xff2e4d : kind === 'mine' ? 0xffaa00 : 0x88ccff;
-  _kzMatCache[kind] = new THREE.MeshStandardMaterial({
-    color, emissive: color, emissiveIntensity: 0.9,
-    roughness: 0.4, metalness: 0.1,
+// Singularity (kill zone) — black-hole-style danger marker. Replaces
+// the old rune/mine/ghost gem visuals. Each kill zone is a small Group
+// with a black event horizon (sphere), a bright glowing accretion disc
+// (torus, lying flat) spinning one way, and a dimmer outer ring
+// spinning the other. Tinted slightly per chapter band so the player
+// still gets a visual cue about which chapter they're in, but the core
+// shape always reads as "do not slide here — it eats you".
+function _singularityTint(kind) {
+  // rune (chapters 0-1) → hot red       — the original look
+  // mine (chapters 2-3) → amber-orange  — molten
+  // ghost (chapters 4+) → cool plasma   — blue-white
+  if (kind === 'mine') return 0xffaa22;
+  if (kind === 'ghost') return 0x88ccff;
+  return 0xff2e4d;
+}
+
+function _buildSingularity(kind) {
+  const tint = _singularityTint(kind);
+  const group = new THREE.Group();
+
+  // Event horizon — pure black sphere; basic material so no light
+  // can wash it out. Reads as a hole punched through the floor.
+  const horizon = new THREE.Mesh(
+    new THREE.SphereGeometry(0.55, 16, 12),
+    new THREE.MeshBasicMaterial({ color: 0x000000 })
+  );
+  group.add(horizon);
+
+  // Inner accretion disc — bright glowing torus lying flat. Per-
+  // instance material clone so each singularity can pulse on its own
+  // phase without all of them strobing in sync.
+  const innerMat = new THREE.MeshStandardMaterial({
+    color: tint, emissive: tint, emissiveIntensity: 1.4,
+    roughness: 0.3, metalness: 0.0,
+    transparent: true, opacity: 0.95,
   });
-  return _kzMatCache[kind];
+  const innerDisc = new THREE.Mesh(
+    new THREE.TorusGeometry(0.95, 0.18, 8, 24),
+    innerMat,
+  );
+  innerDisc.rotation.x = -Math.PI / 2;
+  group.add(innerDisc);
+
+  // Outer ring — dimmer, slightly larger, spins opposite. Adds the
+  // "frame-drag" sense of motion that sells the black-hole read.
+  const outerMat = new THREE.MeshStandardMaterial({
+    color: tint, emissive: tint, emissiveIntensity: 0.7,
+    roughness: 0.5, metalness: 0.0,
+    transparent: true, opacity: 0.65,
+  });
+  const outerDisc = new THREE.Mesh(
+    new THREE.TorusGeometry(1.35, 0.06, 6, 28),
+    outerMat,
+  );
+  outerDisc.rotation.x = -Math.PI / 2;
+  group.add(outerDisc);
+
+  group.userData.bobPhase = Math.random() * Math.PI * 2;
+  group.userData.innerDisc = innerDisc;
+  group.userData.outerDisc = outerDisc;
+  group.userData.innerMat = innerMat;
+  return group;
 }
 
 // ---- GLYPH TEXTURE CACHE ----
@@ -298,16 +346,15 @@ export function buildMaze(mazeData, scene, fillTint) {
     _miningCellSet.add(mb.row * cols + mb.col);
   }
 
-  // ---- KILL ZONES ----
+  // ---- KILL ZONES (singularities) ----
   _killZoneEntries = [];
   _killZoneCells = new Set();
   for (const kz of (killZones || [])) {
     const { x, z } = cellToWorld(kz.col, kz.row, cols, rows);
-    const geo = _kzGeo[kz.kind] || _kzGeo.rune;
-    const mat = _getKzMat(kz.kind);
-    const mesh = new THREE.Mesh(geo, mat);
-    mesh.position.set(x, 1.4, z);
-    mesh.userData.bobPhase = Math.random() * Math.PI * 2;
+    const mesh = _buildSingularity(kz.kind);
+    // Sit just above the floor — the event horizon is half-buried so
+    // it reads as a hole the floor opens around.
+    mesh.position.set(x, 0.55, z);
     group.add(mesh);
     _killZoneEntries.push({ col: kz.col, row: kz.row, kind: kz.kind, mesh });
     _killZoneCells.add(kz.row * cols + kz.col);
@@ -398,12 +445,18 @@ export function updateMazeFx(dt) {
       e.mesh.material.emissive.setRGB(e.hitFlash * 0.4, e.hitFlash * 0.4, e.hitFlash * 0.4);
     }
   }
-  // Kill-zone bob + spin.
+  // Singularity (kill-zone) per-frame: subtle bob, counter-rotating
+  // discs, and a throbbing pulse on the inner accretion disc.
   for (const kz of _killZoneEntries) {
     if (!kz.mesh) continue;
-    const phase = kz.mesh.userData.bobPhase || 0;
-    kz.mesh.position.y = 1.4 + Math.sin(time * 2 + phase) * 0.25;
-    kz.mesh.rotation.y = time * 1.5 + phase;
+    const ud = kz.mesh.userData || {};
+    const phase = ud.bobPhase || 0;
+    kz.mesh.position.y = 0.55 + Math.sin(time * 2 + phase) * 0.10;
+    if (ud.innerDisc) ud.innerDisc.rotation.z = time * 2.4 + phase;
+    if (ud.outerDisc) ud.outerDisc.rotation.z = -time * 1.3 + phase * 0.5;
+    if (ud.innerMat) {
+      ud.innerMat.emissiveIntensity = 1.2 + Math.sin(time * 3 + phase) * 0.45;
+    }
   }
   // Glyph bob + sprite rotation.
   for (const g of _glyphEntries) {
