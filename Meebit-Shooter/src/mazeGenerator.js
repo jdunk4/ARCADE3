@@ -500,37 +500,58 @@ function _finalizeMazeData(waveNum, cells, cols, rows, spawn, glyphs) {
   };
 }
 
-// ---- GLYPH REACHABILITY (with kill-zone avoidance) ----
-// Used by the kill-zone placement loop. BFS from spawn over floor
-// cells, refusing to enter any cell in `blockedKeys` (kill zones).
-// Returns true iff every glyph cell is reached. Mining blocks are
-// NOT considered blockers — the player can shoot through them, so
-// for win-feasibility purposes they're an obstacle, not a barrier.
+// ---- GLYPH REACHABILITY (slide model, kill-zone aware) ----
+// Used by the kill-zone placement loop. Cardinal-walk reachability
+// isn't enough — the actual game uses slide physics: from a stop
+// position the player slides until they hit a wall (or a kill zone,
+// which kills them). A glyph that's walk-reachable can still be
+// slide-unreachable if no slide path from any reachable stop crosses
+// its cell.
+//
+// We simulate the slide BFS:
+//   - Start at spawn (as a stop).
+//   - From each stop, slide in the four cardinals; the slide stops
+//     just BEFORE any cell in `blockedKeys` (treats kill zones as
+//     walls so the player never has to die to reach a glyph). The
+//     cell where the slide ends is a new stop; every cell traversed
+//     in between is "reachable" (the player passes through it).
+//   - Mining blocks are NOT in blockedKeys — a player can shoot
+//     through them, so they're an obstacle, not a barrier.
+//
+// Returns true iff every glyph cell is on some safe slide path.
 function _glyphsReachableAvoiding(cells, cols, rows, spawn, glyphs, blockedKeys) {
   const idx = (c, r) => r * cols + c;
   const start = idx(spawn.col, spawn.row);
   if (cells[start].kind !== 'floor') return false;
   if (blockedKeys.has(start)) return false;
-  const visited = new Uint8Array(cols * rows);
-  visited[start] = 1;
-  const stack = [start];
-  while (stack.length) {
-    const i = stack.pop();
-    const r = (i / cols) | 0;
-    const c = i - r * cols;
-    const nbrs = [[c - 1, r], [c + 1, r], [c, r - 1], [c, r + 1]];
-    for (const [nc, nr] of nbrs) {
-      if (nc < 0 || nc >= cols || nr < 0 || nr >= rows) continue;
-      const ni = idx(nc, nr);
-      if (visited[ni]) continue;
-      if (cells[ni].kind !== 'floor') continue;
-      if (blockedKeys.has(ni)) continue;
-      visited[ni] = 1;
-      stack.push(ni);
+  const DIRS = [[-1, 0], [1, 0], [0, -1], [0, 1]];
+  const visitedStops = new Uint8Array(cols * rows);
+  const reachable = new Uint8Array(cols * rows);
+  visitedStops[start] = 1;
+  reachable[start] = 1;
+  const queue = [{ c: spawn.col, r: spawn.row }];
+  while (queue.length) {
+    const { c, r } = queue.shift();
+    for (const [dc, dr] of DIRS) {
+      let nc = c, nr = r;
+      while (true) {
+        const tc = nc + dc, tr = nr + dr;
+        if (tc < 0 || tc >= cols || tr < 0 || tr >= rows) break;
+        if (cells[idx(tc, tr)].kind !== 'floor') break;
+        if (blockedKeys.has(idx(tc, tr))) break;
+        nc = tc; nr = tr;
+        reachable[idx(nc, nr)] = 1;
+      }
+      if (nc === c && nr === r) continue;
+      const k = idx(nc, nr);
+      if (!visitedStops[k]) {
+        visitedStops[k] = 1;
+        queue.push({ c: nc, r: nr });
+      }
     }
   }
   for (const g of glyphs) {
-    if (!visited[idx(g.col, g.row)]) return false;
+    if (!reachable[idx(g.col, g.row)]) return false;
   }
   return true;
 }
