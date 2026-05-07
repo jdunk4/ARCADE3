@@ -53,7 +53,7 @@ import {
 import { saveMazeProgress, getMazeWave } from './mazePuzzles.js';
 import { UI } from './ui.js';
 import { clearGravestones } from './gravestones.js';
-import { setCrowdVisible } from './crowd.js';
+import { setCrowdVisible, recolorCrowd } from './crowd.js';
 
 // =====================================================================
 // PUBLIC API
@@ -756,6 +756,10 @@ function _enterWaveAssemble(waveNum) {
   // arena nicely from the top-down camera.
   try { clearGravestones(); } catch (_) {}
   try { setCrowdVisible(true); } catch (_) {}
+  // Retint the spectator lanterns to the chapter's signature color so
+  // the ring around the arena flips orange→red→yellow→green→cyan→
+  // purple at every chapter boundary (waves 11/21/31/41/51).
+  try { recolorCrowd(_waveFillTint(waveNum)); } catch (_) {}
   // Hide the standard combat HUD and surface the glyph collector
   // strip — the only run UI in this mode.
   _hideStandardHud();

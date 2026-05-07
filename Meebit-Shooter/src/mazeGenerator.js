@@ -72,12 +72,16 @@ export function getMazeConfig(waveNum) {
   else if (w <= 9) miningBlockCount = 4;
   else miningBlockCount = 6;
 
-  // Kill zones.
+  // Kill zones. Wave 10+ used to spawn 6-8 runes which crowded the
+  // maze enough that the slide-reachability gate had to keep dropping
+  // them; the play-tested feel was "too many red squares between me
+  // and the next glyph". Cap at 5 from wave 10 onward — still tense,
+  // but the validator can place all of them in most layouts.
   let killZoneCount;
   if (w <= 3) killZoneCount = 0;
   else if (w <= 6) killZoneCount = 1 + Math.floor(rng01(w) * 2);
-  else if (w <= 9) killZoneCount = 3 + Math.floor(rng01(w) * 3);
-  else killZoneCount = 6 + Math.floor(rng01(w) * 3);
+  else if (w <= 9) killZoneCount = 3 + Math.floor(rng01(w) * 2);
+  else killZoneCount = 4 + Math.floor(rng01(w) * 2);
 
   // Decor (chapter 1) enemies — purely visual obstacles destroyed by
   // sliding through them. None on wave 1 so the player learns the
@@ -476,6 +480,21 @@ function _finalizeMazeData(waveNum, cells, cols, rows, spawn, glyphs) {
       }
       if (!placed) break;       // give up on remaining kill zones
       killZones.push({ col: placed.col, row: placed.row, kind });
+    }
+
+    // Final safety net. The per-placement gate prevents most soft-
+    // locks but can be defeated by edge cases the simulator misses
+    // (templates with non-standard topology, future feature
+    // interactions). If anything's still unreachable here, drop the
+    // most recently-added kill zone and re-check, repeating until
+    // every glyph is reachable. Worst case: zero kill zones, which
+    // is fine — the wave is still playable.
+    while (killZones.length > 0) {
+      const allReachable = _glyphsReachableAvoiding(
+        cells, cols, rows, spawn, glyphs, blockedSet);
+      if (allReachable) break;
+      const dropped = killZones.pop();
+      blockedSet.delete(idx(dropped.col, dropped.row));
     }
   }
 

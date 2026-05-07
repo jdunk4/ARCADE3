@@ -92,6 +92,13 @@ const SCHEMES = [
  * @returns {{cells: Uint8Array, scheme: string, symbol: number,
  *           width: number, height: number}}
  */
+// Minimum fraction of cells we want filled before showing the glyph.
+// Below this, we layer in a tessellated underlay with a contrasting
+// symbol so the autoglyph fills the arena instead of leaving big
+// blank stretches. Tuned to match the dense reference autoglyphs:
+// every cell of the maze footprint should carry SOMETHING.
+const MIN_FILL = 0.40;
+
 export function generateAutoglyph(seed, forceScheme) {
   const rng = _makeRng(seed);
   const scheme = forceScheme || SCHEMES[Math.floor(rng() * SCHEMES.length)];
@@ -115,6 +122,19 @@ export function generateAutoglyph(seed, forceScheme) {
     case 'CHAOS':        _genChaos(cells, rng, primary); break;
   }
 
+  // Density backstop — if the chosen scheme produced a sparse pattern
+  // (random walk, sprinkle, anything below MIN_FILL), overlay a
+  // tessellated background with a contrasting symbol so the glyph
+  // covers the arena. Layered, not replaced — the original motif
+  // stays on top, the underlay just fills the empty space.
+  let filled = 0;
+  for (let i = 0; i < cells.length; i++) if (cells[i] !== 0) filled++;
+  let secondary = 0;
+  if (filled < MIN_FILL * GRID_SIZE) {
+    secondary = _pickContrastingSymbol(rng, primary);
+    _underlayTessellated(cells, rng, secondary, MIN_FILL);
+  }
+
   return {
     cells,
     scheme,
@@ -122,6 +142,37 @@ export function generateAutoglyph(seed, forceScheme) {
     width: GRID_DIM,
     height: GRID_DIM,
   };
+}
+
+// Pick a symbol distinct from `primary` so the underlay reads as a
+// second motif, not just more of the same.
+function _pickContrastingSymbol(rng, primary) {
+  let s = 1 + Math.floor(rng() * SYMBOL_COUNT);
+  if (s === primary) s = ((s) % SYMBOL_COUNT) + 1;
+  return s;
+}
+
+// Stamp a tessellated background using `sym`, but only into cells the
+// foreground left empty. Brings total fill up to roughly `targetFill`.
+function _underlayTessellated(cells, rng, sym, targetFill) {
+  const tileDim = 4 + Math.floor(rng() * 5);
+  const tile = new Uint8Array(tileDim * tileDim);
+  // Scale tile fill to hit roughly the target density. The tile only
+  // contributes to empty foreground cells, so over-fill the tile a bit
+  // to compensate for the cells the foreground already claimed.
+  const fillProb = Math.min(0.85, targetFill + 0.20);
+  for (let i = 0; i < tile.length; i++) {
+    if (rng() < fillProb) tile[i] = 1;
+  }
+  for (let y = 0; y < GRID_DIM; y++) {
+    for (let x = 0; x < GRID_DIM; x++) {
+      const idx = y * GRID_DIM + x;
+      if (cells[idx] !== 0) continue;
+      const tx = x % tileDim;
+      const ty = y % tileDim;
+      if (tile[ty * tileDim + tx]) cells[idx] = sym;
+    }
+  }
 }
 
 /**
